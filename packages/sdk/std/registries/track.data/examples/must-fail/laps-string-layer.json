@@ -1,0 +1,8 @@
+{
+  "track.data": {
+    "game/monaco/f1_2026": {
+      "$comment": "laps is a whole number",
+      "laps": "78"
+    }
+  }
+}

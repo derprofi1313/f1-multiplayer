@@ -1,0 +1,8 @@
+{
+  "track.venue": {
+    "nameless": {
+      "$comment": "a venue has a name",
+      "country": "germany"
+    }
+  }
+}

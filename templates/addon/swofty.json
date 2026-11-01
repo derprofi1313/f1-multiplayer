@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "id": "example.sample-mod",
+  "name": "Sample Mod",
+  "version": "0.1.0",
+  "author": "Your Name",
+  "description": "A starting point for an addon: a database edit driven by a setting, one UI patch and a native plugin that reads its settings.",
+  "license": "MIT",
+  "kind": ["database", "ui", "native"],
+  "compat": { "game": "f1_25", "game_builds": [">=25251167"] },
+  "requires": [{ "id": "swofty.core", "version": ">=0.1.0" }],
+  "options": [
+    {
+      "id": "verbose",
+      "type": "toggle",
+      "label": "Verbose log",
+      "description": "Log setting changes and the signature scan to swofty/loader.log.",
+      "default": false,
+      "binds": "native"
+    },
+    {
+      "id": "greeting",
+      "type": "choice",
+      "label": "Greeting",
+      "description": "What the plugin writes to swofty/loader.log when it loads.",
+      "values": ["hello", { "value": "good morning", "label": "Good morning" }, "hi"],
+      "default": "hello",
+      "binds": "native"
+    },
+    {
+      "id": "greeting_count",
+      "type": "slider",
+      "label": "Greetings",
+      "description": "How many times the plugin writes the greeting.",
+      "min": 0,
+      "max": 5,
+      "step": 1,
+      "default": 1,
+      "binds": "native"
+    },
+    {
+      "id": "penalty_seconds",
+      "type": "slider",
+      "label": "Stop-go penalty",
+      "description": "Length of a stop-go penalty in seconds. It is written into the game database, so a change needs a rebuild.",
+      "min": 5,
+      "max": 20,
+      "step": 5,
+      "default": 5,
+      "binds": "db"
+    }
+  ],
+  "operations": {
+    "database": ["db/example.json"],
+    "ui": ["ui/example.pkgpatch.json"],
+    "native": [{ "dll": "native/sample_plugin.dll" }]
+  }
+}

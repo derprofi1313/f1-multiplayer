@@ -1,0 +1,20 @@
+LIBRARY version.dll
+EXPORTS
+    GetFileVersionInfoA=fwd_GetFileVersionInfoA @1
+    GetFileVersionInfoByHandle=fwd_GetFileVersionInfoByHandle @2
+    GetFileVersionInfoExA=fwd_GetFileVersionInfoExA @3
+    GetFileVersionInfoExW=fwd_GetFileVersionInfoExW @4
+    GetFileVersionInfoSizeA=fwd_GetFileVersionInfoSizeA @5
+    GetFileVersionInfoSizeExA=fwd_GetFileVersionInfoSizeExA @6
+    GetFileVersionInfoSizeExW=fwd_GetFileVersionInfoSizeExW @7
+    GetFileVersionInfoSizeW=fwd_GetFileVersionInfoSizeW @8
+    GetFileVersionInfoW=fwd_GetFileVersionInfoW @9
+    VerFindFileA=fwd_VerFindFileA @10
+    VerFindFileW=fwd_VerFindFileW @11
+    VerInstallFileA=fwd_VerInstallFileA @12
+    VerInstallFileW=fwd_VerInstallFileW @13
+    VerLanguageNameA=fwd_VerLanguageNameA @14
+    VerLanguageNameW=fwd_VerLanguageNameW @15
+    VerQueryValueA=fwd_VerQueryValueA @16
+    VerQueryValueW=fwd_VerQueryValueW @17
+    SwoftyLoaderHookPool @18

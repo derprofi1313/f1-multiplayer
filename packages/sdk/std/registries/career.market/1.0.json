@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "career.market 1.0",
+  "x-registry": "career.market",
+  "x-version": "1.0",
+  "x-applies": "boot",
+  "x-snapshot": false,
+  "description": "career::Market: a driver market group (driver_market.driver_market.DataGroup[<data_group>]), or every group: every retirement and firing schedule's drivers, and the driver rating each team asks for.",
+  "type": "object",
+  "properties": {
+    "data_group": {
+      "description": "The market group (a driver_market.driver_market.DataGroup label) the game mode reads; empty or absent: every group (2025 and 2026).",
+      "type": "string",
+      "default": ""
+    },
+    "retirements": {
+      "description": "Replaces every retirement schedule's drivers; absent keeps them.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/retirement"
+      }
+    },
+    "firings": {
+      "description": "Replaces every firing schedule's drivers; absent keeps them.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/firing"
+      }
+    },
+    "team_ratings": {
+      "type": "array",
+      "x-key": [
+        "team"
+      ],
+      "items": {
+        "$ref": "#/$defs/team_rating"
+      }
+    },
+    "extends": {
+      "description": "Data files only: this record is a variant of that record, and its value is a merge patch on the base.",
+      "type": "string",
+      "x-ref": "career.market",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": true,
+  "$defs": {
+    "retirement": {
+      "description": "career::Retirement: a driver, the day he retires and the day the news says so.",
+      "type": "object",
+      "properties": {
+        "driver": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-ref": "driver.identity"
+        },
+        "retire": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "announce": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        }
+      },
+      "required": [
+        "driver",
+        "retire",
+        "announce"
+      ],
+      "additionalProperties": false
+    },
+    "firing": {
+      "description": "career::Firing: a driver and the career season he loses his seat in (0 the first).",
+      "type": "object",
+      "properties": {
+        "driver": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-ref": "driver.identity"
+        },
+        "season_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99
+        }
+      },
+      "required": [
+        "driver",
+        "season_index"
+      ],
+      "additionalProperties": false
+    },
+    "team_rating": {
+      "description": "career::TeamRating: the driver rating a team asks for in the market.",
+      "type": "object",
+      "properties": {
+        "team": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-ref": "team.identity"
+        },
+        "rating": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "team",
+        "rating"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

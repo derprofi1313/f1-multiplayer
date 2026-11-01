@@ -1,0 +1,30 @@
+{
+  "career.market": {
+    "history": {
+      "retirements": [
+        {
+          "driver": "game/fernando_alonso",
+          "retire": "2026-12-14",
+          "announce": "2026-09-16"
+        },
+        {
+          "driver": "game/lewis_hamilton",
+          "retire": "2027-12-14",
+          "announce": "2027-09-23"
+        }
+      ],
+      "firings": [
+        {
+          "driver": "game/lance_stroll",
+          "season_index": 1
+        }
+      ],
+      "team_ratings": [
+        {
+          "team": "game/mclaren_26",
+          "rating": 97
+        }
+      ]
+    }
+  }
+}

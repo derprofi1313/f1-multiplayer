@@ -1,0 +1,28 @@
+[package]
+name = "swofty-launcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "f1-multiplayer"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "=0.8.0"
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+swofty-builtins.workspace = true
+swofty-core.workspace = true
+ureq.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+winresource = "0.1"
+
+[lints]
+workspace = true

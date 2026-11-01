@@ -1,0 +1,11 @@
+{
+  "track.data": {
+    "$select": [
+      { "ids": "mod.hockenheim/hockenheim/*", "patch": { "laps": 67, "fuel": { "burn_per_lap": 1.62 }, "pit": { "speed_limit": 80 } } }
+    ],
+    "mod.hockenheim/hockenheim/f1_2025":        { "tyres": { "softer": "C4", "medium": "C3", "harder": "C2" } },
+    "mod.hockenheim/hockenheim/sprint_f1_2025": { "tyres": { "softer": "C4", "medium": "C3", "harder": "C2" } },
+    "mod.hockenheim/hockenheim/f1_2026":        { "tyres": { "softer": "C4", "medium": "C3", "harder": "C2" } },
+    "mod.hockenheim/hockenheim/sprint_f1_2026": { "tyres": { "softer": "C4", "medium": "C3", "harder": "C2" } }
+  }
+}

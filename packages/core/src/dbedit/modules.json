@@ -1,0 +1,4852 @@
+{
+ "modules": [
+  {
+   "id": "drivers",
+   "group": "Drivers",
+   "title": "Drivers",
+   "icon": "user",
+   "summary": "Names, numbers, nationality, birth dates, ratings and AI traits of every driver.",
+   "rows": "entrants.drivers.driver",
+   "name": {
+    "field": "full_name",
+    "lng": true
+   },
+   "columns": [
+    "full_name",
+    "initials",
+    "car_number",
+    "nationality",
+    "pace"
+   ],
+   "fields": [
+    {
+     "id": "first_name",
+     "label": "First name",
+     "path": "first_name",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "last_name",
+     "label": "Last name",
+     "path": "last_name",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "full_name",
+     "label": "Full name",
+     "path": "full_name",
+     "section": "Name",
+     "help": "Shown in menus and results.",
+     "lng": true
+    },
+    {
+     "id": "last_name_standard",
+     "label": "Last name (standard case)",
+     "path": "last_name_standard",
+     "section": "Name",
+     "help": "Used where the game shows the surname in normal case. Empty uses the last name.",
+     "lng": true
+    },
+    {
+     "id": "initials",
+     "label": "Code",
+     "path": "initials",
+     "section": "Name",
+     "kind": "text",
+     "help": "Three-letter code on the timing tower."
+    },
+    {
+     "id": "is_name_reversed",
+     "label": "Surname first",
+     "path": "is_name_reversed",
+     "section": "Name",
+     "kind": "bool"
+    },
+    {
+     "id": "audio_name",
+     "label": "Commentary name",
+     "path": "audio_name",
+     "section": "Name",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.audio_names.audio_name"
+     },
+     "help": "The name the commentators say."
+    },
+    {
+     "id": "nationality",
+     "label": "Nationality",
+     "path": "nationality",
+     "section": "Identity",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.nationality.nationality",
+      "name": {
+       "field": "language_string",
+       "lng": true
+      }
+     }
+    },
+    {
+     "id": "car_number",
+     "label": "Race number",
+     "path": "car_number",
+     "section": "Identity",
+     "kind": "int",
+     "min": 0,
+     "max": 99
+    },
+    {
+     "id": "chance_to_use_number_1",
+     "label": "Chance to race with number 1 as champion",
+     "path": "chance_to_use_number_1",
+     "section": "Identity",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "unit": "%"
+    },
+    {
+     "id": "is_using_number_1_in_first_season",
+     "label": "Uses number 1 in the first season",
+     "path": "is_using_number_1_in_first_season",
+     "section": "Identity",
+     "kind": "bool"
+    },
+    {
+     "id": "head",
+     "label": "Head model",
+     "path": "head",
+     "section": "Identity",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.animation.driver_heads.driver_head"
+     }
+    },
+    {
+     "id": "dob_day",
+     "label": "Birth day",
+     "path": "date_of_birth.day",
+     "section": "Birth date",
+     "kind": "int",
+     "min": 1,
+     "max": 31
+    },
+    {
+     "id": "dob_month",
+     "label": "Birth month",
+     "path": "date_of_birth.month",
+     "section": "Birth date",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "January",
+       "label": "January"
+      },
+      {
+       "value": "February",
+       "label": "February"
+      },
+      {
+       "value": "March",
+       "label": "March"
+      },
+      {
+       "value": "April",
+       "label": "April"
+      },
+      {
+       "value": "May",
+       "label": "May"
+      },
+      {
+       "value": "June",
+       "label": "June"
+      },
+      {
+       "value": "July",
+       "label": "July"
+      },
+      {
+       "value": "August",
+       "label": "August"
+      },
+      {
+       "value": "September",
+       "label": "September"
+      },
+      {
+       "value": "October",
+       "label": "October"
+      },
+      {
+       "value": "November",
+       "label": "November"
+      },
+      {
+       "value": "December",
+       "label": "December"
+      }
+     ]
+    },
+    {
+     "id": "dob_year",
+     "label": "Birth year",
+     "path": "date_of_birth.year",
+     "section": "Birth date",
+     "kind": "int",
+     "min": 1930,
+     "max": 2015
+    },
+    {
+     "id": "f1_seasons_completed",
+     "label": "F1 seasons completed",
+     "path": "f1_seasons_completed",
+     "section": "Career",
+     "kind": "int",
+     "min": 0,
+     "max": 30
+    },
+    {
+     "id": "garage_slot_preference",
+     "label": "Garage side",
+     "path": "garage_slot_preference",
+     "section": "Career",
+     "kind": "int",
+     "min": 0,
+     "max": 1,
+     "help": "Preferred garage slot when the team has two drivers."
+    },
+    {
+     "id": "trait_aggression",
+     "label": "Aggression",
+     "path": "driver_characteristics.aggression",
+     "section": "AI traits",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "trait_control",
+     "label": "Car control",
+     "path": "driver_characteristics.control",
+     "section": "AI traits",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "trait_mistakes",
+     "label": "Mistake avoidance",
+     "path": "driver_characteristics.mistakes",
+     "section": "AI traits",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "trait_reaction_speed",
+     "label": "Reaction speed",
+     "path": "driver_characteristics.reaction_speed",
+     "section": "AI traits",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "trait_speed_in",
+     "label": "Corner entry speed",
+     "path": "driver_characteristics.speed_in",
+     "section": "AI traits",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "trait_speed_out",
+     "label": "Corner exit speed",
+     "path": "driver_characteristics.speed_out",
+     "section": "AI traits",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "preferred_tracks",
+     "label": "Preferred tracks",
+     "path": "driver_characteristics.preferred_tracks",
+     "section": "AI traits",
+     "kind": "ref-list",
+     "refs": {
+      "rows": "tracks.Track",
+      "name": {
+       "field": "gp_short_name",
+       "lng": true
+      }
+     },
+     "help": "Tracks where the AI driver performs better."
+    },
+    {
+     "id": "strategy_fastest_strategy_base_selection_chance",
+     "label": "Chance to pick the fastest strategy",
+     "path": "driver_strategy.fastest_strategy_base_selection_chance",
+     "section": "AI strategy",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "strategy_fuel_load_max_modifier",
+     "label": "Extra fuel load (max)",
+     "path": "driver_strategy.fuel_load_max_modifier",
+     "section": "AI strategy",
+     "min": 0,
+     "max": 0.1,
+     "step": 0.001
+    },
+    {
+     "id": "strategy_fuel_load_min_modifier",
+     "label": "Extra fuel load (min)",
+     "path": "driver_strategy.fuel_load_min_modifier",
+     "section": "AI strategy",
+     "min": 0,
+     "max": 0.1,
+     "step": 0.001
+    },
+    {
+     "id": "strategy_safety_car_pit_min_lap",
+     "label": "Earliest lap to pit under safety car",
+     "path": "driver_strategy.safety_car_pit_min_lap",
+     "section": "AI strategy",
+     "min": 0,
+     "max": 20,
+     "step": 1,
+     "unit": "lap"
+    },
+    {
+     "id": "strategy_safety_car_pit_max_laps_early",
+     "label": "Laps early to pit under safety car",
+     "path": "driver_strategy.safety_car_pit_max_laps_early",
+     "section": "AI strategy",
+     "min": 0,
+     "max": 20,
+     "step": 1,
+     "unit": "laps"
+    },
+    {
+     "id": "strategy_safety_car_pit_wear_min",
+     "label": "Tyre wear to pit under safety car (min)",
+     "path": "driver_strategy.safety_car_pit_wear_min",
+     "section": "AI strategy",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "strategy_safety_car_pit_wear_max",
+     "label": "Tyre wear to pit under safety car (max)",
+     "path": "driver_strategy.safety_car_pit_wear_max",
+     "section": "AI strategy",
+     "min": 0,
+     "max": 1,
+     "step": 0.01
+    },
+    {
+     "id": "strategy_slowest_strategy_selection_time_limit",
+     "label": "Slowest strategy time limit",
+     "path": "driver_strategy.slowest_strategy_selection_time_limit",
+     "section": "AI strategy",
+     "min": 0,
+     "max": 30,
+     "step": 0.5,
+     "unit": "s"
+    },
+    {
+     "id": "strategy_weather_change_min_time_percentage",
+     "label": "Weather change reaction (min)",
+     "path": "driver_strategy.weather_change_min_time_percentage",
+     "section": "AI strategy",
+     "min": -1,
+     "max": 1,
+     "step": 0.05
+    },
+    {
+     "id": "strategy_weather_change_max_time_percentage",
+     "label": "Weather change reaction (max)",
+     "path": "driver_strategy.weather_change_max_time_percentage",
+     "section": "AI strategy",
+     "min": -1,
+     "max": 1,
+     "step": 0.05
+    },
+    {
+     "id": "experience",
+     "label": "Experience",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=default].Statistic[_metadata_=experience].evolution",
+     "section": "Ratings",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "racecraft",
+     "label": "Racecraft",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=default].Statistic[_metadata_=racecraft].evolution",
+     "section": "Ratings",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "awareness",
+     "label": "Awareness",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=default].Statistic[_metadata_=awareness].evolution",
+     "section": "Ratings",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "pace",
+     "label": "Pace",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=default].Statistic[_metadata_=pace].evolution",
+     "section": "Ratings",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "focus",
+     "label": "Focus",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=default].Statistic[_metadata_=focus].evolution",
+     "section": "Ratings",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "experience_2026",
+     "label": "Experience",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=2026].Statistic[_metadata_=experience].evolution",
+     "section": "Ratings (2026 season)",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "racecraft_2026",
+     "label": "Racecraft",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=2026].Statistic[_metadata_=racecraft].evolution",
+     "section": "Ratings (2026 season)",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "awareness_2026",
+     "label": "Awareness",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=2026].Statistic[_metadata_=awareness].evolution",
+     "section": "Ratings (2026 season)",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "pace_2026",
+     "label": "Pace",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=2026].Statistic[_metadata_=pace].evolution",
+     "section": "Ratings (2026 season)",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "focus_2026",
+     "label": "Focus",
+     "path": "driver_statistics.driver_statistics.DriverStatisticsHolder[driver={label}].StatisticsDataSet[_metadata_=2026].Statistic[_metadata_=focus].evolution",
+     "section": "Ratings (2026 season)",
+     "kind": "curve",
+     "optional": true,
+     "help": "Rating curve over the driver's career: x is seasons (0 to 10), y is the rating as a share of 100."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ],
+   "links": [
+    {
+     "label": "Create new drivers",
+     "text": "Driver Manager adds new drivers as free agents. They're edited on its page, not here.",
+     "addon": "swofty.driver-manager",
+     "section": "drivers",
+     "url": "https://www.overtake.gg/downloads/driver-manager-addon.87734/"
+    },
+    {
+     "label": "Edit a career in progress",
+     "text": "Career Editor edits ratings and seats in a career in progress.",
+     "addon": "swofty.career-editor",
+     "section": "editor",
+     "tab": "drivers",
+     "url": "https://f1.swofty.net/using/career-editor"
+    }
+   ]
+  },
+  {
+   "id": "driver-looks",
+   "group": "Drivers",
+   "title": "Driver looks",
+   "icon": "shirt",
+   "summary": "Helmet, suit, gloves, pose and podium emote presets linked to drivers.",
+   "scope": {
+    "title": "Set",
+    "rows": "entrants.driver_customisations.folder",
+    "default": "official_driver_customisations"
+   },
+   "rows": "entrants.driver_customisations.folder[_metadata_={scope}].preloaded_driver_customisation_properties",
+   "columns": [
+    "linked_driver_stat_id",
+    "helmet",
+    "suit",
+    "gloves",
+    "podium_emote"
+   ],
+   "fields": [
+    {
+     "id": "linked_driver_stat_id",
+     "label": "Driver",
+     "path": "linked_driver_stat_id",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.drivers.driver",
+      "name": {
+       "field": "full_name",
+       "lng": true
+      }
+     },
+     "section": "Driver"
+    },
+    {
+     "id": "helmet",
+     "label": "Helmet",
+     "path": "helmet",
+     "kind": "ref",
+     "refs": {
+      "rows": "customisation.custom_avatar.helmets.Helmet",
+      "name": {
+       "field": "name_loc_tag",
+       "lng": true
+      }
+     },
+     "section": "Kit"
+    },
+    {
+     "id": "suit",
+     "label": "Suit",
+     "path": "suit",
+     "kind": "ref",
+     "refs": {
+      "rows": "customisation.custom_avatar.suits.Suit",
+      "name": {
+       "field": "name_loc_tag",
+       "lng": true
+      }
+     },
+     "section": "Kit"
+    },
+    {
+     "id": "gloves",
+     "label": "Gloves",
+     "path": "gloves",
+     "kind": "ref",
+     "refs": {
+      "rows": "customisation.custom_avatar.gloves.Gloves",
+      "name": {
+       "field": "name_loc_tag",
+       "lng": true
+      }
+     },
+     "section": "Kit"
+    },
+    {
+     "id": "pose",
+     "label": "Pose",
+     "path": "pose",
+     "kind": "ref",
+     "refs": {
+      "rows": "customisation.custom_avatar.poses.Pose",
+      "name": {
+       "field": "name_loc_tag",
+       "lng": true
+      }
+     },
+     "section": "Celebrations"
+    },
+    {
+     "id": "podium_emote",
+     "label": "Podium emote",
+     "path": "podium_emote",
+     "kind": "ref",
+     "refs": {
+      "rows": "customisation.custom_avatar.podium_emotes.PodiumEmote",
+      "name": {
+       "field": "name_loc_tag",
+       "lng": true
+      }
+     },
+     "section": "Celebrations"
+    },
+    {
+     "id": "victory_vo",
+     "label": "Victory radio",
+     "path": "victory_vo",
+     "kind": "ref",
+     "refs": {
+      "rows": "customisation.custom_avatar.victory_vos.VictoryVO",
+      "name": {
+       "field": "name_loc_tag",
+       "lng": true
+      }
+     },
+     "section": "Celebrations"
+    },
+    {
+     "id": "badge",
+     "label": "Badge",
+     "path": "badge",
+     "kind": "text",
+     "section": "Kit"
+    },
+    {
+     "id": "car_livery",
+     "label": "Car livery",
+     "path": "car_livery",
+     "kind": "text",
+     "section": "Kit"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ],
+   "notes": [
+    "Entrants pick a preset by its label in Entrants and Line-ups.",
+    "Empty values use the driver's default kit."
+   ]
+  },
+  {
+   "id": "entrants",
+   "group": "Drivers",
+   "title": "Entrants",
+   "icon": "id-card",
+   "summary": "Driver entries the line-ups refer to: driver, race number and looks preset.",
+   "rows": "entrants.entrant_lists.entrants.entrant",
+   "name": {
+    "field": "driver"
+   },
+   "columns": [
+    "driver",
+    "car_number",
+    "driver_customisation"
+   ],
+   "fields": [
+    {
+     "id": "driver",
+     "label": "Driver",
+     "path": "driver",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.drivers.driver",
+      "name": {
+       "field": "full_name",
+       "lng": true
+      }
+     }
+    },
+    {
+     "id": "car_number",
+     "label": "Race number",
+     "path": "car_number",
+     "kind": "int",
+     "min": 0,
+     "max": 255,
+     "help": "255 uses the driver's own number."
+    },
+    {
+     "id": "driver_customisation",
+     "label": "Looks preset",
+     "path": "driver_customisation",
+     "kind": "text",
+     "help": "Label of a preset in Driver looks. Empty: the driver's default kit."
+    },
+    {
+     "id": "badge_customisation",
+     "label": "Badge",
+     "path": "badge_customisation",
+     "kind": "text"
+    },
+    {
+     "id": "team",
+     "label": "Team",
+     "path": "team",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.teams.team",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "help": "Empty: the line-up seat sets the team."
+    },
+    {
+     "id": "vehicle",
+     "label": "Car",
+     "path": "vehicle",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.vehicles.vehicle",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "help": "Empty: the line-up seat sets the car."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ],
+   "links": [
+    {
+     "label": "Driver Manager drivers",
+     "text": "Driver Manager adds an entrant for each of its drivers, marked Driver Manager in driver choices. They're edited on its page.",
+     "addon": "swofty.driver-manager",
+     "section": "drivers",
+     "url": "https://www.overtake.gg/downloads/driver-manager-addon.87734/"
+    }
+   ]
+  },
+  {
+   "id": "characters",
+   "group": "Drivers",
+   "title": "Characters",
+   "icon": "contact",
+   "summary": "Team principals, engineers and other people who are not drivers.",
+   "rows": "entrants.characters.character",
+   "name": {
+    "field": "full_name",
+    "lng": true
+   },
+   "columns": [
+    "full_name",
+    "job_role",
+    "head"
+   ],
+   "fields": [
+    {
+     "id": "first_name",
+     "label": "First name",
+     "path": "first_name",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "last_name",
+     "label": "Last name",
+     "path": "last_name",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "full_name",
+     "label": "Full name",
+     "path": "full_name",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "job_role",
+     "label": "Job",
+     "path": "job_role",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "head",
+     "label": "Head model",
+     "path": "head",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.animation.driver_heads.driver_head"
+     },
+     "section": "Identity"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ]
+  },
+  {
+   "id": "helmets",
+   "group": "Drivers",
+   "title": "Helmets",
+   "icon": "hard-hat",
+   "summary": "Helmet designs, their models and colour slots.",
+   "rows": "customisation.custom_avatar.helmets.Helmet",
+   "name": {
+    "field": "name_loc_tag",
+    "lng": true
+   },
+   "columns": [
+    "name_loc_tag",
+    "nb_colours",
+    "is_official_team_item"
+   ],
+   "fields": [
+    {
+     "id": "name_loc_tag",
+     "label": "Name",
+     "path": "name_loc_tag",
+     "section": "Item",
+     "lng": true
+    },
+    {
+     "id": "nb_colours",
+     "label": "Custom colours",
+     "path": "nb_colours",
+     "kind": "int",
+     "min": 0,
+     "max": 4,
+     "section": "Item"
+    },
+    {
+     "id": "is_official_team_item",
+     "label": "Official team item",
+     "path": "is_official_team_item",
+     "kind": "bool",
+     "section": "Item"
+    },
+    {
+     "id": "material_override",
+     "label": "Material",
+     "path": "material_override",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "asset_group",
+     "label": "Asset group",
+     "path": "asset_group",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "model",
+     "label": "Model",
+     "path": "model",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "attachments_model",
+     "label": "Attachments model",
+     "path": "attachments_model",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "id",
+     "label": "Item id",
+     "path": "id",
+     "kind": "int",
+     "readonly": true,
+     "section": "Identity"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ]
+  },
+  {
+   "id": "suits",
+   "group": "Drivers",
+   "title": "Suits",
+   "icon": "shirt",
+   "summary": "Race suit designs, their models and colour slots.",
+   "rows": "customisation.custom_avatar.suits.Suit",
+   "name": {
+    "field": "name_loc_tag",
+    "lng": true
+   },
+   "columns": [
+    "name_loc_tag",
+    "nb_colours",
+    "is_official_team_item"
+   ],
+   "fields": [
+    {
+     "id": "name_loc_tag",
+     "label": "Name",
+     "path": "name_loc_tag",
+     "section": "Item",
+     "lng": true
+    },
+    {
+     "id": "nb_colours",
+     "label": "Custom colours",
+     "path": "nb_colours",
+     "kind": "int",
+     "min": 0,
+     "max": 4,
+     "section": "Item"
+    },
+    {
+     "id": "is_official_team_item",
+     "label": "Official team item",
+     "path": "is_official_team_item",
+     "kind": "bool",
+     "section": "Item"
+    },
+    {
+     "id": "material_override",
+     "label": "Material",
+     "path": "material_override",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "asset_group",
+     "label": "Asset group",
+     "path": "asset_group",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "feet_model",
+     "label": "Boots model",
+     "path": "feet_model",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "id",
+     "label": "Item id",
+     "path": "id",
+     "kind": "int",
+     "readonly": true,
+     "section": "Identity"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ]
+  },
+  {
+   "id": "gloves",
+   "group": "Drivers",
+   "title": "Gloves",
+   "icon": "hand",
+   "summary": "Glove designs, their models and colour slots.",
+   "rows": "customisation.custom_avatar.gloves.Gloves",
+   "name": {
+    "field": "name_loc_tag",
+    "lng": true
+   },
+   "columns": [
+    "name_loc_tag",
+    "nb_colours",
+    "is_official_team_item"
+   ],
+   "fields": [
+    {
+     "id": "name_loc_tag",
+     "label": "Name",
+     "path": "name_loc_tag",
+     "section": "Item",
+     "lng": true
+    },
+    {
+     "id": "nb_colours",
+     "label": "Custom colours",
+     "path": "nb_colours",
+     "kind": "int",
+     "min": 0,
+     "max": 4,
+     "section": "Item"
+    },
+    {
+     "id": "is_official_team_item",
+     "label": "Official team item",
+     "path": "is_official_team_item",
+     "kind": "bool",
+     "section": "Item"
+    },
+    {
+     "id": "material_override",
+     "label": "Material",
+     "path": "material_override",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "asset_group",
+     "label": "Asset group",
+     "path": "asset_group",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "logos_model",
+     "label": "Logos model",
+     "path": "logos_model",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "id",
+     "label": "Item id",
+     "path": "id",
+     "kind": "int",
+     "readonly": true,
+     "section": "Identity"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ]
+  },
+  {
+   "id": "poses",
+   "group": "Drivers",
+   "title": "Poses",
+   "icon": "person-standing",
+   "summary": "Driver poses shown in menus.",
+   "rows": "customisation.custom_avatar.poses.Pose",
+   "name": {
+    "field": "name_loc_tag",
+    "lng": true
+   },
+   "columns": [
+    "name_loc_tag",
+    "pose_animation_idle"
+   ],
+   "fields": [
+    {
+     "id": "name_loc_tag",
+     "label": "Name",
+     "path": "name_loc_tag",
+     "section": "Item",
+     "lng": true
+    },
+    {
+     "id": "pose_animation_idle",
+     "label": "Animation",
+     "path": "pose_animation_idle",
+     "kind": "text",
+     "section": "Item"
+    },
+    {
+     "id": "texture_name",
+     "label": "Icon",
+     "path": "texture_name",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "id",
+     "label": "Item id",
+     "path": "id",
+     "kind": "int",
+     "readonly": true,
+     "section": "Identity"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ]
+  },
+  {
+   "id": "podium-emotes",
+   "group": "Drivers",
+   "title": "Podium emotes",
+   "icon": "party-popper",
+   "summary": "Podium celebrations and their animations.",
+   "rows": "customisation.custom_avatar.podium_emotes.PodiumEmote",
+   "name": {
+    "field": "name_loc_tag",
+    "lng": true
+   },
+   "columns": [
+    "name_loc_tag",
+    "emote_animation"
+   ],
+   "fields": [
+    {
+     "id": "name_loc_tag",
+     "label": "Name",
+     "path": "name_loc_tag",
+     "section": "Item",
+     "lng": true
+    },
+    {
+     "id": "emote_animation",
+     "label": "Animation",
+     "path": "emote_animation",
+     "kind": "text",
+     "section": "Item"
+    },
+    {
+     "id": "override_gloves",
+     "label": "Hides the gloves",
+     "path": "override_gloves",
+     "kind": "bool",
+     "section": "Item"
+    },
+    {
+     "id": "extra_scene",
+     "label": "Extra scene",
+     "path": "extra_scene",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "asset_group",
+     "label": "Asset group",
+     "path": "asset_group",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "texture_name",
+     "label": "Icon",
+     "path": "texture_name",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "id",
+     "label": "Item id",
+     "path": "id",
+     "kind": "int",
+     "readonly": true,
+     "section": "Identity"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ]
+  },
+  {
+   "id": "driver-heads",
+   "group": "Drivers",
+   "title": "Driver heads",
+   "icon": "scan-face",
+   "summary": "Head models drivers and characters use.",
+   "rows": "entrants.animation.driver_heads.driver_head",
+   "name": {
+    "field": "esports_name",
+    "lng": true
+   },
+   "columns": [
+    "esports_name",
+    "body_type",
+    "available_for_customisation"
+   ],
+   "fields": [
+    {
+     "id": "esports_name",
+     "label": "Name",
+     "path": "esports_name",
+     "section": "Head",
+     "lng": true
+    },
+    {
+     "id": "body_type",
+     "label": "Body type",
+     "path": "body_type",
+     "kind": "text",
+     "section": "Head"
+    },
+    {
+     "id": "available_for_customisation",
+     "label": "Selectable for players",
+     "path": "available_for_customisation",
+     "kind": "bool",
+     "section": "Head"
+    },
+    {
+     "id": "has_morph_data",
+     "label": "Has face morph data",
+     "path": "has_morph_data",
+     "kind": "bool",
+     "section": "Head"
+    },
+    {
+     "id": "model_path",
+     "label": "Model",
+     "path": "model_path",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "model_path_female_rig",
+     "label": "Model (female rig)",
+     "path": "model_path_female_rig",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ]
+  },
+  {
+   "id": "retirements-2025",
+   "group": "Drivers",
+   "title": "Retirements (2025 careers)",
+   "icon": "user-x",
+   "summary": "Which drivers retire in a 2025 career, and when they announce it and leave.",
+   "scope": {
+    "title": "Schedule",
+    "rows": "driver_market.driver_market.DataGroup[_metadata_=2025].driver_retirements.DriverRetirementSchedule",
+    "default": "DriverRetirementSchedule_0"
+   },
+   "rows": "driver_market.driver_market.DataGroup[_metadata_=2025].driver_retirements.DriverRetirementSchedule[_metadata_={scope}].DriverRetirement",
+   "name": {
+    "field": "driver"
+   },
+   "columns": [
+    "driver",
+    "announcement_year",
+    "retirement_day",
+    "retirement_month",
+    "retirement_year"
+   ],
+   "fields": [
+    {
+     "id": "driver",
+     "label": "Driver",
+     "path": "driver",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.drivers.driver",
+      "name": {
+       "field": "full_name",
+       "lng": true
+      }
+     }
+    },
+    {
+     "id": "announcement_day",
+     "label": "Day",
+     "path": "date_time[_metadata_=Announcement].day",
+     "section": "Announcement",
+     "kind": "int",
+     "min": 1,
+     "max": 31
+    },
+    {
+     "id": "announcement_month",
+     "label": "Month",
+     "path": "date_time[_metadata_=Announcement].month",
+     "section": "Announcement",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "January",
+       "label": "January"
+      },
+      {
+       "value": "February",
+       "label": "February"
+      },
+      {
+       "value": "March",
+       "label": "March"
+      },
+      {
+       "value": "April",
+       "label": "April"
+      },
+      {
+       "value": "May",
+       "label": "May"
+      },
+      {
+       "value": "June",
+       "label": "June"
+      },
+      {
+       "value": "July",
+       "label": "July"
+      },
+      {
+       "value": "August",
+       "label": "August"
+      },
+      {
+       "value": "September",
+       "label": "September"
+      },
+      {
+       "value": "October",
+       "label": "October"
+      },
+      {
+       "value": "November",
+       "label": "November"
+      },
+      {
+       "value": "December",
+       "label": "December"
+      }
+     ]
+    },
+    {
+     "id": "announcement_year",
+     "label": "Year",
+     "path": "date_time[_metadata_=Announcement].year",
+     "section": "Announcement",
+     "kind": "int",
+     "min": 2025,
+     "max": 2040
+    },
+    {
+     "id": "retirement_day",
+     "label": "Day",
+     "path": "date_time[_metadata_=Retirement].day",
+     "section": "Retirement",
+     "kind": "int",
+     "min": 1,
+     "max": 31
+    },
+    {
+     "id": "retirement_month",
+     "label": "Month",
+     "path": "date_time[_metadata_=Retirement].month",
+     "section": "Retirement",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "January",
+       "label": "January"
+      },
+      {
+       "value": "February",
+       "label": "February"
+      },
+      {
+       "value": "March",
+       "label": "March"
+      },
+      {
+       "value": "April",
+       "label": "April"
+      },
+      {
+       "value": "May",
+       "label": "May"
+      },
+      {
+       "value": "June",
+       "label": "June"
+      },
+      {
+       "value": "July",
+       "label": "July"
+      },
+      {
+       "value": "August",
+       "label": "August"
+      },
+      {
+       "value": "September",
+       "label": "September"
+      },
+      {
+       "value": "October",
+       "label": "October"
+      },
+      {
+       "value": "November",
+       "label": "November"
+      },
+      {
+       "value": "December",
+       "label": "December"
+      }
+     ]
+    },
+    {
+     "id": "retirement_year",
+     "label": "Year",
+     "path": "date_time[_metadata_=Retirement].year",
+     "section": "Retirement",
+     "kind": "int",
+     "min": 2025,
+     "max": 2040
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity"
+    }
+   ],
+   "notes": [
+    "A career picks one schedule at its start."
+   ]
+  },
+  {
+   "id": "retirements-2026",
+   "group": "Drivers",
+   "title": "Retirements (2026 careers)",
+   "icon": "user-x",
+   "summary": "Which drivers retire in a 2026 career, and when they announce it and leave.",
+   "scope": {
+    "title": "Schedule",
+    "rows": "driver_market.driver_market.DataGroup[_metadata_=2026].driver_retirements.DriverRetirementSchedule",
+    "default": "DriverRetirementSchedule_0"
+   },
+   "rows": "driver_market.driver_market.DataGroup[_metadata_=2026].driver_retirements.DriverRetirementSchedule[_metadata_={scope}].DriverRetirement",
+   "name": {
+    "field": "driver"
+   },
+   "columns": [
+    "driver",
+    "announcement_year",
+    "retirement_day",
+    "retirement_month",
+    "retirement_year"
+   ],
+   "fields": [
+    {
+     "id": "driver",
+     "label": "Driver",
+     "path": "driver",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.drivers.driver",
+      "name": {
+       "field": "full_name",
+       "lng": true
+      }
+     }
+    },
+    {
+     "id": "announcement_day",
+     "label": "Day",
+     "path": "date_time[_metadata_=Announcement].day",
+     "section": "Announcement",
+     "kind": "int",
+     "min": 1,
+     "max": 31
+    },
+    {
+     "id": "announcement_month",
+     "label": "Month",
+     "path": "date_time[_metadata_=Announcement].month",
+     "section": "Announcement",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "January",
+       "label": "January"
+      },
+      {
+       "value": "February",
+       "label": "February"
+      },
+      {
+       "value": "March",
+       "label": "March"
+      },
+      {
+       "value": "April",
+       "label": "April"
+      },
+      {
+       "value": "May",
+       "label": "May"
+      },
+      {
+       "value": "June",
+       "label": "June"
+      },
+      {
+       "value": "July",
+       "label": "July"
+      },
+      {
+       "value": "August",
+       "label": "August"
+      },
+      {
+       "value": "September",
+       "label": "September"
+      },
+      {
+       "value": "October",
+       "label": "October"
+      },
+      {
+       "value": "November",
+       "label": "November"
+      },
+      {
+       "value": "December",
+       "label": "December"
+      }
+     ]
+    },
+    {
+     "id": "announcement_year",
+     "label": "Year",
+     "path": "date_time[_metadata_=Announcement].year",
+     "section": "Announcement",
+     "kind": "int",
+     "min": 2025,
+     "max": 2040
+    },
+    {
+     "id": "retirement_day",
+     "label": "Day",
+     "path": "date_time[_metadata_=Retirement].day",
+     "section": "Retirement",
+     "kind": "int",
+     "min": 1,
+     "max": 31
+    },
+    {
+     "id": "retirement_month",
+     "label": "Month",
+     "path": "date_time[_metadata_=Retirement].month",
+     "section": "Retirement",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "January",
+       "label": "January"
+      },
+      {
+       "value": "February",
+       "label": "February"
+      },
+      {
+       "value": "March",
+       "label": "March"
+      },
+      {
+       "value": "April",
+       "label": "April"
+      },
+      {
+       "value": "May",
+       "label": "May"
+      },
+      {
+       "value": "June",
+       "label": "June"
+      },
+      {
+       "value": "July",
+       "label": "July"
+      },
+      {
+       "value": "August",
+       "label": "August"
+      },
+      {
+       "value": "September",
+       "label": "September"
+      },
+      {
+       "value": "October",
+       "label": "October"
+      },
+      {
+       "value": "November",
+       "label": "November"
+      },
+      {
+       "value": "December",
+       "label": "December"
+      }
+     ]
+    },
+    {
+     "id": "retirement_year",
+     "label": "Year",
+     "path": "date_time[_metadata_=Retirement].year",
+     "section": "Retirement",
+     "kind": "int",
+     "min": 2025,
+     "max": 2040
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity"
+    }
+   ],
+   "notes": [
+    "A career picks one schedule at its start."
+   ]
+  },
+  {
+   "id": "teams",
+   "group": "Teams & Cars",
+   "title": "Teams",
+   "icon": "shield",
+   "summary": "Team names, colours, nationality, base and principal.",
+   "rows": "entrants.teams.team",
+   "name": {
+    "field": "display_name",
+    "lng": true
+   },
+   "columns": [
+    "display_name",
+    "display_name_code",
+    "primary_colour",
+    "secondary_colour",
+    "team_boss"
+   ],
+   "fields": [
+    {
+     "id": "display_name",
+     "label": "Name",
+     "path": "display_name",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "display_name_short",
+     "label": "Short name",
+     "path": "display_name_short",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "display_name_super_short",
+     "label": "Shortest name",
+     "path": "display_name_super_short",
+     "section": "Name",
+     "lng": true
+    },
+    {
+     "id": "display_name_code",
+     "label": "Code",
+     "path": "display_name_code",
+     "kind": "text",
+     "section": "Name",
+     "help": "Three-letter code on the timing tower and results."
+    },
+    {
+     "id": "primary_colour",
+     "label": "Primary colour",
+     "path": "primary_colour",
+     "kind": "color",
+     "section": "Colours",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "secondary_colour",
+     "label": "Secondary colour",
+     "path": "secondary_colour",
+     "kind": "color",
+     "section": "Colours",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "tertiary_colour",
+     "label": "Tertiary colour",
+     "path": "tertiary_colour",
+     "kind": "color",
+     "section": "Colours",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "ui_team_colour",
+     "label": "Menu colour",
+     "path": "ui_team_colour",
+     "kind": "color",
+     "section": "Colours",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "team_colour_valid",
+     "label": "Use team colours",
+     "path": "team_colour_valid",
+     "kind": "bool",
+     "section": "Colours"
+    },
+    {
+     "id": "team_wear_primary_colour",
+     "label": "Team wear primary",
+     "path": "team_wear_primary_colour",
+     "kind": "color",
+     "section": "Team wear",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "team_wear_secondary_colour",
+     "label": "Team wear secondary",
+     "path": "team_wear_secondary_colour",
+     "kind": "color",
+     "section": "Team wear",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "team_wear_tertiary_colour",
+     "label": "Team wear tertiary",
+     "path": "team_wear_tertiary_colour",
+     "kind": "color",
+     "section": "Team wear",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "nationality",
+     "label": "Nationality",
+     "path": "nationality",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.nationality.nationality",
+      "name": {
+       "field": "language_string",
+       "lng": true
+      }
+     },
+     "section": "Identity"
+    },
+    {
+     "id": "team_base",
+     "label": "Base",
+     "path": "team_base",
+     "section": "Identity",
+     "lng": true
+    },
+    {
+     "id": "team_boss",
+     "label": "Team principal",
+     "path": "team_boss",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.characters.character",
+      "name": {
+       "field": "full_name",
+       "lng": true
+      }
+     },
+     "section": "Identity"
+    },
+    {
+     "id": "prestige",
+     "label": "Prestige",
+     "path": "prestige",
+     "kind": "int",
+     "min": -1,
+     "max": 20,
+     "section": "Identity",
+     "help": "-1 means none."
+    },
+    {
+     "id": "story_description",
+     "label": "Story description",
+     "path": "story_info_0.description",
+     "section": "Identity",
+     "optional": true,
+     "lng": true
+    },
+    {
+     "id": "livery_name",
+     "label": "Livery and kit name",
+     "path": "livery_name",
+     "kind": "text",
+     "section": "Assets"
+    },
+    {
+     "id": "timing_tower_texture_path",
+     "label": "Timing tower texture",
+     "path": "timing_tower_texture_path",
+     "kind": "text",
+     "section": "Assets"
+    },
+    {
+     "id": "animation_set",
+     "label": "Animation set",
+     "path": "animation_set",
+     "kind": "text",
+     "section": "Assets"
+    },
+    {
+     "id": "audio_id",
+     "label": "Commentary id",
+     "path": "audio_id",
+     "kind": "int",
+     "min": 0,
+     "max": 99,
+     "section": "Assets"
+    },
+    {
+     "id": "show_team_badge",
+     "label": "Show team badge",
+     "path": "show_team_badge",
+     "kind": "bool",
+     "section": "Assets"
+    },
+    {
+     "id": "show_custom_badge_in_UI",
+     "label": "Show custom badge",
+     "path": "show_custom_badge_in_UI",
+     "kind": "bool",
+     "section": "Assets"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ],
+   "links": [
+    {
+     "label": "Edit a career in progress",
+     "text": "Career Editor edits team money and identity in a career in progress.",
+     "addon": "swofty.career-editor",
+     "section": "editor",
+     "tab": "team",
+     "url": "https://f1.swofty.net/using/career-editor"
+    }
+   ]
+  },
+  {
+   "id": "lineups",
+   "group": "Teams & Cars",
+   "title": "Line-ups",
+   "icon": "users",
+   "summary": "Which entrant drives in which seat of each grid.",
+   "scope": {
+    "title": "Grid",
+    "rows": "entrants.entrant_lists.entrant_list",
+    "default": "f1_2026",
+    "filter": [
+     {
+      "field": "_metadata_",
+      "not": [
+       "f1_career_2024",
+       "f1_career_2025",
+       "f1_career_2026",
+       "f1_career_2026_driver_pool"
+      ]
+     }
+    ]
+   },
+   "rows": "entrants.entrant_lists.entrant_list[_metadata_={scope}].entrant",
+   "name": {
+    "field": "entrant_reference"
+   },
+   "columns": [
+    "team",
+    "team_position",
+    "entrant_reference",
+    "entrant_driver",
+    "car_number"
+   ],
+   "fields": [
+    {
+     "id": "team",
+     "label": "Team",
+     "path": "team",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.teams.team",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "section": "Seat"
+    },
+    {
+     "id": "team_position",
+     "label": "Seat",
+     "path": "team_position",
+     "kind": "int",
+     "min": -1,
+     "max": 9,
+     "section": "Seat",
+     "help": "Seat in the team; -1 on custom-team seats."
+    },
+    {
+     "id": "entrant_reference",
+     "label": "Entrant",
+     "path": "entrant_reference",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.entrant_lists.entrants.entrant",
+      "name": {
+       "template": "{driver}"
+      }
+     },
+     "section": "Seat",
+     "help": "The entrant in this seat. Swap two seats by swapping their entrants."
+    },
+    {
+     "id": "entrant_driver",
+     "label": "Entrant's driver",
+     "path": "entrants.entrant_lists.entrants.entrant[_metadata_={row.entrant_reference}].driver",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.drivers.driver",
+      "name": {
+       "field": "full_name",
+       "lng": true
+      }
+     },
+     "section": "Seat",
+     "optional": true,
+     "help": "Editing this changes the entrant on every grid that uses it."
+    },
+    {
+     "id": "driver",
+     "label": "Driver override",
+     "path": "driver",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.drivers.driver",
+      "name": {
+       "field": "full_name",
+       "lng": true
+      }
+     },
+     "section": "Seat",
+     "help": "Empty: the entrant's driver races."
+    },
+    {
+     "id": "car_number",
+     "label": "Race number",
+     "path": "car_number",
+     "kind": "int",
+     "min": 0,
+     "max": 255,
+     "section": "Seat",
+     "help": "255 uses the driver's own number."
+    },
+    {
+     "id": "vehicle",
+     "label": "Car",
+     "path": "vehicle",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.vehicles.vehicle",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "section": "Car"
+    },
+    {
+     "id": "vehicle_customisation",
+     "label": "Livery preset",
+     "path": "vehicle_customisation",
+     "kind": "text",
+     "section": "Car"
+    },
+    {
+     "id": "driver_customisation",
+     "label": "Looks preset",
+     "path": "driver_customisation",
+     "kind": "text",
+     "section": "Car",
+     "help": "Label of a preset in Driver looks. Empty: the entrant's preset."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity"
+    }
+   ],
+   "links": [
+    {
+     "label": "Edit a career in progress",
+     "text": "Career Editor edits seats in a career in progress.",
+     "addon": "swofty.career-editor",
+     "section": "editor",
+     "tab": "drivers",
+     "url": "https://f1.swofty.net/using/career-editor"
+    },
+    {
+     "label": "Driver Manager drivers",
+     "text": "Seats also take the drivers Driver Manager adds, marked Driver Manager. They're edited on its page.",
+     "addon": "swofty.driver-manager",
+     "section": "drivers",
+     "url": "https://www.overtake.gg/downloads/driver-manager-addon.87734/"
+    }
+   ],
+   "notes": [
+    "Grids with no seats of their own read their entrants from the grids they reference."
+   ]
+  },
+  {
+   "id": "vehicles",
+   "group": "Teams & Cars",
+   "title": "Cars",
+   "icon": "car",
+   "summary": "Cars: name, generation, engine, performance class and tyre wear.",
+   "rows": "entrants.vehicles.vehicle",
+   "name": {
+    "field": "display_name",
+    "lng": true
+   },
+   "columns": [
+    "display_name",
+    "vehicle_package",
+    "engine",
+    "performance_class",
+    "tyre_wear_scale"
+   ],
+   "fields": [
+    {
+     "id": "display_name",
+     "label": "Name",
+     "path": "display_name",
+     "section": "Car",
+     "lng": true
+    },
+    {
+     "id": "chassis_name",
+     "label": "Chassis name",
+     "path": "chassis_name",
+     "section": "Car",
+     "lng": true
+    },
+    {
+     "id": "vehicle_package",
+     "label": "Car generation",
+     "path": "vehicle_package",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.vehicles.vehicle_packages.vehicle_package"
+     },
+     "section": "Car"
+    },
+    {
+     "id": "engine",
+     "label": "Engine",
+     "path": "engine",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.engines.Engine",
+      "name": {
+       "field": "supplier"
+      }
+     },
+     "section": "Car"
+    },
+    {
+     "id": "engine_name_override",
+     "label": "Engine name override",
+     "path": "engine_name_override",
+     "section": "Car",
+     "lng": true
+    },
+    {
+     "id": "performance_class",
+     "label": "Performance class",
+     "path": "performance_class",
+     "kind": "int",
+     "min": 0,
+     "max": 3,
+     "section": "Performance",
+     "help": "Car class the Grand Prix grid builder uses."
+    },
+    {
+     "id": "performance_tier",
+     "label": "Performance tier",
+     "path": "performance_tier",
+     "kind": "int",
+     "min": 0,
+     "max": 2,
+     "section": "Performance"
+    },
+    {
+     "id": "tyre_wear_scale",
+     "label": "Tyre wear",
+     "path": "tyre_wear_scale",
+     "kind": "float",
+     "min": 0.5,
+     "max": 2,
+     "step": 0.01,
+     "unit": "×",
+     "section": "Performance"
+    },
+    {
+     "id": "drs_capable",
+     "label": "Has DRS",
+     "path": "drs_capable",
+     "kind": "bool",
+     "section": "Performance"
+    },
+    {
+     "id": "equal_performance_vehicle",
+     "label": "Equal-performance car",
+     "path": "equal_performance_vehicle",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.vehicles.vehicle",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "section": "Performance",
+     "help": "Car used instead in equal-performance mode. Empty: none."
+    },
+    {
+     "id": "hud_dial",
+     "label": "HUD dial",
+     "path": "hud_dial",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "modern",
+       "label": "Modern"
+      },
+      {
+       "value": "f2",
+       "label": "F2"
+      },
+      {
+       "value": "26",
+       "label": "2026"
+      }
+     ],
+     "section": "Cockpit"
+    },
+    {
+     "id": "pitstop_tyre_set",
+     "label": "Pit stop tyre set",
+     "path": "pitstop_tyre_set",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "F1",
+       "label": "F1"
+      },
+      {
+       "value": "F2",
+       "label": "F2"
+      },
+      {
+       "value": "cls2",
+       "label": "Classic"
+      }
+     ],
+     "section": "Cockpit"
+    },
+    {
+     "id": "safety_car_type",
+     "label": "Safety car",
+     "path": "safety_car_type",
+     "kind": "bool",
+     "section": "Cockpit"
+    },
+    {
+     "id": "asset_filename",
+     "label": "Model folder",
+     "path": "asset_filename",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "steering_animation_name",
+     "label": "Steering animation",
+     "path": "steering_animation_name",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "garage_offset_X",
+     "label": "Garage offset X",
+     "path": "garage_offset_X",
+     "kind": "float",
+     "min": -1,
+     "max": 1,
+     "step": 0.001,
+     "unit": "m",
+     "section": "Files"
+    },
+    {
+     "id": "garage_offset_Y",
+     "label": "Garage offset Y",
+     "path": "garage_offset_Y",
+     "kind": "float",
+     "min": -1,
+     "max": 1,
+     "step": 0.001,
+     "unit": "m",
+     "section": "Files"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ]
+  },
+  {
+   "id": "engines",
+   "group": "Teams & Cars",
+   "title": "Engines",
+   "icon": "cog",
+   "summary": "Engine suppliers and their rev light and dial ranges.",
+   "rows": "entrants.engines.Engine",
+   "name": {
+    "field": "supplier",
+    "lng": true
+   },
+   "columns": [
+    "supplier",
+    "nationality",
+    "revLightsStart",
+    "revLightsEnd"
+   ],
+   "fields": [
+    {
+     "id": "supplier",
+     "label": "Supplier name",
+     "path": "supplier",
+     "section": "Engine",
+     "lng": true
+    },
+    {
+     "id": "nationality",
+     "label": "Nationality",
+     "path": "nationality",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.nationality.nationality",
+      "name": {
+       "field": "language_string",
+       "lng": true
+      }
+     },
+     "section": "Engine"
+    },
+    {
+     "id": "revLightsStart",
+     "label": "Rev lights start",
+     "path": "revLightsStart",
+     "kind": "int",
+     "unit": "rpm",
+     "section": "Rev lights"
+    },
+    {
+     "id": "revLightsRedStart",
+     "label": "Red lights start",
+     "path": "revLightsRedStart",
+     "kind": "int",
+     "unit": "rpm",
+     "section": "Rev lights"
+    },
+    {
+     "id": "revLightsPurpleStart",
+     "label": "Purple lights start",
+     "path": "revLightsPurpleStart",
+     "kind": "int",
+     "unit": "rpm",
+     "section": "Rev lights"
+    },
+    {
+     "id": "revLightsEnd",
+     "label": "Rev lights end",
+     "path": "revLightsEnd",
+     "kind": "int",
+     "unit": "rpm",
+     "section": "Rev lights"
+    },
+    {
+     "id": "revLightWarning",
+     "label": "Rev limit warning",
+     "path": "revLightWarning",
+     "kind": "int",
+     "unit": "rpm",
+     "section": "Rev lights"
+    },
+    {
+     "id": "revFlashSpeed",
+     "label": "Flash speed",
+     "path": "revFlashSpeed",
+     "section": "Rev lights"
+    },
+    {
+     "id": "revDialStart",
+     "label": "Dial start",
+     "path": "revDialStart",
+     "kind": "int",
+     "unit": "rpm",
+     "section": "Dial"
+    },
+    {
+     "id": "revDialEnd",
+     "label": "Dial end",
+     "path": "revDialEnd",
+     "kind": "int",
+     "unit": "rpm",
+     "section": "Dial"
+    },
+    {
+     "id": "revDialAnimEnd",
+     "label": "Dial animation end",
+     "path": "revDialAnimEnd",
+     "kind": "int",
+     "unit": "rpm",
+     "section": "Dial"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ]
+  },
+  {
+   "id": "tyre-compounds",
+   "group": "Teams & Cars",
+   "title": "Tyre compounds",
+   "icon": "circle-dot",
+   "summary": "Tyre compounds as players see them: names, colours and type.",
+   "rows": "tyres.visual_compounds.VisualCompound",
+   "name": {
+    "field": "display_name",
+    "lng": true
+   },
+   "columns": [
+    "display_name",
+    "colour",
+    "is_slick",
+    "is_full_wet"
+   ],
+   "fields": [
+    {
+     "id": "display_name",
+     "label": "Name",
+     "path": "display_name",
+     "section": "Compound",
+     "lng": true
+    },
+    {
+     "id": "title",
+     "label": "Title",
+     "path": "title",
+     "section": "Compound",
+     "lng": true
+    },
+    {
+     "id": "desc",
+     "label": "Description",
+     "path": "desc",
+     "section": "Compound",
+     "lng": true
+    },
+    {
+     "id": "colour",
+     "label": "Colour",
+     "path": "colour",
+     "kind": "color",
+     "section": "Compound",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "is_slick",
+     "label": "Slick",
+     "path": "is_slick",
+     "kind": "bool",
+     "section": "Compound"
+    },
+    {
+     "id": "is_full_wet",
+     "label": "Full wet",
+     "path": "is_full_wet",
+     "kind": "bool",
+     "section": "Compound"
+    },
+    {
+     "id": "texture_name",
+     "label": "Texture",
+     "path": "texture_name",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ]
+  },
+  {
+   "id": "tyre-allocations",
+   "group": "Teams & Cars",
+   "title": "Tyre allocations",
+   "icon": "layers",
+   "summary": "Tyre sets handed out per session by each allocation preset.",
+   "rows": "tyres.allocation_tyre_presets.TyresPerSessionPreset",
+   "columns": [
+    "Practice1",
+    "Qualifying1",
+    "Race"
+   ],
+   "fields": [
+    {
+     "id": "Practice1",
+     "label": "Practice 1",
+     "path": "Practice1",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Practice2",
+     "label": "Practice 2",
+     "path": "Practice2",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Practice3",
+     "label": "Practice 3",
+     "path": "Practice3",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Qualifying1",
+     "label": "Qualifying 1",
+     "path": "Qualifying1",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Qualifying2",
+     "label": "Qualifying 2",
+     "path": "Qualifying2",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Qualifying3",
+     "label": "Qualifying 3",
+     "path": "Qualifying3",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "SprintShootout1",
+     "label": "Sprint shootout 1",
+     "path": "SprintShootout1",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "SprintShootout2",
+     "label": "Sprint shootout 2",
+     "path": "SprintShootout2",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "SprintShootout3",
+     "label": "Sprint shootout 3",
+     "path": "SprintShootout3",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Race",
+     "label": "Race",
+     "path": "Race",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Race2",
+     "label": "Race 2",
+     "path": "Race2",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Race3",
+     "label": "Race 3",
+     "path": "Race3",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ],
+   "notes": [
+    "Tracks pick their softer, balanced and harder presets in Track settings."
+   ]
+  },
+  {
+   "id": "mandatory-tyres",
+   "group": "Teams & Cars",
+   "title": "Mandatory tyres",
+   "icon": "layers",
+   "summary": "Sets each driver must keep for a session.",
+   "rows": "tyres.mandatory_tyre_presets.TyresPerSessionPreset",
+   "columns": [
+    "Practice1",
+    "Qualifying1",
+    "Race"
+   ],
+   "fields": [
+    {
+     "id": "Practice1",
+     "label": "Practice 1",
+     "path": "Practice1",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Practice2",
+     "label": "Practice 2",
+     "path": "Practice2",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Practice3",
+     "label": "Practice 3",
+     "path": "Practice3",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Qualifying1",
+     "label": "Qualifying 1",
+     "path": "Qualifying1",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Qualifying2",
+     "label": "Qualifying 2",
+     "path": "Qualifying2",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Qualifying3",
+     "label": "Qualifying 3",
+     "path": "Qualifying3",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "SprintShootout1",
+     "label": "Sprint shootout 1",
+     "path": "SprintShootout1",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "SprintShootout2",
+     "label": "Sprint shootout 2",
+     "path": "SprintShootout2",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "SprintShootout3",
+     "label": "Sprint shootout 3",
+     "path": "SprintShootout3",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Race",
+     "label": "Race",
+     "path": "Race",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Race2",
+     "label": "Race 2",
+     "path": "Race2",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "Race3",
+     "label": "Race 3",
+     "path": "Race3",
+     "kind": "list",
+     "section": "Sessions",
+     "help": "Sets of each compound for the session, comma-joined in the order softer, medium, harder, intermediate, wet."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ],
+   "notes": [
+    "Tracks pick a mandatory preset in Track settings."
+   ]
+  },
+  {
+   "id": "garage",
+   "group": "Teams & Cars",
+   "title": "Garage order",
+   "icon": "warehouse",
+   "summary": "Team order of each standings list; grids that assign garages by last season's standings use it.",
+   "scope": {
+    "title": "Standings",
+    "rows": "entrants.standings.standings",
+    "default": "f1_teams_2026",
+    "filter": [
+     {
+      "field": "_metadata_",
+      "any": [
+       "f1_teams_2026",
+       "f1_teams_2025",
+       "f1_teams_2024",
+       "f1_teams_2023",
+       "f2_teams_2026",
+       "f2_teams_2025",
+       "f2_teams_2024",
+       "f2_teams_2023",
+       "f1_teams_2024_story",
+       "f1_teams_2023_story",
+       "f1_teams_2023_story_zenith",
+       "multiclass"
+      ]
+     }
+    ]
+   },
+   "rows": "entrants.standings.standings[_metadata_={scope}].team_reference",
+   "name": {
+    "field": "team"
+   },
+   "columns": [
+    "team"
+   ],
+   "fields": [
+    {
+     "id": "team",
+     "label": "Team",
+     "path": "team",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.teams.team",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "help": "Reorder by swapping teams between positions."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true
+    }
+   ],
+   "notes": [
+    "Position 1 gets the first garage."
+   ]
+  },
+  {
+   "id": "liveries",
+   "group": "Teams & Cars",
+   "title": "Liveries",
+   "icon": "paintbrush",
+   "summary": "Custom car liveries players can pick, with sponsor and finish options.",
+   "rows": "customisation.custom_liveries.liveries.Livery",
+   "name": {
+    "field": "name_loc_tag",
+    "lng": true
+   },
+   "columns": [
+    "name_loc_tag",
+    "sponsor",
+    "compatible_vehicle_groups",
+    "nb_colours"
+   ],
+   "fields": [
+    {
+     "id": "name_loc_tag",
+     "label": "Name",
+     "path": "name_loc_tag",
+     "section": "Livery",
+     "lng": true
+    },
+    {
+     "id": "sponsor",
+     "label": "Sponsor",
+     "path": "sponsor",
+     "kind": "text",
+     "section": "Livery"
+    },
+    {
+     "id": "compatible_vehicle_groups",
+     "label": "Car groups",
+     "path": "compatible_vehicle_groups",
+     "kind": "list",
+     "section": "Livery",
+     "help": "Car generations the livery fits, such as 2025 or 2026."
+    },
+    {
+     "id": "available_paint_finishes",
+     "label": "Paint finishes",
+     "path": "available_paint_finishes",
+     "kind": "ref-list",
+     "refs": {
+      "rows": "customisation.custom_paint_finishes.paint_finish"
+     },
+     "section": "Livery"
+    },
+    {
+     "id": "nb_colours",
+     "label": "Custom colours",
+     "path": "nb_colours",
+     "kind": "int",
+     "min": 0,
+     "max": 4,
+     "section": "Livery"
+    },
+    {
+     "id": "enable_custom_logos",
+     "label": "Custom logos",
+     "path": "enable_custom_logos",
+     "kind": "bool",
+     "section": "Livery"
+    },
+    {
+     "id": "enable_custom_driver_number",
+     "label": "Custom driver number",
+     "path": "enable_custom_driver_number",
+     "kind": "bool",
+     "section": "Livery"
+    },
+    {
+     "id": "material_override",
+     "label": "Material",
+     "path": "material_override",
+     "kind": "text",
+     "section": "Files"
+    },
+    {
+     "id": "id",
+     "label": "Item id",
+     "path": "id",
+     "kind": "int",
+     "readonly": true,
+     "section": "Identity"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ]
+  },
+  {
+   "id": "tracks",
+   "group": "Tracks & Calendar",
+   "title": "Tracks",
+   "icon": "route",
+   "summary": "Track-wide settings: names, length, corners, downforce, daylight and crowd colours.",
+   "rows": "tracks.Track",
+   "name": {
+    "field": "gp_short_name",
+    "lng": true
+   },
+   "columns": [
+    "gp_short_name",
+    "length_metres",
+    "numberOfCorners",
+    "downForceLevel",
+    "tyre_wear"
+   ],
+   "fields": [
+    {
+     "id": "gp_long_name",
+     "label": "Grand Prix name",
+     "path": "gp_long_name",
+     "section": "Names",
+     "lng": true
+    },
+    {
+     "id": "gp_short_name",
+     "label": "Short Grand Prix name",
+     "path": "gp_short_name",
+     "section": "Names",
+     "lng": true
+    },
+    {
+     "id": "title",
+     "label": "Country",
+     "path": "title",
+     "section": "Names",
+     "lng": true
+    },
+    {
+     "id": "circuit",
+     "label": "Circuit",
+     "path": "circuit",
+     "section": "Names",
+     "lng": true
+    },
+    {
+     "id": "city_name",
+     "label": "City",
+     "path": "city_name",
+     "section": "Names",
+     "lng": true
+    },
+    {
+     "id": "acronym_name",
+     "label": "Code",
+     "path": "acronym_name",
+     "section": "Names",
+     "lng": true
+    },
+    {
+     "id": "nationality",
+     "label": "Nationality",
+     "path": "nationality",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.nationality.nationality",
+      "name": {
+       "field": "language_string",
+       "lng": true
+      }
+     },
+     "section": "Names"
+    },
+    {
+     "id": "length_metres",
+     "label": "Lap length",
+     "path": "length_metres",
+     "kind": "int",
+     "min": 0,
+     "max": 10000,
+     "unit": "m",
+     "section": "Layout"
+    },
+    {
+     "id": "numberOfCorners",
+     "label": "Corners",
+     "path": "numberOfCorners",
+     "kind": "int",
+     "min": 0,
+     "max": 40,
+     "section": "Layout",
+     "help": "Shown in track info."
+    },
+    {
+     "id": "direction",
+     "label": "Direction",
+     "path": "direction",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "lng_direction_cw",
+       "label": "Clockwise"
+      },
+      {
+       "value": "lng_direction_ccw",
+       "label": "Anticlockwise"
+      }
+     ],
+     "section": "Layout"
+    },
+    {
+     "id": "downForceLevel",
+     "label": "Downforce level",
+     "path": "downForceLevel",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "very_low",
+       "label": "Very low"
+      },
+      {
+       "value": "low",
+       "label": "Low"
+      },
+      {
+       "value": "medium",
+       "label": "Medium"
+      },
+      {
+       "value": "high",
+       "label": "High"
+      },
+      {
+       "value": "very_high",
+       "label": "Very high"
+      }
+     ],
+     "section": "Layout"
+    },
+    {
+     "id": "performance_type",
+     "label": "Track type",
+     "path": "performance_type",
+     "kind": "ref",
+     "refs": {
+      "rows": "tracks.attributes.PerformanceType"
+     },
+     "section": "Layout"
+    },
+    {
+     "id": "tyre_wear",
+     "label": "Tyre wear",
+     "path": "tyre_wear",
+     "kind": "ref",
+     "refs": {
+      "rows": "tracks.attributes.TyreWear"
+     },
+     "section": "Layout"
+    },
+    {
+     "id": "continent",
+     "label": "Continent",
+     "path": "continent",
+     "kind": "ref",
+     "refs": {
+      "rows": "tracks.attributes.Continent"
+     },
+     "section": "Layout"
+    },
+    {
+     "id": "fuel_burn_per_lap",
+     "label": "Fuel burn per lap",
+     "path": "fuel_burn_per_lap",
+     "kind": "float",
+     "min": 0,
+     "max": 5,
+     "step": 0.01,
+     "unit": "kg",
+     "section": "Layout"
+    },
+    {
+     "id": "tyre_grip_modifier",
+     "label": "Tyre grip",
+     "path": "Tyres_0.tyre_grip_modifier",
+     "kind": "float",
+     "min": 0.8,
+     "max": 1.2,
+     "step": 0.001,
+     "unit": "×",
+     "section": "Layout",
+     "optional": true
+    },
+    {
+     "id": "PoleOnRight",
+     "label": "Pole on the right",
+     "path": "PoleOnRight",
+     "kind": "bool",
+     "section": "Layout"
+    },
+    {
+     "id": "latitude",
+     "label": "Latitude",
+     "path": "latitude",
+     "kind": "float",
+     "unit": "°",
+     "section": "Location"
+    },
+    {
+     "id": "longitude",
+     "label": "Longitude",
+     "path": "longitude",
+     "kind": "float",
+     "unit": "°",
+     "section": "Location"
+    },
+    {
+     "id": "allow_night_start",
+     "label": "Night sessions allowed",
+     "path": "allow_night_start",
+     "kind": "bool",
+     "section": "Time of day"
+    },
+    {
+     "id": "daylight_start",
+     "label": "Daylight starts",
+     "path": "Daylight_0.start",
+     "kind": "time",
+     "section": "Time of day"
+    },
+    {
+     "id": "daylight_end",
+     "label": "Daylight ends",
+     "path": "Daylight_0.end",
+     "kind": "time",
+     "section": "Time of day"
+    },
+    {
+     "id": "crowd_colours",
+     "label": "Crowd colours used",
+     "path": "TrackCrowds_0.coloursToUse",
+     "kind": "int",
+     "min": 1,
+     "max": 3,
+     "section": "Crowd"
+    },
+    {
+     "id": "crowd_colour_1",
+     "label": "Crowd colour 1",
+     "path": "TrackCrowds_0.crowdColour1",
+     "kind": "color",
+     "section": "Crowd",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "crowd_colour_2",
+     "label": "Crowd colour 2",
+     "path": "TrackCrowds_0.crowdColour2",
+     "kind": "color",
+     "section": "Crowd",
+     "help": "Signed 32-bit ARGB."
+    },
+    {
+     "id": "crowd_colour_3",
+     "label": "Crowd colour 3",
+     "path": "TrackCrowds_0.crowdColour3",
+     "kind": "color",
+     "section": "Crowd",
+     "help": "Signed 32-bit ARGB. Empty: unused."
+    },
+    {
+     "id": "crowd_colour_bias",
+     "label": "Crowd colour bias",
+     "path": "TrackCrowds_0.crowdColourBias",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01,
+     "section": "Crowd",
+     "help": "Share of fans in the first colour."
+    },
+    {
+     "id": "fileName",
+     "label": "Track folder",
+     "path": "fileName",
+     "kind": "text",
+     "readonly": true,
+     "section": "Identity"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "statId",
+     "label": "Stat id",
+     "path": "statId",
+     "readonly": true,
+     "section": "Identity"
+    }
+   ]
+  },
+  {
+   "id": "track-settings",
+   "group": "Tracks & Calendar",
+   "title": "Track settings",
+   "icon": "flag",
+   "summary": "Per-season race weekend settings of each track: laps, format, pit lane, compounds, mandatory stops and fuel.",
+   "scope": {
+    "title": "Season",
+    "rows": "track_data.game_setup.TrackDataSet",
+    "default": "f1_2026"
+   },
+   "rows": "track_data.game_setup.TrackDataSet[_metadata_={scope}].TrackData",
+   "name": {
+    "field": "track"
+   },
+   "columns": [
+    "track",
+    "laps",
+    "weekend_format",
+    "pit_speed_limit",
+    "compound_softer",
+    "compound_harder"
+   ],
+   "fields": [
+    {
+     "id": "track",
+     "label": "Track",
+     "path": "track",
+     "kind": "ref",
+     "refs": {
+      "rows": "tracks.Track",
+      "name": {
+       "field": "gp_short_name",
+       "lng": true
+      }
+     },
+     "readonly": true,
+     "section": "Track"
+    },
+    {
+     "id": "laps",
+     "label": "Laps",
+     "path": "TrackGeneralData_0.number_of_laps",
+     "kind": "list",
+     "optional": true,
+     "section": "Race",
+     "help": "Race laps, comma-joined, one value per race of the weekend."
+    },
+    {
+     "id": "fuel_burn",
+     "label": "Fuel burn per lap",
+     "path": "TrackGeneralData_0.fuel_burn_per_lap",
+     "kind": "float",
+     "min": 0,
+     "max": 5,
+     "step": 0.01,
+     "unit": "kg",
+     "optional": true,
+     "section": "Race"
+    },
+    {
+     "id": "weekend_format",
+     "label": "Weekend format",
+     "path": "TrackAuthenticWeekendData_0.weekend_format",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "default",
+       "label": "Grand Prix"
+      },
+      {
+       "value": "sprint",
+       "label": "Sprint"
+      }
+     ],
+     "optional": true,
+     "section": "Race"
+    },
+    {
+     "id": "split_qualifying",
+     "label": "Split qualifying",
+     "path": "TrackGeneralData_0.use_split_qualifying",
+     "kind": "bool",
+     "optional": true,
+     "section": "Race"
+    },
+    {
+     "id": "weekend_day",
+     "label": "Weekend day",
+     "path": "TrackGeneralData_0.weekend_day",
+     "kind": "int",
+     "min": 1,
+     "max": 31,
+     "optional": true,
+     "section": "Date"
+    },
+    {
+     "id": "weekend_month",
+     "label": "Weekend month",
+     "path": "TrackGeneralData_0.weekend_month",
+     "kind": "int",
+     "min": 1,
+     "max": 12,
+     "optional": true,
+     "section": "Date"
+    },
+    {
+     "id": "weekend_year",
+     "label": "Weekend year",
+     "path": "TrackGeneralData_0.weekend_year",
+     "kind": "int",
+     "min": 2015,
+     "max": 2040,
+     "optional": true,
+     "section": "Date"
+    },
+    {
+     "id": "pit_speed_limit",
+     "label": "Pit lane speed limit",
+     "path": "TrackPitData_0.pitSpeedLimit",
+     "kind": "float",
+     "min": 40,
+     "max": 120,
+     "step": 1,
+     "unit": "km/h",
+     "optional": true,
+     "section": "Pit lane"
+    },
+    {
+     "id": "pit_time_dry",
+     "label": "Pit stop time (dry)",
+     "path": "TrackPitData_0.pitStopTime_Dry",
+     "kind": "float",
+     "min": 10,
+     "max": 60,
+     "step": 0.1,
+     "unit": "s",
+     "optional": true,
+     "section": "Pit lane"
+    },
+    {
+     "id": "pit_time_wet",
+     "label": "Pit stop time (wet)",
+     "path": "TrackPitData_0.pitStopTime_Wet",
+     "kind": "float",
+     "min": 10,
+     "max": 60,
+     "step": 0.1,
+     "unit": "s",
+     "optional": true,
+     "section": "Pit lane"
+    },
+    {
+     "id": "compound_softer",
+     "label": "Softest compound",
+     "path": "TyreData_0.compound_softer",
+     "kind": "ref",
+     "refs": {
+      "rows": "tyres.physical_compounds.PhysicalCompound",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "compound_medium",
+     "label": "Middle compound",
+     "path": "TyreData_0.compound_medium",
+     "kind": "ref",
+     "refs": {
+      "rows": "tyres.physical_compounds.PhysicalCompound",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "compound_harder",
+     "label": "Hardest compound",
+     "path": "TyreData_0.compound_harder",
+     "kind": "ref",
+     "refs": {
+      "rows": "tyres.physical_compounds.PhysicalCompound",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "softer_preset",
+     "label": "Softer allocation",
+     "path": "TyreData_0.softer_preset",
+     "kind": "ref",
+     "refs": {
+      "rows": "tyres.allocation_tyre_presets.TyresPerSessionPreset"
+     },
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "balanced_preset",
+     "label": "Balanced allocation",
+     "path": "TyreData_0.balanced_preset",
+     "kind": "ref",
+     "refs": {
+      "rows": "tyres.allocation_tyre_presets.TyresPerSessionPreset"
+     },
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "harder_preset",
+     "label": "Harder allocation",
+     "path": "TyreData_0.harder_preset",
+     "kind": "ref",
+     "refs": {
+      "rows": "tyres.allocation_tyre_presets.TyresPerSessionPreset"
+     },
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "chance_softer",
+     "label": "Chance of the softer allocation",
+     "path": "TyreData_0.chance_of_using_softer_preset",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "unit": "%",
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "chance_harder",
+     "label": "Chance of the harder allocation",
+     "path": "TyreData_0.chance_of_using_harder_preset",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "unit": "%",
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "mandatory_tyres",
+     "label": "Mandatory tyres",
+     "path": "TyreData_0.mandatory_tyres",
+     "kind": "ref",
+     "refs": {
+      "rows": "tyres.mandatory_tyre_presets.TyresPerSessionPreset"
+     },
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "intermediates",
+     "label": "Intermediate sets",
+     "path": "TyreData_0.number_of_intermediate_tyres",
+     "kind": "int",
+     "min": 0,
+     "max": 10,
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "wets",
+     "label": "Wet sets",
+     "path": "TyreData_0.number_of_wet_tyres",
+     "kind": "int",
+     "min": 0,
+     "max": 10,
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "enforce_wet_stops",
+     "label": "Mandatory stop in the wet",
+     "path": "TyreData_0.enforce_pitstops_in_wet_weather",
+     "kind": "bool",
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "required_pitstops",
+     "label": "Mandatory pit stops",
+     "path": "TyreData_0.MandatoryPitstopsOverride_0.required_pitstops",
+     "kind": "int",
+     "min": 0,
+     "max": 5,
+     "optional": true,
+     "section": "Tyres",
+     "help": "Only rows that already carry an override have this key."
+    },
+    {
+     "id": "required_pitstops_session",
+     "label": "Mandatory pit stops session",
+     "path": "TyreData_0.MandatoryPitstopsOverride_0.session",
+     "kind": "text",
+     "optional": true,
+     "section": "Tyres"
+    },
+    {
+     "id": "fuel_quali_full",
+     "label": "Qualifying fuel (full)",
+     "path": "TrackFuelSettings_0.Qualifying.full",
+     "kind": "float",
+     "min": 0,
+     "max": 30,
+     "step": 0.1,
+     "unit": "kg",
+     "optional": true,
+     "section": "Fuel"
+    },
+    {
+     "id": "fuel_quali_short",
+     "label": "Qualifying fuel (short)",
+     "path": "TrackFuelSettings_0.Qualifying.short",
+     "kind": "float",
+     "min": 0,
+     "max": 30,
+     "step": 0.1,
+     "unit": "kg",
+     "optional": true,
+     "section": "Fuel"
+    },
+    {
+     "id": "fuel_quali_one_shot",
+     "label": "Qualifying fuel (one shot)",
+     "path": "TrackFuelSettings_0.Qualifying.one_shot",
+     "kind": "float",
+     "min": 0,
+     "max": 30,
+     "step": 0.1,
+     "unit": "kg",
+     "optional": true,
+     "section": "Fuel"
+    },
+    {
+     "id": "fuel_race_25",
+     "label": "Race fuel (25% distance)",
+     "path": "TrackFuelSettings_0.RaceFuelSettings_0.percent_25",
+     "kind": "float",
+     "min": 0,
+     "max": 150,
+     "step": 0.1,
+     "unit": "kg",
+     "optional": true,
+     "section": "Fuel",
+     "help": "Fuel the AI starts the race with at this race distance."
+    },
+    {
+     "id": "fuel_race_35",
+     "label": "Race fuel (35% distance)",
+     "path": "TrackFuelSettings_0.RaceFuelSettings_0.percent_35",
+     "kind": "float",
+     "min": 0,
+     "max": 150,
+     "step": 0.1,
+     "unit": "kg",
+     "optional": true,
+     "section": "Fuel",
+     "help": "Fuel the AI starts the race with at this race distance."
+    },
+    {
+     "id": "fuel_race_50",
+     "label": "Race fuel (50% distance)",
+     "path": "TrackFuelSettings_0.RaceFuelSettings_0.percent_50",
+     "kind": "float",
+     "min": 0,
+     "max": 150,
+     "step": 0.1,
+     "unit": "kg",
+     "optional": true,
+     "section": "Fuel",
+     "help": "Fuel the AI starts the race with at this race distance."
+    },
+    {
+     "id": "fuel_race_100",
+     "label": "Race fuel (100% distance)",
+     "path": "TrackFuelSettings_0.RaceFuelSettings_0.percent_100",
+     "kind": "float",
+     "min": 0,
+     "max": 150,
+     "step": 0.1,
+     "unit": "kg",
+     "optional": true,
+     "section": "Fuel",
+     "help": "Fuel the AI starts the race with at this race distance."
+    },
+    {
+     "id": "safety_car",
+     "label": "Safety car",
+     "path": "TrackSafetyCarData_0.safety_car_vehicle",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.vehicles.vehicle",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "optional": true,
+     "section": "Race"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity"
+    }
+   ],
+   "notes": [
+    "Empty cells fall back to the season's parent dataset, then its parent."
+   ]
+  },
+  {
+   "id": "calendar",
+   "group": "Tracks & Calendar",
+   "title": "Calendar",
+   "icon": "calendar-days",
+   "summary": "The events of each track list, in calendar order.",
+   "scope": {
+    "title": "Track list",
+    "rows": "schedule.track_lists.track_event_list",
+    "default": "F1_2026_full"
+   },
+   "rows": "schedule.track_lists.track_event_list[_metadata_={scope}].fixed_event_reference",
+   "name": {
+    "field": "event_name"
+   },
+   "columns": [
+    "event_name"
+   ],
+   "fields": [
+    {
+     "id": "event_name",
+     "label": "Event",
+     "path": "event_name",
+     "kind": "ref",
+     "refs": {
+      "rows": "schedule.all_track_events.fixed_event",
+      "name": {
+       "template": "{activity}"
+      }
+     },
+     "help": "Reorder the calendar by swapping events between rounds."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true
+    }
+   ],
+   "links": [
+    {
+     "label": "Edit a career in progress",
+     "text": "Career Editor edits the calendar in a career in progress.",
+     "addon": "swofty.career-editor",
+     "section": "editor",
+     "tab": "season",
+     "url": "https://f1.swofty.net/using/career-editor"
+    }
+   ],
+   "notes": [
+    "Lists sorted by date order their events by the weekend dates in Track settings.",
+    "To race a round at another track, such as Sepang in the bahrain24 slot or a modded track, change its weekend's track in Race weekends."
+   ]
+  },
+  {
+   "id": "race-weekends",
+   "group": "Tracks & Calendar",
+   "title": "Race weekends",
+   "icon": "map-pin",
+   "summary": "The track each race weekend runs at, in every calendar that holds the weekend.",
+   "rows": "schedule.activities.activity_race_weekend",
+   "name": {
+    "field": "_metadata_",
+    "lng": true
+   },
+   "columns": [
+    "track"
+   ],
+   "fields": [
+    {
+     "id": "track",
+     "label": "Track",
+     "path": "track",
+     "kind": "ref",
+     "refs": {
+      "rows": "tracks.Track",
+      "name": {
+       "field": "gp_short_name",
+       "lng": true
+      }
+     },
+     "help": "The track this weekend races at. Calendar events of the weekend race there, so Singapore set to Sepang (bahrain24) puts Sepang in Singapore's rounds."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id calendar events use to find this weekend."
+    }
+   ],
+   "notes": [
+    "A modded track, or the bahrain24 slot a track like Sepang fills, needs its track addon on in the profile.",
+    "A weekend at another track uses that track's Track settings, including the weekend date that lists sorted by date order by."
+   ]
+  },
+  {
+   "id": "track-lists",
+   "group": "Tracks & Calendar",
+   "title": "Track lists",
+   "icon": "list-ordered",
+   "summary": "Calendar track lists and how many events each one holds.",
+   "rows": "schedule.track_lists.track_event_list",
+   "columns": [
+    "label",
+    "events",
+    "sort_by_date"
+   ],
+   "fields": [
+    {
+     "id": "events",
+     "label": "Events",
+     "path": "_fixed_event_reference_instancecount_",
+     "kind": "int",
+     "min": 1,
+     "max": 30,
+     "help": "The game reads this many events from the list. More events need new rows; without them, the build keeps the count at the rows the list has."
+    },
+    {
+     "id": "sort_by_date",
+     "label": "Sort by date",
+     "path": "sort_by_date",
+     "kind": "bool"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ]
+  },
+  {
+   "id": "season-lengths",
+   "group": "Tracks & Calendar",
+   "title": "Season lengths",
+   "icon": "calendar-range",
+   "summary": "Short, medium and long season choices: the track list each uses and its transfer window.",
+   "rows": "schedule.dynamic_event_data.default_ui_track_list_data.custom_dynamic_available_track_list_data",
+   "name": {
+    "field": "language_string",
+    "lng": true
+   },
+   "columns": [
+    "language_string",
+    "track_list_name",
+    "max_num_tracks",
+    "weekend_to_add_transfer_window"
+   ],
+   "fields": [
+    {
+     "id": "language_string",
+     "label": "Name",
+     "path": "language_string",
+     "lng": true
+    },
+    {
+     "id": "track_list_type",
+     "label": "Length",
+     "path": "track_list_type",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "Short",
+       "label": "Short"
+      },
+      {
+       "value": "Medium",
+       "label": "Medium"
+      },
+      {
+       "value": "Long",
+       "label": "Long"
+      }
+     ]
+    },
+    {
+     "id": "track_list_name",
+     "label": "Track list",
+     "path": "track_list_name",
+     "kind": "ref",
+     "refs": {
+      "rows": "schedule.track_lists.track_event_list"
+     }
+    },
+    {
+     "id": "max_num_tracks",
+     "label": "Events",
+     "path": "max_num_tracks",
+     "kind": "int",
+     "min": 1,
+     "max": 30
+    },
+    {
+     "id": "weekend_to_add_transfer_window",
+     "label": "Transfer window after event",
+     "path": "weekend_to_add_transfer_window",
+     "kind": "int",
+     "min": -1,
+     "max": 30,
+     "help": "-1 means no mid-season window."
+    },
+    {
+     "id": "weekend_formats",
+     "label": "Weekend formats",
+     "path": "weekend_formats",
+     "kind": "list"
+    },
+    {
+     "id": "seasons",
+     "label": "Seasons",
+     "path": "seasons",
+     "kind": "list"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ],
+   "links": [
+    {
+     "label": "Edit a career in progress",
+     "text": "Career Editor edits the calendar in a career in progress.",
+     "addon": "swofty.career-editor",
+     "section": "editor",
+     "tab": "season",
+     "url": "https://f1.swofty.net/using/career-editor"
+    }
+   ]
+  },
+  {
+   "id": "weather",
+   "group": "Tracks & Calendar",
+   "title": "Weather",
+   "icon": "cloud-sun-rain",
+   "summary": "Chance of each weather state and the temperature range at every track.",
+   "rows": "tracks.Track",
+   "name": {
+    "field": "gp_short_name",
+    "lng": true
+   },
+   "columns": [
+    "clear",
+    "cloudy",
+    "overcast",
+    "light_rain",
+    "heavy_rain",
+    "temperature_max"
+   ],
+   "fields": [
+    {
+     "id": "clear",
+     "label": "Clear",
+     "path": "Weather_0.clear",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01,
+     "section": "Chances",
+     "help": "Chances of all five states add up to 1."
+    },
+    {
+     "id": "cloudy",
+     "label": "Light cloud",
+     "path": "Weather_0.cloudy",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01,
+     "section": "Chances",
+     "help": "Chances of all five states add up to 1."
+    },
+    {
+     "id": "overcast",
+     "label": "Overcast",
+     "path": "Weather_0.overcast",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01,
+     "section": "Chances",
+     "help": "Chances of all five states add up to 1."
+    },
+    {
+     "id": "light_rain",
+     "label": "Light rain",
+     "path": "Weather_0.light_rain",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01,
+     "section": "Chances",
+     "help": "Chances of all five states add up to 1."
+    },
+    {
+     "id": "heavy_rain",
+     "label": "Heavy rain",
+     "path": "Weather_0.heavy_rain",
+     "kind": "float",
+     "min": 0,
+     "max": 1,
+     "step": 0.01,
+     "section": "Chances",
+     "help": "Chances of all five states add up to 1."
+    },
+    {
+     "id": "temperature_min",
+     "label": "Lowest temperature",
+     "path": "Weather_0.temperature_min",
+     "kind": "int",
+     "min": -10,
+     "max": 50,
+     "unit": "°C",
+     "section": "Temperature"
+    },
+    {
+     "id": "temperature_max",
+     "label": "Highest temperature",
+     "path": "Weather_0.temperature_max",
+     "kind": "int",
+     "min": -10,
+     "max": 50,
+     "unit": "°C",
+     "section": "Temperature"
+    },
+    {
+     "id": "states",
+     "label": "Weather changes",
+     "path": "Weather_0.states",
+     "kind": "int",
+     "min": 1,
+     "max": 6,
+     "section": "Chances",
+     "help": "Most weather states a session moves through."
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ],
+   "links": [
+    {
+     "label": "Edit a career in progress",
+     "text": "Career Editor edits the forecast in a career in progress.",
+     "addon": "swofty.career-editor",
+     "section": "editor",
+     "tab": "weather",
+     "url": "https://f1.swofty.net/using/career-editor"
+    }
+   ]
+  },
+  {
+   "id": "points",
+   "group": "Rules & Modes",
+   "title": "Points systems",
+   "icon": "trophy",
+   "summary": "Points per position, fastest lap bonus and shortened-race scales of every points system.",
+   "rows": "game_setup.session_standings.session_standing_preset",
+   "columns": [
+    "label",
+    "points",
+    "fastest_lap_bonus",
+    "fastest_lap_rule"
+   ],
+   "fields": [
+    {
+     "id": "points",
+     "label": "Points",
+     "path": "points",
+     "kind": "list",
+     "section": "Full distance",
+     "help": "Points per finishing position, comma-joined from 1st."
+    },
+    {
+     "id": "fastest_lap_bonus",
+     "label": "Fastest lap bonus",
+     "path": "fastest_lap_bonus",
+     "kind": "int",
+     "min": 0,
+     "max": 10,
+     "section": "Full distance"
+    },
+    {
+     "id": "fastest_lap_rule",
+     "label": "Fastest lap rule",
+     "path": "fastest_lap_rule",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "None",
+       "label": "None"
+      },
+      {
+       "value": "BestOfTop10",
+       "label": "Fastest lap, if in the top 10"
+      },
+      {
+       "value": "BestAndTop10",
+       "label": "Fastest lap and a top 10 finish"
+      }
+     ],
+     "section": "Full distance"
+    },
+    {
+     "id": "points_75",
+     "label": "Points",
+     "path": "reduced_points_data[_metadata_=75_percent].points",
+     "kind": "list",
+     "optional": true,
+     "section": "Up to 75% of laps completed",
+     "help": "Points per finishing position, comma-joined from 1st."
+    },
+    {
+     "id": "fastest_lap_bonus_75",
+     "label": "Fastest lap bonus",
+     "path": "reduced_points_data[_metadata_=75_percent].fastest_lap_bonus",
+     "kind": "int",
+     "min": 0,
+     "max": 10,
+     "optional": true,
+     "section": "Up to 75% of laps completed"
+    },
+    {
+     "id": "fastest_lap_rule_75",
+     "label": "Fastest lap rule",
+     "path": "reduced_points_data[_metadata_=75_percent].fastest_lap_rule",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "None",
+       "label": "None"
+      },
+      {
+       "value": "BestOfTop10",
+       "label": "Fastest lap, if in the top 10"
+      },
+      {
+       "value": "BestAndTop10",
+       "label": "Fastest lap and a top 10 finish"
+      }
+     ],
+     "optional": true,
+     "section": "Up to 75% of laps completed"
+    },
+    {
+     "id": "points_50",
+     "label": "Points",
+     "path": "reduced_points_data[_metadata_=50_percent].points",
+     "kind": "list",
+     "optional": true,
+     "section": "Up to 50% of laps completed",
+     "help": "Points per finishing position, comma-joined from 1st."
+    },
+    {
+     "id": "fastest_lap_bonus_50",
+     "label": "Fastest lap bonus",
+     "path": "reduced_points_data[_metadata_=50_percent].fastest_lap_bonus",
+     "kind": "int",
+     "min": 0,
+     "max": 10,
+     "optional": true,
+     "section": "Up to 50% of laps completed"
+    },
+    {
+     "id": "fastest_lap_rule_50",
+     "label": "Fastest lap rule",
+     "path": "reduced_points_data[_metadata_=50_percent].fastest_lap_rule",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "None",
+       "label": "None"
+      },
+      {
+       "value": "BestOfTop10",
+       "label": "Fastest lap, if in the top 10"
+      },
+      {
+       "value": "BestAndTop10",
+       "label": "Fastest lap and a top 10 finish"
+      }
+     ],
+     "optional": true,
+     "section": "Up to 50% of laps completed"
+    },
+    {
+     "id": "points_25",
+     "label": "Points",
+     "path": "reduced_points_data[_metadata_=25_percent].points",
+     "kind": "list",
+     "optional": true,
+     "section": "Up to 25% of laps completed",
+     "help": "Points per finishing position, comma-joined from 1st."
+    },
+    {
+     "id": "fastest_lap_bonus_25",
+     "label": "Fastest lap bonus",
+     "path": "reduced_points_data[_metadata_=25_percent].fastest_lap_bonus",
+     "kind": "int",
+     "min": 0,
+     "max": 10,
+     "optional": true,
+     "section": "Up to 25% of laps completed"
+    },
+    {
+     "id": "fastest_lap_rule_25",
+     "label": "Fastest lap rule",
+     "path": "reduced_points_data[_metadata_=25_percent].fastest_lap_rule",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "None",
+       "label": "None"
+      },
+      {
+       "value": "BestOfTop10",
+       "label": "Fastest lap, if in the top 10"
+      },
+      {
+       "value": "BestAndTop10",
+       "label": "Fastest lap and a top 10 finish"
+      }
+     ],
+     "optional": true,
+     "section": "Up to 25% of laps completed"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ],
+   "links": [
+    {
+     "label": "Edit a career in progress",
+     "text": "Career Editor edits points in a career in progress.",
+     "addon": "swofty.career-editor",
+     "section": "editor",
+     "tab": "season",
+     "url": "https://f1.swofty.net/using/career-editor"
+    }
+   ]
+  },
+  {
+   "id": "game-modes",
+   "group": "Rules & Modes",
+   "title": "Game modes",
+   "icon": "gamepad-2",
+   "summary": "Rules of each game setup: grid types, tyre warmers, qualifying tyre rule, pit stops and garages.",
+   "rows": "game_setup.game_setup_modes.game_setup_mode",
+   "name": {
+    "field": "display_name",
+    "lng": true
+   },
+   "columns": [
+    "display_name",
+    "has_tyre_warmers",
+    "locked_to_qualifying_tyre",
+    "available_grid_types",
+    "garage_assignment"
+   ],
+   "fields": [
+    {
+     "id": "display_name",
+     "label": "Name",
+     "path": "display_name",
+     "section": "Mode",
+     "lng": true
+    },
+    {
+     "id": "available_grid_types",
+     "label": "Grid types",
+     "path": "available_grid_types",
+     "kind": "ref-list",
+     "refs": {
+      "rows": "game_setup.lobby_options.grid_types.grid_type"
+     },
+     "section": "Grid",
+     "help": "Grid orders players can pick, such as weighted random or reversed."
+    },
+    {
+     "id": "garage_assignment",
+     "label": "Garage order",
+     "path": "garage_assignment",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "PreviousSeasonTeamStandings",
+       "label": "Last season's team standings"
+      },
+      {
+       "value": "FixedGarageAssignments",
+       "label": "Fixed"
+      },
+      {
+       "value": "RandomDriverBased",
+       "label": "Random"
+      },
+      {
+       "value": "MCGarageAssignments",
+       "label": "Multiclass"
+      }
+     ],
+     "section": "Grid"
+    },
+    {
+     "id": "use_grid_for_garage",
+     "label": "Garages follow the grid",
+     "path": "use_grid_for_garage",
+     "kind": "bool",
+     "section": "Grid"
+    },
+    {
+     "id": "team_derived_car_numbers",
+     "label": "Car numbers from the team",
+     "path": "team_derived_car_numbers",
+     "kind": "bool",
+     "section": "Grid"
+    },
+    {
+     "id": "has_tyre_warmers",
+     "label": "Tyre warmers",
+     "path": "has_tyre_warmers",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "locked_to_qualifying_tyre",
+     "label": "Start on the qualifying tyre",
+     "path": "locked_to_qualifying_tyre",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "enable_pitstops",
+     "label": "Pit stops",
+     "path": "enable_pitstops",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "always_drive_through_pit_lanes",
+     "label": "Drive-through pit lanes",
+     "path": "always_drive_through_pit_lanes",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "reduce_penalty_severity",
+     "label": "Lighter penalties",
+     "path": "reduce_penalty_severity",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "drs_allowed_lap_group",
+     "label": "DRS rules",
+     "path": "drs_allowed_lap_group",
+     "kind": "ref",
+     "refs": {
+      "rows": "drs.drs_allowed_lap.drs_allowed_lap_group"
+     },
+     "section": "Rules"
+    },
+    {
+     "id": "race_time_limit_in_seconds",
+     "label": "Race time limit",
+     "path": "race_time_limit_in_seconds",
+     "kind": "list",
+     "unit": "s",
+     "section": "Rules",
+     "help": "Comma-joined, one value per race of the weekend."
+    },
+    {
+     "id": "sprint_time_limit_in_seconds",
+     "label": "Sprint time limit",
+     "path": "sprint_time_limit_in_seconds",
+     "kind": "list",
+     "unit": "s",
+     "section": "Rules"
+    },
+    {
+     "id": "night_starts_enabled",
+     "label": "Night races",
+     "path": "night_starts_enabled",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "restricted_tracks",
+     "label": "Tracks left out",
+     "path": "restricted_tracks",
+     "kind": "ref-list",
+     "refs": {
+      "rows": "tracks.Track",
+      "name": {
+       "field": "gp_short_name",
+       "lng": true
+      }
+     },
+     "section": "Tracks"
+    },
+    {
+     "id": "equal_performance_engine",
+     "label": "Equal-performance engine",
+     "path": "equal_performance_engine",
+     "kind": "ref",
+     "refs": {
+      "rows": "entrants.engines.Engine",
+      "name": {
+       "field": "supplier"
+      }
+     },
+     "section": "Cars"
+    },
+    {
+     "id": "entrant_setup_modes",
+     "label": "Grid setups",
+     "path": "entrant_setup_modes",
+     "kind": "list",
+     "section": "Cars"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "stat_id",
+     "label": "Stat id",
+     "path": "stat_id",
+     "readonly": true,
+     "section": "Identity",
+     "help": "Numeric id the game keys its runtime data on."
+    }
+   ]
+  },
+  {
+   "id": "mode-settings",
+   "group": "Rules & Modes",
+   "title": "Mode settings",
+   "icon": "sliders-horizontal",
+   "summary": "What each game mode allows: pause, replays, flashbacks, damage and events.",
+   "rows": "game_modes.ModeChampionship",
+   "name": {
+    "field": "game_mode_name",
+    "lng": true
+   },
+   "columns": [
+    "game_mode_name",
+    "allowPause",
+    "AllowFlashbackFromTerminal",
+    "terminal_damage_enabled"
+   ],
+   "fields": [
+    {
+     "id": "game_mode_name",
+     "label": "Name",
+     "path": "game_mode_name",
+     "section": "Mode",
+     "lng": true
+    },
+    {
+     "id": "game_setup_modes",
+     "label": "Game setups",
+     "path": "game_setup_modes",
+     "kind": "ref-list",
+     "refs": {
+      "rows": "game_setup.game_setup_modes.game_setup_mode",
+      "name": {
+       "field": "display_name",
+       "lng": true
+      }
+     },
+     "section": "Mode"
+    },
+    {
+     "id": "event_list",
+     "label": "Season events",
+     "path": "event_list",
+     "kind": "ref",
+     "refs": {
+      "rows": "schedule.event_lists.event_list"
+     },
+     "section": "Mode",
+     "help": "Empty: none."
+    },
+    {
+     "id": "allowPause",
+     "label": "Pause",
+     "path": "allowPause",
+     "kind": "bool",
+     "section": "Allowed"
+    },
+    {
+     "id": "allowReplay",
+     "label": "Replays",
+     "path": "allowReplay",
+     "kind": "bool",
+     "section": "Allowed"
+    },
+    {
+     "id": "allowSlowMo",
+     "label": "Slow motion",
+     "path": "allowSlowMo",
+     "kind": "bool",
+     "section": "Allowed"
+    },
+    {
+     "id": "AllowFlashbackFromTerminal",
+     "label": "Flashback after terminal damage",
+     "path": "AllowFlashbackFromTerminal",
+     "kind": "bool",
+     "section": "Allowed"
+    },
+    {
+     "id": "allowAIAutoReset",
+     "label": "AI reset to track",
+     "path": "allowAIAutoReset",
+     "kind": "bool",
+     "section": "Allowed"
+    },
+    {
+     "id": "allow_player_custom_pose",
+     "label": "Custom player pose",
+     "path": "allow_player_custom_pose",
+     "kind": "bool",
+     "section": "Allowed"
+    },
+    {
+     "id": "terminal_damage_enabled",
+     "label": "Terminal damage",
+     "path": "terminal_damage_enabled",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "addPracticeEvents",
+     "label": "Practice events",
+     "path": "addPracticeEvents",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "canned_event_availability",
+     "label": "Scripted race events",
+     "path": "canned_event_availability",
+     "kind": "choice",
+     "options": [
+      {
+       "value": "Enabled",
+       "label": "Enabled"
+      },
+      {
+       "value": "Disabled",
+       "label": "Disabled"
+      },
+      {
+       "value": "NoRandom",
+       "label": "Enabled, not random"
+      }
+     ],
+     "section": "Rules"
+    },
+    {
+     "id": "return_to_fe_between_weekends",
+     "label": "Return to menus between weekends",
+     "path": "return_to_fe_between_weekends",
+     "kind": "bool",
+     "section": "Rules"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    },
+    {
+     "id": "statId",
+     "label": "Stat id",
+     "path": "statId",
+     "readonly": true,
+     "section": "Identity"
+    }
+   ]
+  },
+  {
+   "id": "features",
+   "group": "Rules & Modes",
+   "title": "Features",
+   "icon": "toggle-left",
+   "summary": "Features each content set turns on: iconic drivers, story mode and more.",
+   "rows": "content_sets.content_set",
+   "columns": [
+    "label",
+    "iconic_drivers",
+    "story_mode",
+    "invitationals"
+   ],
+   "fields": [
+    {
+     "id": "iconic_drivers",
+     "label": "Iconic drivers",
+     "path": "feature_list_0.iconic_drivers",
+     "kind": "bool",
+     "optional": true
+    },
+    {
+     "id": "story_mode",
+     "label": "Story mode",
+     "path": "feature_list_0.story_mode",
+     "kind": "bool",
+     "optional": true
+    },
+    {
+     "id": "invitationals",
+     "label": "Invitationals",
+     "path": "feature_list_0.invitationals",
+     "kind": "bool",
+     "optional": true
+    },
+    {
+     "id": "f1cg",
+     "label": "F1 Challenge grids",
+     "path": "feature_list_0.f1cg",
+     "kind": "bool",
+     "optional": true
+    },
+    {
+     "id": "ir",
+     "label": "IR",
+     "path": "feature_list_0.ir",
+     "kind": "bool",
+     "optional": true
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ],
+   "notes": [
+    "Content sets without a feature list keep the game's defaults."
+   ]
+  },
+  {
+   "id": "crowd",
+   "group": "Rules & Modes",
+   "title": "Crowd",
+   "icon": "megaphone",
+   "summary": "How loud the crowd gets for each moment of a session.",
+   "rows": "crowds.excitement",
+   "columns": [
+    "base_excitement_race",
+    "raceStart",
+    "overtake",
+    "topThreeFinishers"
+   ],
+   "fields": [
+    {
+     "id": "base_excitement_practice",
+     "label": "Base (practice)",
+     "path": "base_excitement_practice",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "base_excitement_qualification",
+     "label": "Base (qualifying)",
+     "path": "base_excitement_qualification",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "base_excitement_race",
+     "label": "Base (race)",
+     "path": "base_excitement_race",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "base_excitement_time_trial",
+     "label": "Base (time trial)",
+     "path": "base_excitement_time_trial",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "base_excitement_garage",
+     "label": "Base (garage)",
+     "path": "base_excitement_garage",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "preRace",
+     "label": "Before the race",
+     "path": "preRace",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "firstLightOn",
+     "label": "First start light",
+     "path": "firstLightOn",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "raceStart",
+     "label": "Race start",
+     "path": "raceStart",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "overtake",
+     "label": "Overtake",
+     "path": "overtake",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "fastestSector",
+     "label": "Fastest sector",
+     "path": "fastestSector",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "fastestTime",
+     "label": "Fastest lap",
+     "path": "fastestTime",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "carSpin",
+     "label": "Spin",
+     "path": "carSpin",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "carSpin_garagepits",
+     "label": "Spin in the pits",
+     "path": "carSpin_garagepits",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "terminalDamage",
+     "label": "Terminal damage",
+     "path": "terminalDamage",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "twoLapsLeft",
+     "label": "Two laps left",
+     "path": "twoLapsLeft",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "oneLapLeft",
+     "label": "One lap left",
+     "path": "oneLapLeft",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "topThreeFinishers",
+     "label": "Podium finish",
+     "path": "topThreeFinishers",
+     "kind": "float",
+     "min": 0,
+     "max": 100,
+     "step": 1,
+     "section": "Excitement"
+    },
+    {
+     "id": "label",
+     "label": "Label",
+     "path": "_metadata_",
+     "readonly": true,
+     "section": "Identity",
+     "help": "The id other tables use to find this row."
+    }
+   ]
+  }
+ ]
+}

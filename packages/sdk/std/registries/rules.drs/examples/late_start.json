@@ -1,0 +1,12 @@
+{
+  "rules.drs": {
+    "stock": {
+      "$comment": "the stock f1_2024 rule"
+    },
+    "late_start": {
+      "$comment": "two laps later than stock after the start; the restarts as stock",
+      "extends": "mod.example/stock",
+      "race_start": 3
+    }
+  }
+}

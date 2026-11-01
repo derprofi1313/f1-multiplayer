@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "mod.hockenheim",
+  "name": "Hockenheimring",
+  "description": "Hockenheim as a track record: a new track cloned from Austria in every data set, providing venue/hockenheimring, with 67 laps, its own fuel and pit lane, and the 2019 compounds in the 2025 and 2026 sets.",
+  "version": "1.0.0",
+  "author": "you",
+  "license": "MIT",
+  "kind": ["files"],
+  "category": "tracks",
+  "compat": { "game": "f1_25", "launcher": ">=1.6.5" }
+}

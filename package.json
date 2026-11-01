@@ -1,0 +1,26 @@
+{
+  "name": "f1-mod-manager",
+  "private": true,
+  "version": "0.2.11",
+  "description": "Swofty Launcher for F1 25, a launcher and mod loader for F1 25",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.14.0",
+  "scripts": {
+    "prepare": "lefthook install",
+    "docs:dev": "pnpm --filter @f1modmanager/docs docs:dev",
+    "docs:build": "pnpm --filter @f1modmanager/docs docs:build",
+    "fmt": "cargo fmt --all",
+    "lint": "cargo fmt --all --check && cargo clippy --all-targets -- -D warnings",
+    "test": "cargo test",
+    "native": "native/build.sh"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
+    "lefthook": "^2.2.1"
+  }
+}

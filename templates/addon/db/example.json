@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "ops": [
+    { "op": "set", "select": "rules.stop_go_penalty", "field": "penalty_duration", "value": "{{penalty_seconds}}" },
+    {
+      "op": "set",
+      "select": "entrants.entrant_setup_modes.entrant_setup_mode[_metadata_=f1_26]",
+      "field": "max_entrants",
+      "value": "22"
+    }
+  ]
+}

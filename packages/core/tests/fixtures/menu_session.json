@@ -1,0 +1,182 @@
+{
+ "schema": 1,
+ "profile": "default",
+ "restart_command": "swofty_restart",
+ "addons": [
+  {
+   "id": "swofty.core",
+   "name": "SwoftyMod",
+   "version": "0.1.0",
+   "description": "Adds core functionality for addon loading and customisation in Swofty Launcher.",
+   "enabled": true,
+   "locked": true,
+   "dlls": [
+    "swofty_core.dll"
+   ],
+   "enable_commands": [
+    "swofty_enable:swofty.core:0",
+    "swofty_enable:swofty.core:1"
+   ],
+   "options": [
+    {
+     "id": "show_launcher_panel",
+     "type": "toggle",
+     "binds": "native",
+     "label": "Show launcher panel",
+     "description": "Show the \"Launched with Swofty Launcher\" panel on the home screen.",
+     "current": 1,
+     "states": [
+      {
+       "value": false,
+       "text": "OFF",
+       "command": "swofty_set:swofty.core:show_launcher_panel:0"
+      },
+      {
+       "value": true,
+       "text": "ON",
+       "command": "swofty_set:swofty.core:show_launcher_panel:1"
+      }
+     ]
+    },
+    {
+     "id": "mod_menu_key",
+     "type": "choice",
+     "binds": "native",
+     "label": "Mod menu key",
+     "description": "Key that opens ADDON SETTINGS from the home screen.",
+     "current": 0,
+     "states": [
+      {
+       "value": "F9",
+       "text": "F9",
+       "command": "swofty_set:swofty.core:mod_menu_key:0"
+      },
+      {
+       "value": "F10",
+       "text": "F10",
+       "command": "swofty_set:swofty.core:mod_menu_key:1"
+      },
+      {
+       "value": "F11",
+       "text": "F11",
+       "command": "swofty_set:swofty.core:mod_menu_key:2"
+      }
+     ]
+    }
+   ],
+   "author": "swofty"
+  },
+  {
+   "id": "community.custom-grid",
+   "name": "Custom Grid Size",
+   "version": "0.1.0",
+   "description": "Race with more cars on the grid. Choose 22 to 30 cars.",
+   "enabled": true,
+   "locked": false,
+   "dlls": [],
+   "enable_commands": [
+    "swofty_enable:community.custom-grid:0",
+    "swofty_enable:community.custom-grid:1"
+   ],
+   "options": [
+    {
+     "id": "grid_size",
+     "type": "slider",
+     "binds": "db",
+     "label": "Grid size",
+     "description": "Number of cars on the grid.",
+     "current": 0,
+     "states": [
+      {
+       "value": 22,
+       "text": "22",
+       "command": "swofty_set:community.custom-grid:grid_size:0"
+      },
+      {
+       "value": 23,
+       "text": "23",
+       "command": "swofty_set:community.custom-grid:grid_size:1"
+      },
+      {
+       "value": 24,
+       "text": "24",
+       "command": "swofty_set:community.custom-grid:grid_size:2"
+      },
+      {
+       "value": 25,
+       "text": "25",
+       "command": "swofty_set:community.custom-grid:grid_size:3"
+      },
+      {
+       "value": 26,
+       "text": "26",
+       "command": "swofty_set:community.custom-grid:grid_size:4"
+      },
+      {
+       "value": 27,
+       "text": "27",
+       "command": "swofty_set:community.custom-grid:grid_size:5"
+      },
+      {
+       "value": 28,
+       "text": "28",
+       "command": "swofty_set:community.custom-grid:grid_size:6"
+      },
+      {
+       "value": 29,
+       "text": "29",
+       "command": "swofty_set:community.custom-grid:grid_size:7"
+      },
+      {
+       "value": 30,
+       "text": "30",
+       "command": "swofty_set:community.custom-grid:grid_size:8"
+      }
+     ]
+    },
+    {
+     "id": "grid_order",
+     "type": "choice",
+     "binds": "db",
+     "label": "Extra team order",
+     "description": "Where the extra teams start on the grid.",
+     "current": 0,
+     "states": [
+      {
+       "value": "back",
+       "text": "Back of the grid",
+       "command": "swofty_set:community.custom-grid:grid_order:0"
+      },
+      {
+       "value": "random",
+       "text": "Random",
+       "command": "swofty_set:community.custom-grid:grid_order:1"
+      },
+      {
+       "value": "championship",
+       "text": "Championship order",
+       "command": "swofty_set:community.custom-grid:grid_order:2"
+      }
+     ]
+    }
+   ],
+   "author": "swofty"
+  }
+ ],
+ "maps": [
+  {
+   "code": "bahrain24",
+   "name": "Sepang",
+   "version": "1.0.0",
+   "author": "Pajko",
+   "description": ""
+  },
+  {
+   "code": "okayama",
+   "name": "Okayama",
+   "version": "0.17.0",
+   "author": "ryangrobf1",
+   "description": ""
+  }
+ ]
+}

@@ -1,0 +1,8 @@
+{
+  "rules.drs": {
+    "negative_lap": {
+      "$comment": "a lap number is 0 or more",
+      "race_start": -1
+    }
+  }
+}

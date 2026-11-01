@@ -1,0 +1,10 @@
+{
+  "track": {
+    "hockenheim": {
+      "code": "hockenheim", "name": "Hockenheimring", "base": "game/austria",
+      "provides": ["venue/hockenheimring"],
+      "names": { "title": "lng_hockenheim_title", "gp": "lng_hockenheim_gp", "acronym": "HOC" },
+      "files": "track/", "length_metres": 4574, "corners": 17, "latitude": 49.3278, "longitude": 8.5658
+    }
+  }
+}

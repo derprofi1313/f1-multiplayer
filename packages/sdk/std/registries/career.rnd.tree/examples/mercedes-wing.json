@@ -1,0 +1,28 @@
+{
+  "career.rnd.tree": {
+    "mercedes": {
+      "token": "mercedes",
+      "nodes": [
+        {
+          "label": "swofty_beam_wing_1",
+          "department": "aerodynamics",
+          "from": "drag_minor_1",
+          "name": "swofty_beam_wing",
+          "type": "Rear Downforce",
+          "size": "minor",
+          "cost": 600,
+          "x": 1,
+          "y": -5,
+          "after": [
+            "drag_minor_1"
+          ]
+        },
+        {
+          "label": "drag_minor_1",
+          "department": "aerodynamics",
+          "cost": 450
+        }
+      ]
+    }
+  }
+}

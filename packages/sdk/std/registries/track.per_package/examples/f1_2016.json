@@ -1,0 +1,17 @@
+{
+  "track.per_package": {
+    "f1_2016/hockenheimring": {
+      "package": "swofty.classic-seasons-2016/f1_2016",
+      "venue": "venue/hockenheimring?",
+      "laps": 67,
+      "fuel": {
+        "burn_per_lap": 1.71
+      }
+    },
+    "f1_2016/sepang": {
+      "package": "swofty.classic-seasons-2016/f1_2016",
+      "venue": "venue/sepang|venue/bahrain",
+      "laps": 56
+    }
+  }
+}

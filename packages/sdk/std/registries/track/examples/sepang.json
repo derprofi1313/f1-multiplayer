@@ -1,0 +1,15 @@
+{
+  "track": {
+    "sepang": {
+      "code": "bahrain24",
+      "name": "Sepang International Circuit",
+      "base": "game/bahrain",
+      "provides": [
+        "venue/sepang"
+      ],
+      "files": "track/",
+      "time_trial": false,
+      "stat_id": "auto"
+    }
+  }
+}

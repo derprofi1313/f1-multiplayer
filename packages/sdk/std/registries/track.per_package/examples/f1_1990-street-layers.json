@@ -1,0 +1,15 @@
+{
+  "track.per_package": {
+    "$select": [
+      {
+        "ids": "swofty.f1-1990/*",
+        "tag": {
+          "track": "c/street_circuits"
+        },
+        "patch": {
+          "offered": false
+        }
+      }
+    ]
+  }
+}

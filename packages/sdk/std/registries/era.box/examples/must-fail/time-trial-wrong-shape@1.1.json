@@ -1,0 +1,9 @@
+{
+  "era.box": {
+    "time_trial_wrong_shape": {
+      "$comment": "time_trial is an object with entrant_list, not the list's name",
+      "package": "swofty.classic-seasons-2017/f1_2017",
+      "time_trial": "cs_f1_2017_tt"
+    }
+  }
+}

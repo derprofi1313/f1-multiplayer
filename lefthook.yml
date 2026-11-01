@@ -1,0 +1,16 @@
+# Set RUSTFMT or CARGO to run the binaries another way. LEFTHOOK=0 skips every hook.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: rustfmt
+      glob: "*.rs"
+      run: ${RUSTFMT:-rustfmt} --edition 2024 {staged_files}
+      stage_fixed: true
+    - name: clippy
+      glob: "*.rs"
+      run: ${CARGO:-cargo} clippy --all-targets --quiet -- -D warnings
+
+commit-msg:
+  jobs:
+    - name: commitlint
+      run: pnpm exec commitlint --edit {1}

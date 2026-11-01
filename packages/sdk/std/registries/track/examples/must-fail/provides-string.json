@@ -1,0 +1,9 @@
+{
+  "track": {
+    "bad": {
+      "$comment": "provides is a list of venue/ ids",
+      "code": "bad",
+      "provides": "venue/sochi"
+    }
+  }
+}

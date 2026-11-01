@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rules.drs 1.0",
+  "x-registry": "rules.drs",
+  "x-version": "1.0",
+  "x-applies": "boot",
+  "x-snapshot": false,
+  "description": "power::DrsRule: a drs.drs_allowed_lap group (the lap DRS is allowed from in a race), added at boot; a box names it in content.package rules.drs.",
+  "type": "object",
+  "properties": {
+    "race_start": {
+      "description": "The RaceStart lap_number: DRS opens on this lap of a race.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9999,
+      "default": 1
+    },
+    "red_flag_restart": {
+      "description": "The RedFlagRestart lap_number: laps after a red-flag restart.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9999,
+      "default": 1
+    },
+    "safety_car_end": {
+      "description": "The FullSafetyCarEnd lap_number: laps after a full safety car ends.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9999,
+      "default": 1
+    },
+    "extends": {
+      "description": "Data files only: this record is a variant of that record, and its value is a merge patch on the base.",
+      "type": "string",
+      "x-ref": "rules.drs",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    }
+  },
+  "additionalProperties": true
+}

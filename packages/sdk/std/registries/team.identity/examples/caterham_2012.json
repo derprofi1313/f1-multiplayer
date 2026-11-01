@@ -1,0 +1,35 @@
+{
+  "team.identity": {
+    "caterham": {
+      "donor": "game/williams",
+      "constructor": "constructor/caterham",
+      "provides": [
+        "constructor/caterham"
+      ],
+      "names": {
+        "title": {
+          "literal": "Caterham F1 Team"
+        },
+        "short_name": {
+          "literal": "Caterham"
+        },
+        "super_short": {
+          "literal": "Caterham"
+        },
+        "code": "CAT"
+      },
+      "colours": {
+        "menu": "#00573F",
+        "primary": "#00573F",
+        "secondary": "#F2C230",
+        "tertiary": "#FFFFFF"
+      },
+      "livery_name": "career2012_caterham",
+      "nationality": "malaysia",
+      "team_boss": "toto_wollf",
+      "team_base": {
+        "literal": "Leafield, United Kingdom"
+      }
+    }
+  }
+}

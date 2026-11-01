@@ -1,0 +1,12 @@
+{
+  "career.market": {
+    "bad": {
+      "$comment": "a team rating needs its rating",
+      "team_ratings": [
+        {
+          "team": "game/mclaren_26"
+        }
+      ]
+    }
+  }
+}

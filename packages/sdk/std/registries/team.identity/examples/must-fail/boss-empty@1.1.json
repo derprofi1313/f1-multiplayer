@@ -1,0 +1,12 @@
+{
+  "team.identity": {
+    "no_boss": {
+      "$comment": "team_boss is a character label, never empty",
+      "names": {
+        "title": "lng_x"
+      },
+      "livery_name": "x",
+      "team_boss": ""
+    }
+  }
+}

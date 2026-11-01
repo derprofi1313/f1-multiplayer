@@ -1,0 +1,15 @@
+warn:  OpenXR: Unable to get required Vulkan Device extensions size
+43394.930:012c:0130:trace:loaddll:free_modref Unloaded module L"C:\\windows\\system32\\wineopenxr.dll" : builtin
+43394.946:012c:0130:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\cfgmgr32.dll" at 00006FFFFCCA0000: builtin
+43395.054:012c:0130:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\hid.dll" at 00006FFFFCC70000: builtin
+43395.054:012c:0130:trace:loaddll:free_modref Unloaded module L"C:\\windows\\system32\\hid.dll" : builtin
+43395.057:012c:0130:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\hid.dll" at 00006FFFFCC70000: builtin
+43395.081:012c:0130:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\XInput1_4.dll" at 00006FFFFCC40000: builtin
+43395.083:012c:0130:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\oleacc.dll" at 00006FFFFEEF0000: builtin
+43395.083:012c:0130:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\comctl32.dll" at 00006FFFFEF40000: builtin
+43395.083:012c:0130:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\dinput8.dll" at 00006FFFFCBE0000: builtin
+43395.139:012c:0130:trace:loaddll:build_module Loaded L"Z:\\home\\swofty\\.local\\share\\Steam\\compatibilitytools.d\\proton-cachyos-10.0-20260425-slr-x86_64\\files\\share\\wine\\mono\\wine-mono\\lib\\mono\\gac\\System.Numerics\\4.0.0.0__b77a5c561934e089\\System.Numerics.dll" at 0000000004FE0000: native
+43395.156:012c:0130:trace:loaddll:build_module Loaded L"Z:\\home\\swofty\\.local\\share\\Steam\\compatibilitytools.d\\proton-cachyos-10.0-20260425-slr-x86_64\\files\\share\\wine\\mono\\wine-mono\\lib\\mono\\gac\\System\\4.0.0.0__b77a5c561934e089\\System.dll" at 0000000005030000: native
+43395.202:0020:0024:err:steam:run_process Failed to create process L"\"Z:\\home\\swofty\\.local\\share\\swofty\\state\\game-link\\F1_25.exe\"": 731
+43395.268:012c:0130:trace:loaddll:build_module Loaded L"Z:\\home\\swofty\\.local\\share\\Steam\\compatibilitytools.d\\proton-cachyos-10.0-20260425-slr-x86_64\\files\\share\\xalia\\Tmds.DBus.Protocol.dll" at 00000000056A0000: native
+43395.689:012c:0150:err:service:device_notify_proc failed to get event, error 1726

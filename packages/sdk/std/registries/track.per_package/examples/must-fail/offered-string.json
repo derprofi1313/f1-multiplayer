@@ -1,0 +1,10 @@
+{
+  "track.per_package": {
+    "f1_2016/monaco": {
+      "$comment": "offered is true or false",
+      "package": "swofty.classic-seasons-2016/f1_2016",
+      "track": "game/monaco",
+      "offered": "no"
+    }
+  }
+}

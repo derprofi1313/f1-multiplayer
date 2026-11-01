@@ -1,0 +1,62 @@
+[workspace]
+resolver = "3"
+members = ["addons/builtins", "apps/cli", "apps/launcher", "packages/addon-api", "packages/core", "packages/formats", "packages/sdk", "templates/launcher-addon", "templates/std/whatif/launcher"]
+default-members = ["addons/builtins", "apps/cli", "packages/addon-api", "packages/core", "packages/formats", "packages/sdk", "templates/launcher-addon", "templates/std/whatif/launcher"]
+
+[workspace.package]
+version = "1.6.7"
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Swofty-Developments/SwoftyLauncher"
+
+[workspace.dependencies]
+swofty-addon = { path = "packages/addon-api" }
+swofty-builtins = { path = "addons/builtins" }
+swofty-core = { path = "packages/core" }
+swofty-formats = { path = "packages/formats" }
+swofty-sdk = { path = "packages/sdk" }
+aes = "0.9"
+anyhow = "1"
+bcdec_rs = "0.2"
+clap = { version = "4", features = ["derive", "env", "string"] }
+flate2 = "1"
+md-5 = "0.11"
+png = "0.18"
+rars = { version = "=0.12.0", default-features = false }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring"] }
+regex = "1"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.11"
+sha2 = "0.11"
+tar = { version = "0.4", default-features = false }
+thiserror = "2"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+ureq = "3"
+webpki-roots = "1"
+zeroize = "1"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+zstd = { version = "0.14", features = ["zstdmt"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+strip = true
+
+# The debug build is what the launcher is tried with. Its UI library and every other dependency
+# are optimised, so the window draws and scrolls at a usable speed; the workspace's own code
+# stays debuggable.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.swofty-launcher]
+opt-level = 1

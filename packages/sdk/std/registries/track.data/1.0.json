@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "track.data 1.0",
+  "x-registry": "track.data",
+  "x-version": "1.0",
+  "x-applies": "session",
+  "x-snapshot": false,
+  "description": "tracks::TrackData (experimental): one TrackData block, id <track id>/<data set>. The core seeds game/<code>/<set> for every stock block; an added track's blocks are variants of its base's, so a layer on the base reaches them until they set the field. tyre_class and safety_car are stored and not applied in this release.",
+  "type": "object",
+  "properties": {
+    "track": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "track",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    },
+    "data_set": {
+      "$ref": "#/$defs/data_set"
+    },
+    "laps": {
+      "description": "TrackGeneralData.number_of_laps.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "fuel": {
+      "$ref": "#/$defs/fuel"
+    },
+    "tyres": {
+      "$ref": "#/$defs/tyres"
+    },
+    "tyre_class": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "tyre.class"
+    },
+    "pit": {
+      "$ref": "#/$defs/pit"
+    },
+    "safety_car": {
+      "description": "TrackSafetyCarData.safety_car_vehicle.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "vehicle"
+    },
+    "names": {
+      "$ref": "#/$defs/names"
+    },
+    "date": {
+      "$ref": "#/$defs/date"
+    },
+    "extends": {
+      "description": "Data files only: this record is a variant of that record, and its value is a merge patch on the base.",
+      "type": "string",
+      "x-ref": "track.data",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    }
+  },
+  "required": [
+    "track",
+    "data_set"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "data_set": {
+      "description": "A TrackDataSet label: \"f1_2026\", \"sprint_f1_2026\", \"f1_2025\", \"classic\" ...",
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "fuel": {
+      "description": "tracks::Fuel: TrackGeneralData.fuel_burn_per_lap, kg per lap. The game uses it for the MFD fuel delta, the fuel strategy and refuelling; the car's real burn comes from its power unit, and the race's starting fuel stays the same.",
+      "type": "object",
+      "properties": {
+        "burn_per_lap": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "tyres": {
+      "description": "tracks::Tyres: TyreData's dry compounds (compound_softer, compound_medium, compound_harder).",
+      "type": "object",
+      "properties": {
+        "softer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "medium": {
+          "type": "string",
+          "minLength": 1
+        },
+        "harder": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "pit": {
+      "description": "tracks::Pit: TrackPitData.",
+      "type": "object",
+      "properties": {
+        "speed_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stop_time_dry": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stop_time_wet": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "names": {
+      "description": "tracks::TrackNames: the names menus read from TrackNameData.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/text"
+        },
+        "gp": {
+          "$ref": "#/$defs/text"
+        },
+        "acronym": {
+          "type": "string",
+          "maxLength": 8
+        },
+        "city": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "date": {
+      "description": "tracks::Date: the weekend's weekend_day and weekend_month.",
+      "type": "object",
+      "properties": {
+        "day": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 31
+        },
+        "month": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        }
+      },
+      "additionalProperties": false
+    },
+    "text": {
+      "description": "A Text: a lang key as a string, or a literal.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "literal": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "literal"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

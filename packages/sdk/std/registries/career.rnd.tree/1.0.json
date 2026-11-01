@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "career.rnd.tree 1.0",
+  "x-registry": "career.rnd.tree",
+  "x-version": "1.0",
+  "x-applies": "boot",
+  "x-snapshot": false,
+  "description": "career::RndTree: nodes of one team's R&D tree (upgrades.<data_group>.trees.<token>.<department>.upgrade_N), in one upgrades group or in every group. A node whose label the department holds is edited; a new label adds a node copied from `from`.",
+  "type": "object",
+  "properties": {
+    "data_group": {
+      "description": "The upgrades group (upgrades.<data_group>) the game mode reads; empty or absent: every group that has the tree (2022, myteam_2025, 2026, myteam_om_xm).",
+      "type": "string",
+      "default": ""
+    },
+    "token": {
+      "description": "The tree's team token.",
+      "type": "string",
+      "enum": [
+        "mercedes",
+        "ferrari",
+        "redbull",
+        "williams",
+        "tororosso",
+        "renault",
+        "haas",
+        "mclaren",
+        "sauber",
+        "force_india",
+        "gm_cadillac",
+        "user_defined"
+      ]
+    },
+    "nodes": {
+      "type": "array",
+      "x-key": [
+        "label"
+      ],
+      "items": {
+        "$ref": "#/$defs/rnd_node"
+      }
+    },
+    "extends": {
+      "description": "Data files only: this record is a variant of that record, and its value is a merge patch on the base.",
+      "type": "string",
+      "x-ref": "career.rnd.tree",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    }
+  },
+  "required": [
+    "token"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "rnd_node": {
+      "description": "career::RndNode: one upgrade_N row.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[A-Za-z0-9_]+$"
+        },
+        "department": {
+          "type": "string",
+          "enum": [
+            "aerodynamics",
+            "chassis",
+            "durability",
+            "engine"
+          ],
+          "default": "aerodynamics"
+        },
+        "from": {
+          "description": "A new node copies this node's row; empty: the department's first node.",
+          "type": "string"
+        },
+        "name": {
+          "description": "upgrade_name; empty keeps the row's.",
+          "type": "string"
+        },
+        "type": {
+          "description": "upgrade_type, one the stock trees use; empty keeps the row's.",
+          "type": "string"
+        },
+        "size": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "minor",
+            "major",
+            "ultimate",
+            null
+          ]
+        },
+        "cost": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cost_to_develop": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "weighting": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "research_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "develop_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "unlock_at_facility_level": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "links": {
+          "description": "The nodes it unlocks; empty keeps a stock node's, a new node gets none.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[A-Za-z0-9_]+$"
+          }
+        },
+        "after": {
+          "description": "Nodes of the tree (the hub is default) whose links gain this node.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[A-Za-z0-9_]+$"
+          }
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

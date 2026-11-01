@@ -1,0 +1,8 @@
+{
+  "track": {
+    "bad": {
+      "$comment": "code is lower-case letters, digits and _",
+      "code": "Hockenheim"
+    }
+  }
+}

@@ -1,0 +1,131 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
+mod addons;
+mod admin_needed;
+mod app_log;
+mod blocks;
+mod browser;
+mod career;
+mod colour;
+mod console;
+mod crash_modal;
+mod db;
+mod developer;
+mod discord;
+mod ea_app;
+mod game;
+mod game_edited;
+mod hero;
+mod i18n;
+mod importer;
+mod library;
+mod mp_host;
+mod multiplayer;
+mod news;
+mod pages;
+mod play_bar;
+mod reveal;
+mod scroll;
+mod sections;
+mod send_logs;
+mod setup;
+mod shell;
+mod tasks;
+mod theme;
+mod tools;
+mod update;
+
+use gpui_kit::component::{TitleBar, v_flex};
+use gpui_kit::*;
+
+fn main() {
+    app_log::start();
+    app_log::step("starting the app runtime");
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    let prepared = app.background_executor().spawn(async { shell::Prepared::load() });
+    app_log::step("app runtime ready, entering the event loop");
+    app.run(move |cx| {
+        app_log::step("event loop running");
+        gpui_kit::init(cx);
+        app_log::step("ui kit ready");
+        theme::init(cx);
+        app_log::step("theme ready, opening the window");
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(1440.), px(900.)),
+                cx,
+            ))),
+            window_min_size: Some(size(px(1024.), px(680.))),
+            app_id: Some("net.f1multiplayer.App".into()),
+            titlebar: Some(TitlebarOptions {
+                title: Some("F1 Multiplayer 2016–2026".into()),
+                ..TitleBar::title_bar_options()
+            }),
+            ..TitleBar::window_options()
+        };
+        let (main, _) = gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| Launcher::new(prepared, window, cx))
+        })
+        .expect("failed to open window");
+        app_log::step("window opened");
+        cx.on_window_closed(move |cx, id| {
+            if id == main.window_id() {
+                cx.quit();
+            }
+        })
+        .detach();
+        cx.activate(true);
+    });
+}
+
+struct Launcher {
+    shell: Option<Entity<shell::Shell>>,
+}
+
+impl Launcher {
+    fn new(prepared: Task<shell::Prepared>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.spawn_in(window, async move |this, cx| {
+            let prepared = prepared.await;
+            app_log::step("store and library loaded");
+            this.update_in(cx, |this, window, cx| {
+                let shell = cx.new(|cx| shell::Shell::new(prepared, window, cx));
+                shell.update(cx, |s, cx| {
+                    s.restore_console(cx);
+                    s.run_startup(window, cx);
+                });
+                this.shell = Some(shell);
+                app_log::step("launcher shell built");
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        Self { shell: None }
+    }
+}
+
+impl Render for Launcher {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        app_log::window_shown();
+        if let Some(shell) = &self.shell {
+            return shell.clone().into_any_element();
+        }
+        let p = theme::palette(cx);
+        v_flex()
+            .size_full()
+            .bg(p.background)
+            .text_color(p.text_muted)
+            .child(TitleBar::new().bg(p.chrome))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(20.))
+                    .child(pages::wordmark(220.))
+                    .child("Loading your launcher…"),
+            )
+            .into_any_element()
+    }
+}

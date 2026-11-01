@@ -1,0 +1,14 @@
+{
+  "career.market": {
+    "bad": {
+      "$comment": "retire is not a YYYY-MM-DD date",
+      "retirements": [
+        {
+          "driver": "game/fernando_alonso",
+          "retire": "December 2026",
+          "announce": "2026-09-16"
+        }
+      ]
+    }
+  }
+}

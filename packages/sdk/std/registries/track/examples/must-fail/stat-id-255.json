@@ -1,0 +1,9 @@
+{
+  "track": {
+    "bad": {
+      "$comment": "255 is the game's \"no track\"; stat ids go up to 254",
+      "code": "bad",
+      "stat_id": 255
+    }
+  }
+}

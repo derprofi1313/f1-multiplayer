@@ -1,0 +1,32 @@
+[package]
+name = "swofty-cli"
+description = "The swofty command: Steam launch wrapper, build, verify, restore, mods, maps and doctor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "f1mp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+swofty-builtins.workspace = true
+swofty-core.workspace = true
+swofty-formats.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+swofty-addon.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+{
+  "rules.drs": {
+    "lap_as_text": {
+      "$comment": "a lap number is an integer",
+      "safety_car_end": "2"
+    }
+  }
+}

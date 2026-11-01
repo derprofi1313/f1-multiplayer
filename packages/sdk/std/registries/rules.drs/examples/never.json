@@ -1,0 +1,10 @@
+{
+  "rules.drs": {
+    "never": {
+      "$comment": "an F1 2010 box: DRS never opens in a race",
+      "race_start": 200,
+      "red_flag_restart": 200,
+      "safety_car_end": 200
+    }
+  }
+}

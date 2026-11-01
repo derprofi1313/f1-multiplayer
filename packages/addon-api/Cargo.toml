@@ -1,0 +1,19 @@
+[package]
+name = "swofty-addon"
+description = "Addon manifests and asset operations for Swofty Launcher for F1 25"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+swofty-formats.workspace = true
+swofty-sdk.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+{
+  "career.rnd.tree": {
+    "bad": {
+      "$comment": "token is not one of the 12 tree tokens",
+      "token": "lotus",
+      "nodes": []
+    }
+  }
+}

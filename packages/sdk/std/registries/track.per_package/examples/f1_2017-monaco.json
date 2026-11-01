@@ -1,0 +1,13 @@
+{
+  "track.per_package": {
+    "f1_2017/monaco": {
+      "package": "swofty.classic-seasons-2017/f1_2017",
+      "track": "game/monaco",
+      "laps": 78,
+      "date": {
+        "day": 28,
+        "month": 5
+      }
+    }
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "name": "an added track's data block inherits the layers on its base's block until it sets the field itself",
+  "rule": "an added track's track.data blocks are variants of its base's (<base id>/<set>): effective = the base block's effective value + the variant's patch + layers on the variant, so a layer on game/austria/f1_2026 reaches mod.hockenheim/hockenheim/f1_2026 whatever its load-order place, and a field the variant sets wins over the base's layers (systems/tracks.md#hockenheim-in-code, bases.md#how-a-variant-resolves)",
+  "registries": {
+    "track": {
+      "applies": "boot"
+    },
+    "track.data": {
+      "applies": "session",
+      "refs": {
+        "/track": "track"
+      }
+    }
+  },
+  "bases": [
+    {
+      "addon": "game",
+      "registry": "track",
+      "key": "austria",
+      "value": {
+        "code": "austria",
+        "time_trial": true
+      }
+    },
+    {
+      "addon": "game",
+      "registry": "track.data",
+      "key": "austria/f1_2026",
+      "value": {
+        "track": "game/austria",
+        "data_set": "f1_2026",
+        "laps": 71,
+        "fuel": {
+          "burn_per_lap": 1.5
+        },
+        "pit": {
+          "speed_limit": 80,
+          "stop_time_dry": 21.0,
+          "stop_time_wet": 22.0
+        }
+      }
+    }
+  ],
+  "tags": {},
+  "addons": [
+    {
+      "id": "mod.fuel",
+      "ops": [
+        {
+          "op": "layer",
+          "registry": "track.data",
+          "target": "game/austria/f1_2026",
+          "patch": {
+            "fuel": {
+              "burn_per_lap": 1.62
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mod.hockenheim",
+      "ops": [
+        {
+          "op": "add",
+          "registry": "track",
+          "key": "hockenheim",
+          "value": {
+            "code": "hockenheim",
+            "base": "game/austria"
+          }
+        },
+        {
+          "op": "variant",
+          "registry": "track.data",
+          "key": "hockenheim/f1_2026",
+          "base": "game/austria/f1_2026",
+          "patch": {
+            "track": "mod.hockenheim/hockenheim",
+            "laps": 67
+          }
+        }
+      ]
+    },
+    {
+      "id": "mod.austria-2019",
+      "ops": [
+        {
+          "op": "layer",
+          "registry": "track.data",
+          "target": "game/austria/f1_2026",
+          "patch": {
+            "laps": 70,
+            "pit": {
+              "speed_limit": 60
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "context": {
+        "profile": "default",
+        "career": null,
+        "mode": null,
+        "content": null,
+        "data_group": null,
+        "setup_mode": null,
+        "options": {},
+        "settings": {},
+        "disabled": []
+      },
+      "expect": {
+        "track": {
+          "game/austria": {
+            "status": "ok",
+            "value": {
+              "code": "austria",
+              "time_trial": true
+            },
+            "origins": {}
+          },
+          "mod.hockenheim/hockenheim": {
+            "status": "ok",
+            "value": {
+              "code": "hockenheim",
+              "base": "game/austria"
+            },
+            "origins": {}
+          }
+        },
+        "track.data": {
+          "game/austria/f1_2026": {
+            "status": "ok",
+            "value": {
+              "track": "game/austria",
+              "data_set": "f1_2026",
+              "laps": 70,
+              "fuel": {
+                "burn_per_lap": 1.62
+              },
+              "pit": {
+                "speed_limit": 60,
+                "stop_time_dry": 21.0,
+                "stop_time_wet": 22.0
+              }
+            },
+            "origins": {
+              "/fuel/burn_per_lap": "mod.fuel",
+              "/laps": "mod.austria-2019",
+              "/pit/speed_limit": "mod.austria-2019"
+            }
+          },
+          "mod.hockenheim/hockenheim/f1_2026": {
+            "status": "ok",
+            "value": {
+              "track": "mod.hockenheim/hockenheim",
+              "data_set": "f1_2026",
+              "laps": 67,
+              "fuel": {
+                "burn_per_lap": 1.62
+              },
+              "pit": {
+                "speed_limit": 60,
+                "stop_time_dry": 21.0,
+                "stop_time_wet": 22.0
+              }
+            },
+            "origins": {
+              "/fuel/burn_per_lap": "mod.fuel",
+              "/laps": "mod.hockenheim",
+              "/pit/speed_limit": "mod.austria-2019",
+              "/track": "mod.hockenheim"
+            }
+          }
+        }
+      },
+      "conflicts": [
+        {
+          "addons": [
+            "mod.hockenheim",
+            "mod.austria-2019"
+          ],
+          "id": "mod.hockenheim/hockenheim/f1_2026",
+          "kind": "field",
+          "pointer": "/laps",
+          "registry": "track.data",
+          "winner": "mod.hockenheim"
+        }
+      ],
+      "refusals": []
+    }
+  ]
+}

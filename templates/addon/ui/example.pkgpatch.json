@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "targets": [
+    { "erp": "2025_asset_groups/ui_package/databases.erp", "resource": "eaid://ui_package/databases/tool_tips.uidb" }
+  ],
+  "edits": [
+    {
+      "op": "clone-entry",
+      "at": "tool_tips.Contents.tooltips_dictionary.Contents",
+      "src": "settings_fe_home",
+      "as": "sample_mod_hint",
+      "set": { "Name": "sample_mod_hint", "Contents.text.Value": "Sample Mod" }
+    }
+  ]
+}

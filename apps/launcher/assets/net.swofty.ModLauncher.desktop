@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Swofty Launcher for F1 25
+Comment=Mods and tracks for F1 25
+Exec=swofty-launcher
+Icon=net.swofty.ModLauncher
+Terminal=false
+Categories=Game;
+StartupWMClass=net.swofty.ModLauncher

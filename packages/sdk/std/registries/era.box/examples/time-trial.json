@@ -1,0 +1,12 @@
+{
+  "era.box": {
+    "f1_2012": {
+      "package": "mod.example/f1_2012",
+      "image": "#overrides.home_screen.tiles_solo_6x6[ex_f1_2012]",
+      "order": 2012,
+      "time_trial": {
+        "entrant_list": "ex_f1_2012_tt"
+      }
+    }
+  }
+}

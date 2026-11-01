@@ -1,0 +1,12 @@
+{
+  "track": {
+    "$select": [
+      {
+        "tag": "c/street_circuits",
+        "patch": {
+          "time_trial": false
+        }
+      }
+    ]
+  }
+}

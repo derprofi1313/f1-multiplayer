@@ -1,0 +1,11 @@
+{
+  "track.data": {
+    "game/monaco/f1_2025": {
+      "tyres": {
+        "softer": "C5",
+        "medium": "C4",
+        "harder": "C3"
+      }
+    }
+  }
+}

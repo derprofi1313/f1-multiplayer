@@ -1,0 +1,216 @@
+{
+  "name": "a selector over track.data runs once on each data block, an added track's variants included",
+  "rule": "a selector that matches both a base block and its variant runs once on the variant, not once through the base and again on the variant: laps 71 + 1 = 72 on game/austria/f1_2026 and on mod.hockenheim/hockenheim/f1_2026, not 73; a selector under mod.hockenheim/hockenheim/ reaches that track's blocks only (layers.md#a-selector-runs-once-per-record)",
+  "registries": {
+    "track": {
+      "applies": "boot"
+    },
+    "track.data": {
+      "applies": "session",
+      "refs": {
+        "/track": "track"
+      }
+    }
+  },
+  "bases": [
+    {
+      "addon": "game",
+      "registry": "track",
+      "key": "austria",
+      "value": {
+        "code": "austria",
+        "time_trial": true
+      }
+    },
+    {
+      "addon": "game",
+      "registry": "track.data",
+      "key": "austria/f1_2025",
+      "value": {
+        "track": "game/austria",
+        "data_set": "f1_2025",
+        "laps": 71
+      }
+    },
+    {
+      "addon": "game",
+      "registry": "track.data",
+      "key": "austria/f1_2026",
+      "value": {
+        "track": "game/austria",
+        "data_set": "f1_2026",
+        "laps": 71
+      }
+    }
+  ],
+  "tags": {},
+  "addons": [
+    {
+      "id": "mod.hockenheim",
+      "ops": [
+        {
+          "op": "add",
+          "registry": "track",
+          "key": "hockenheim",
+          "value": {
+            "code": "hockenheim",
+            "base": "game/austria"
+          }
+        },
+        {
+          "op": "variant",
+          "registry": "track.data",
+          "key": "hockenheim/f1_2025",
+          "base": "game/austria/f1_2025",
+          "patch": {
+            "track": "mod.hockenheim/hockenheim"
+          }
+        },
+        {
+          "op": "variant",
+          "registry": "track.data",
+          "key": "hockenheim/f1_2026",
+          "base": "game/austria/f1_2026",
+          "patch": {
+            "track": "mod.hockenheim/hockenheim"
+          }
+        }
+      ]
+    },
+    {
+      "id": "mod.long-races",
+      "ops": [
+        {
+          "op": "layer",
+          "registry": "track.data",
+          "select": {
+            "ids": "*"
+          },
+          "edit": [
+            {
+              "op": "add",
+              "path": "/laps",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mod.hockenheim-tyres",
+      "ops": [
+        {
+          "op": "layer",
+          "registry": "track.data",
+          "select": {
+            "ids": "mod.hockenheim/hockenheim/*"
+          },
+          "patch": {
+            "tyres": {
+              "softer": "C4",
+              "medium": "C3",
+              "harder": "C2"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "context": {
+        "profile": "default",
+        "career": null,
+        "mode": null,
+        "content": null,
+        "data_group": null,
+        "setup_mode": null,
+        "options": {},
+        "settings": {},
+        "disabled": []
+      },
+      "expect": {
+        "track": {
+          "game/austria": {
+            "status": "ok",
+            "value": {
+              "code": "austria",
+              "time_trial": true
+            },
+            "origins": {}
+          },
+          "mod.hockenheim/hockenheim": {
+            "status": "ok",
+            "value": {
+              "code": "hockenheim",
+              "base": "game/austria"
+            },
+            "origins": {}
+          }
+        },
+        "track.data": {
+          "game/austria/f1_2025": {
+            "status": "ok",
+            "value": {
+              "track": "game/austria",
+              "data_set": "f1_2025",
+              "laps": 72
+            },
+            "origins": {
+              "/laps": "mod.long-races"
+            }
+          },
+          "game/austria/f1_2026": {
+            "status": "ok",
+            "value": {
+              "track": "game/austria",
+              "data_set": "f1_2026",
+              "laps": 72
+            },
+            "origins": {
+              "/laps": "mod.long-races"
+            }
+          },
+          "mod.hockenheim/hockenheim/f1_2025": {
+            "status": "ok",
+            "value": {
+              "track": "mod.hockenheim/hockenheim",
+              "data_set": "f1_2025",
+              "laps": 72,
+              "tyres": {
+                "softer": "C4",
+                "medium": "C3",
+                "harder": "C2"
+              }
+            },
+            "origins": {
+              "/track": "mod.hockenheim",
+              "/laps": "mod.long-races",
+              "/tyres": "mod.hockenheim-tyres"
+            }
+          },
+          "mod.hockenheim/hockenheim/f1_2026": {
+            "status": "ok",
+            "value": {
+              "track": "mod.hockenheim/hockenheim",
+              "data_set": "f1_2026",
+              "laps": 72,
+              "tyres": {
+                "softer": "C4",
+                "medium": "C3",
+                "harder": "C2"
+              }
+            },
+            "origins": {
+              "/track": "mod.hockenheim",
+              "/laps": "mod.long-races",
+              "/tyres": "mod.hockenheim-tyres"
+            }
+          }
+        }
+      },
+      "conflicts": [],
+      "refusals": []
+    }
+  ]
+}

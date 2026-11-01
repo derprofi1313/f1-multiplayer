@@ -1,0 +1,18 @@
+[package]
+name = "swofty-formats"
+description = "Readers and writers for the EGO engine formats used by F1 25: GVDB, ERP, !pkg, LNGT and NeFS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+aes.workspace = true
+bcdec_rs.workspace = true
+md-5.workspace = true
+thiserror.workspace = true
+zstd.workspace = true
+
+[lints]
+workspace = true

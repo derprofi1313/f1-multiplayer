@@ -1,0 +1,21 @@
+{
+  "track.data": {
+    "monaco/classic": {
+      "track": "game/monaco",
+      "data_set": "classic",
+      "laps": 78,
+      "fuel": {
+        "burn_per_lap": 1.4
+      },
+      "pit": {
+        "speed_limit": 60,
+        "stop_time_dry": 24.5,
+        "stop_time_wet": 25.0
+      },
+      "date": {
+        "day": 29,
+        "month": 5
+      }
+    }
+  }
+}

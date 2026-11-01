@@ -1,0 +1,13 @@
+{
+  "track.per_package": {
+    "f1_2016/monaco": {
+      "$comment": "fuel is a closed object: burn_per_lap only",
+      "package": "swofty.classic-seasons-2016/f1_2016",
+      "track": "game/monaco",
+      "fuel": {
+        "burn_per_lap": 1.5,
+        "race_kg": 105
+      }
+    }
+  }
+}

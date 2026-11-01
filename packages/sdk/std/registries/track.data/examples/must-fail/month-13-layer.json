@@ -1,0 +1,11 @@
+{
+  "track.data": {
+    "game/monaco/f1_2026": {
+      "$comment": "month is 1 to 12",
+      "date": {
+        "day": 1,
+        "month": 13
+      }
+    }
+  }
+}

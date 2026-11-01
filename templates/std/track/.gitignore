@@ -1,0 +1,5 @@
+build/
+native/*.dll
+native/*.lib
+track/*.erp
+track/mipmaps/

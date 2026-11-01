@@ -1,0 +1,376 @@
+{
+  "name": "two tracks that provide one venue both stay; the venue and the calendar round naming it go to the later one",
+  "rule": "venue/ ids are core-owned shared ids: track.venue's track is the last enabled track in load order whose provides lists it, the earlier provider is a provider conflict and both tracks stay ok in track; with no enabled provider the venue is no_record and a fallback round resolves to the next id (dependencies.md#shared-ids, systems/tracks.md#imported-tracks)",
+  "registries": {
+    "track": {
+      "applies": "boot"
+    },
+    "track.venue": {
+      "applies": "boot",
+      "shared": {
+        "provider_registry": "track",
+        "provides": "/provides",
+        "resolved": "/track"
+      }
+    },
+    "career.calendar": {
+      "applies": "boot",
+      "key_fields": {
+        "/rounds": [
+          "round"
+        ]
+      },
+      "refs": {
+        "/rounds/*/venue": "track.venue"
+      }
+    }
+  },
+  "bases": [
+    {
+      "addon": "game",
+      "registry": "track",
+      "key": "bahrain",
+      "value": {
+        "code": "bahrain",
+        "time_trial": true,
+        "provides": [
+          "venue/bahrain"
+        ]
+      }
+    },
+    {
+      "addon": "game",
+      "registry": "track.venue",
+      "key": "bahrain",
+      "value": {
+        "name": "Bahrain International Circuit",
+        "country": "bahrain",
+        "track": null
+      }
+    },
+    {
+      "addon": "game",
+      "registry": "track.venue",
+      "key": "sepang",
+      "value": {
+        "name": "Sepang International Circuit",
+        "country": "malaysia",
+        "track": null
+      }
+    }
+  ],
+  "tags": {},
+  "addons": [
+    {
+      "id": "mod.bahrain24",
+      "ops": [
+        {
+          "op": "add",
+          "registry": "track",
+          "key": "bahrain24",
+          "value": {
+            "code": "bahrain24",
+            "base": "game/bahrain",
+            "provides": [
+              "venue/sepang"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "community.sepang-1999",
+      "ops": [
+        {
+          "op": "add",
+          "registry": "track",
+          "key": "sepang",
+          "value": {
+            "code": "sepang99",
+            "base": "game/bahrain",
+            "provides": [
+              "venue/sepang"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "swofty.classic-seasons-2016",
+      "ops": [
+        {
+          "op": "add",
+          "registry": "career.calendar",
+          "key": "f1_2016",
+          "value": {
+            "rounds": [
+              {
+                "round": 1,
+                "race": "lng_gp_bahrain",
+                "venue": "venue/bahrain"
+              },
+              {
+                "round": 16,
+                "race": "lng_gp_malaysia",
+                "venue": "venue/sepang|venue/bahrain"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "context": {
+        "profile": "default",
+        "career": null,
+        "mode": null,
+        "content": null,
+        "data_group": null,
+        "setup_mode": null,
+        "options": {},
+        "settings": {},
+        "disabled": []
+      },
+      "expect": {
+        "track": {
+          "community.sepang-1999/sepang": {
+            "status": "ok",
+            "value": {
+              "code": "sepang99",
+              "base": "game/bahrain",
+              "provides": [
+                "venue/sepang"
+              ]
+            },
+            "origins": {}
+          },
+          "game/bahrain": {
+            "status": "ok",
+            "value": {
+              "code": "bahrain",
+              "time_trial": true,
+              "provides": [
+                "venue/bahrain"
+              ]
+            },
+            "origins": {}
+          },
+          "mod.bahrain24/bahrain24": {
+            "status": "ok",
+            "value": {
+              "code": "bahrain24",
+              "base": "game/bahrain",
+              "provides": [
+                "venue/sepang"
+              ]
+            },
+            "origins": {}
+          }
+        },
+        "track.venue": {
+          "venue/bahrain": {
+            "status": "ok",
+            "value": {
+              "name": "Bahrain International Circuit",
+              "country": "bahrain",
+              "track": "game/bahrain"
+            },
+            "origins": {}
+          },
+          "venue/sepang": {
+            "status": "ok",
+            "value": {
+              "name": "Sepang International Circuit",
+              "country": "malaysia",
+              "track": "community.sepang-1999/sepang"
+            },
+            "origins": {}
+          }
+        },
+        "career.calendar": {
+          "swofty.classic-seasons-2016/f1_2016": {
+            "status": "ok",
+            "value": {
+              "rounds": [
+                {
+                  "round": 1,
+                  "race": "lng_gp_bahrain",
+                  "venue": "venue/bahrain"
+                },
+                {
+                  "round": 16,
+                  "race": "lng_gp_malaysia",
+                  "venue": "venue/sepang"
+                }
+              ]
+            },
+            "origins": {}
+          }
+        }
+      },
+      "conflicts": [
+        {
+          "addons": [
+            "mod.bahrain24",
+            "community.sepang-1999"
+          ],
+          "id": "venue/sepang",
+          "kind": "provider",
+          "pointer": "/track",
+          "registry": "track.venue",
+          "winner": "community.sepang-1999"
+        }
+      ],
+      "refusals": []
+    },
+    {
+      "context": {
+        "profile": "default",
+        "career": null,
+        "mode": null,
+        "content": null,
+        "data_group": null,
+        "setup_mode": null,
+        "options": {},
+        "settings": {},
+        "disabled": [
+          "community.sepang-1999"
+        ]
+      },
+      "expect": {
+        "track": {
+          "game/bahrain": {
+            "status": "ok",
+            "value": {
+              "code": "bahrain",
+              "time_trial": true,
+              "provides": [
+                "venue/bahrain"
+              ]
+            },
+            "origins": {}
+          },
+          "mod.bahrain24/bahrain24": {
+            "status": "ok",
+            "value": {
+              "code": "bahrain24",
+              "base": "game/bahrain",
+              "provides": [
+                "venue/sepang"
+              ]
+            },
+            "origins": {}
+          }
+        },
+        "track.venue": {
+          "venue/bahrain": {
+            "status": "ok",
+            "value": {
+              "name": "Bahrain International Circuit",
+              "country": "bahrain",
+              "track": "game/bahrain"
+            },
+            "origins": {}
+          },
+          "venue/sepang": {
+            "status": "ok",
+            "value": {
+              "name": "Sepang International Circuit",
+              "country": "malaysia",
+              "track": "mod.bahrain24/bahrain24"
+            },
+            "origins": {}
+          }
+        },
+        "career.calendar": {
+          "swofty.classic-seasons-2016/f1_2016": {
+            "status": "ok",
+            "value": {
+              "rounds": [
+                {
+                  "round": 1,
+                  "race": "lng_gp_bahrain",
+                  "venue": "venue/bahrain"
+                },
+                {
+                  "round": 16,
+                  "race": "lng_gp_malaysia",
+                  "venue": "venue/sepang"
+                }
+              ]
+            },
+            "origins": {}
+          }
+        }
+      },
+      "conflicts": [],
+      "refusals": []
+    },
+    {
+      "context": {
+        "profile": "default",
+        "career": null,
+        "mode": null,
+        "content": null,
+        "data_group": null,
+        "setup_mode": null,
+        "options": {},
+        "settings": {},
+        "disabled": [
+          "community.sepang-1999",
+          "mod.bahrain24"
+        ]
+      },
+      "expect": {
+        "track": {
+          "game/bahrain": {
+            "status": "ok",
+            "value": {
+              "code": "bahrain",
+              "time_trial": true,
+              "provides": [
+                "venue/bahrain"
+              ]
+            },
+            "origins": {}
+          }
+        },
+        "track.venue": {
+          "venue/bahrain": {
+            "status": "ok",
+            "value": {
+              "name": "Bahrain International Circuit",
+              "country": "bahrain",
+              "track": "game/bahrain"
+            },
+            "origins": {}
+          }
+        },
+        "career.calendar": {
+          "swofty.classic-seasons-2016/f1_2016": {
+            "status": "ok",
+            "value": {
+              "rounds": [
+                {
+                  "round": 1,
+                  "race": "lng_gp_bahrain",
+                  "venue": "venue/bahrain"
+                },
+                {
+                  "round": 16,
+                  "race": "lng_gp_malaysia",
+                  "venue": "venue/bahrain"
+                }
+              ]
+            },
+            "origins": {}
+          }
+        }
+      },
+      "conflicts": [],
+      "refusals": []
+    }
+  ]
+}

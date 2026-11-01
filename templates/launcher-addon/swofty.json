@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "example.launcher-addon",
+  "name": "Example Launcher Addon",
+  "version": "0.1.0",
+  "author": "Your Name",
+  "description": "A dashboard page with every launcher block, a page with a switch per item, an importer for .exmod files and a build hook.",
+  "license": "MIT",
+  "compat": { "game": "f1_25" },
+  "launcher": {
+    "program": { "windows": "bin/example-helper.exe", "linux": "bin/example-helper" },
+    "sections": [
+      { "id": "overview", "title": "Overview", "icon": "activity" },
+      { "id": "items", "title": "Example", "icon": "package" }
+    ],
+    "imports": ["exmod"],
+    "build": true,
+    "commands": [{ "name": "example", "about": "List the example items" }]
+  }
+}

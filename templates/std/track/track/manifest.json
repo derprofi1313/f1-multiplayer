@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "track_code": "hockenheim",
+  "track_name": "Hockenheimring",
+  "author_name": "you",
+  "erp": "hockenheim.erp",
+  "activation": { "copy_from_track": "austria" },
+  "copy_directories": [
+    { "source": "mipmaps/", "destination": "asset_groups/environment_package/tracks/hockenheim/mipmaps/" }
+  ]
+}

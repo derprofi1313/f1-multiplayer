@@ -1,0 +1,14 @@
+{
+  "track": {
+    "sochi": {
+      "code": "sochi",
+      "name": "Sochi Autodrom",
+      "base": "game/baku",
+      "slot": "game/sochi",
+      "provides": [
+        "venue/sochi"
+      ],
+      "files": "track/"
+    }
+  }
+}

@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "track.per_package 1.0",
+  "x-registry": "track.per_package",
+  "x-version": "1.0",
+  "x-applies": "content",
+  "x-snapshot": false,
+  "description": "tracks::PackageTrack (experimental): one box's data for one track, id <package id>/<key>. venue sends it to whichever track the venue resolves to; with neither track nor venue, it is the track whose code ends the id. offered false leaves the track out of the box, order places it under \"More tracks\". An empty field comes from the track's data. world is stored and not applied in this release.",
+  "type": "object",
+  "properties": {
+    "package": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "content.package",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    },
+    "track": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "track",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required",
+          "optional",
+          "fallback"
+        ]
+      }
+    },
+    "venue": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "track.venue",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required",
+          "optional",
+          "fallback"
+        ]
+      }
+    },
+    "offered": {
+      "type": "boolean"
+    },
+    "order": {
+      "description": "Its place under \"More tracks\"; 0 keeps the base order.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "world": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "track.layer"
+    },
+    "laps": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "fuel": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/fuel"
+        }
+      ]
+    },
+    "tyre_class": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "tyre.class"
+    },
+    "pit": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/pit"
+        }
+      ]
+    },
+    "names": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/names"
+        }
+      ]
+    },
+    "date": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/date"
+        }
+      ]
+    },
+    "extends": {
+      "description": "Data files only: this record is a variant of that record, and its value is a merge patch on the base.",
+      "type": "string",
+      "x-ref": "track.per_package",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    }
+  },
+  "required": [
+    "package"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "fuel": {
+      "description": "tracks::Fuel: TrackGeneralData.fuel_burn_per_lap, kg per lap. The game uses it for the MFD fuel delta, the fuel strategy and refuelling; the car's real burn comes from its power unit, and the race's starting fuel stays the same.",
+      "type": "object",
+      "properties": {
+        "burn_per_lap": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "pit": {
+      "description": "tracks::Pit: TrackPitData.",
+      "type": "object",
+      "properties": {
+        "speed_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stop_time_dry": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stop_time_wet": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "names": {
+      "description": "tracks::TrackNames: the names menus read from TrackNameData.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/text"
+        },
+        "gp": {
+          "$ref": "#/$defs/text"
+        },
+        "acronym": {
+          "type": "string",
+          "maxLength": 8
+        },
+        "city": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "date": {
+      "description": "tracks::Date: the weekend's weekend_day and weekend_month.",
+      "type": "object",
+      "properties": {
+        "day": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 31
+        },
+        "month": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        }
+      },
+      "additionalProperties": false
+    },
+    "text": {
+      "description": "A Text: a lang key as a string, or a literal.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "literal": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "literal"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "career.rnd.tree": {
+    "bad": {
+      "$comment": "size is not minor, major or ultimate",
+      "token": "ferrari",
+      "nodes": [
+        {
+          "label": "x_1",
+          "size": "huge"
+        }
+      ]
+    }
+  }
+}

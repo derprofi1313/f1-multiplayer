@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "example.vignette-pass",
+  "name": "Vignette Pass",
+  "version": "0.1.0",
+  "author": "Your Name",
+  "description": "Darkens the corners of the race and sets its saturation.",
+  "license": "MIT",
+  "category": "shaders",
+  "experimental_features": ["postfx"],
+  "compat": { "game": "f1_25" },
+  "options": [
+    {
+      "id": "vignette",
+      "type": "slider",
+      "label": "Vignette",
+      "description": "How much the corners darken, from none at 0 to black at 100.",
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "default": 60,
+      "binds": "db"
+    },
+    {
+      "id": "saturation",
+      "type": "slider",
+      "label": "Saturation",
+      "description": "The picture's colour, from grey at 0 to the game's own at 100 and stronger above.",
+      "min": 0,
+      "max": 200,
+      "step": 10,
+      "default": 100,
+      "binds": "db"
+    }
+  ],
+  "postfx": [
+    { "shader": "fx/vignette.hlsl", "name": "vignette", "options": ["{{vignette}}", "{{saturation}}"] }
+  ]
+}

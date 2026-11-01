@@ -1,0 +1,251 @@
+{
+  "name": "a box's entry by venue follows the venue: it names whichever venue of its chain resolves, and that venue names the track",
+  "rule": "track.per_package's venue is a track.venue reference; \"a|b\" resolves to the first venue an enabled track provides, readers get the plain id, and the venue's track is its last enabled provider, so the entry's data goes to that track (systems/tracks.md#a-box-s-own-track-data, dependencies.md#when-a-reference-is-missing)",
+  "registries": {
+    "track": {
+      "applies": "boot"
+    },
+    "track.venue": {
+      "applies": "boot",
+      "shared": {
+        "provider_registry": "track",
+        "provides": "/provides",
+        "resolved": "/track"
+      }
+    },
+    "content.package": {
+      "applies": "content"
+    },
+    "track.per_package": {
+      "applies": "content",
+      "refs": {
+        "/package": "content.package",
+        "/track": "track",
+        "/venue": "track.venue"
+      }
+    }
+  },
+  "bases": [
+    {
+      "addon": "game",
+      "registry": "track",
+      "key": "austria",
+      "value": {
+        "code": "austria",
+        "time_trial": true,
+        "provides": [
+          "venue/red_bull_ring"
+        ]
+      }
+    },
+    {
+      "addon": "game",
+      "registry": "track.venue",
+      "key": "red_bull_ring",
+      "value": {
+        "name": "Red Bull Ring",
+        "country": "austria",
+        "track": null
+      }
+    },
+    {
+      "addon": "game",
+      "registry": "track.venue",
+      "key": "hockenheimring",
+      "value": {
+        "name": "Hockenheimring",
+        "country": "germany",
+        "track": null
+      }
+    }
+  ],
+  "tags": {},
+  "addons": [
+    {
+      "id": "mod.hockenheim",
+      "ops": [
+        {
+          "op": "add",
+          "registry": "track",
+          "key": "hockenheim",
+          "value": {
+            "code": "hockenheim",
+            "base": "game/austria",
+            "provides": [
+              "venue/hockenheimring"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "swofty.classic-seasons-2016",
+      "ops": [
+        {
+          "op": "add",
+          "registry": "content.package",
+          "key": "f1_2016",
+          "value": {
+            "season": 2016
+          }
+        },
+        {
+          "op": "add",
+          "registry": "track.per_package",
+          "key": "f1_2016/hockenheimring",
+          "value": {
+            "package": "swofty.classic-seasons-2016/f1_2016",
+            "venue": "venue/hockenheimring|venue/red_bull_ring",
+            "laps": 67
+          }
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "context": {
+        "profile": "default",
+        "career": null,
+        "mode": null,
+        "content": null,
+        "data_group": null,
+        "setup_mode": null,
+        "options": {},
+        "settings": {},
+        "disabled": []
+      },
+      "expect": {
+        "track": {
+          "game/austria": {
+            "status": "ok",
+            "value": {
+              "code": "austria",
+              "time_trial": true,
+              "provides": [
+                "venue/red_bull_ring"
+              ]
+            },
+            "origins": {}
+          },
+          "mod.hockenheim/hockenheim": {
+            "status": "ok",
+            "value": {
+              "code": "hockenheim",
+              "base": "game/austria",
+              "provides": [
+                "venue/hockenheimring"
+              ]
+            },
+            "origins": {}
+          }
+        },
+        "track.venue": {
+          "venue/hockenheimring": {
+            "status": "ok",
+            "value": {
+              "name": "Hockenheimring",
+              "country": "germany",
+              "track": "mod.hockenheim/hockenheim"
+            },
+            "origins": {}
+          },
+          "venue/red_bull_ring": {
+            "status": "ok",
+            "value": {
+              "name": "Red Bull Ring",
+              "country": "austria",
+              "track": "game/austria"
+            },
+            "origins": {}
+          }
+        },
+        "content.package": {
+          "swofty.classic-seasons-2016/f1_2016": {
+            "status": "ok",
+            "value": {
+              "season": 2016
+            },
+            "origins": {}
+          }
+        },
+        "track.per_package": {
+          "swofty.classic-seasons-2016/f1_2016/hockenheimring": {
+            "status": "ok",
+            "value": {
+              "package": "swofty.classic-seasons-2016/f1_2016",
+              "venue": "venue/hockenheimring",
+              "laps": 67
+            },
+            "origins": {}
+          }
+        }
+      },
+      "conflicts": [],
+      "refusals": []
+    },
+    {
+      "context": {
+        "profile": "default",
+        "career": null,
+        "mode": null,
+        "content": null,
+        "data_group": null,
+        "setup_mode": null,
+        "options": {},
+        "settings": {},
+        "disabled": [
+          "mod.hockenheim"
+        ]
+      },
+      "expect": {
+        "track": {
+          "game/austria": {
+            "status": "ok",
+            "value": {
+              "code": "austria",
+              "time_trial": true,
+              "provides": [
+                "venue/red_bull_ring"
+              ]
+            },
+            "origins": {}
+          }
+        },
+        "track.venue": {
+          "venue/red_bull_ring": {
+            "status": "ok",
+            "value": {
+              "name": "Red Bull Ring",
+              "country": "austria",
+              "track": "game/austria"
+            },
+            "origins": {}
+          }
+        },
+        "content.package": {
+          "swofty.classic-seasons-2016/f1_2016": {
+            "status": "ok",
+            "value": {
+              "season": 2016
+            },
+            "origins": {}
+          }
+        },
+        "track.per_package": {
+          "swofty.classic-seasons-2016/f1_2016/hockenheimring": {
+            "status": "ok",
+            "value": {
+              "package": "swofty.classic-seasons-2016/f1_2016",
+              "venue": "venue/red_bull_ring",
+              "laps": 67
+            },
+            "origins": {}
+          }
+        }
+      },
+      "conflicts": [],
+      "refusals": []
+    }
+  ]
+}

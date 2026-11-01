@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "example.monochrome-looks",
+  "name": "Monochrome Looks",
+  "version": "0.1.0",
+  "author": "Your Name",
+  "description": "Grades the race in monochrome, overcast or noir.",
+  "license": "MIT",
+  "category": "shaders",
+  "experimental_features": ["shaders"],
+  "compat": { "game": "f1_25" },
+  "options": [
+    {
+      "id": "look",
+      "type": "choice",
+      "label": "Look",
+      "description": "The grade the picture goes through.",
+      "default": "monochrome",
+      "values": [
+        { "value": "monochrome", "label": "Monochrome" },
+        { "value": "overcast", "label": "Overcast" },
+        { "value": "noir", "label": "Noir" }
+      ],
+      "binds": "db"
+    },
+    {
+      "id": "strength",
+      "type": "slider",
+      "label": "Strength",
+      "description": "How much of the look applies, from the game's own colours at 0 to the full look at 100.",
+      "min": 0,
+      "max": 100,
+      "step": 10,
+      "default": 100,
+      "binds": "db"
+    }
+  ],
+  "shader": { "lut": "looks/{{look}}.cube", "strength": "{{strength}}" }
+}

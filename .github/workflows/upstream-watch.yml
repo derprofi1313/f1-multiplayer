@@ -1,0 +1,74 @@
+name: Swofty upstream watch
+
+# F1 Multiplayer is built on Swofty Launcher. Twice an hour this compares Swofty's latest release with the
+# upstream version our package version carries (`version = "<upstream>+f1mp.<n>"` in Cargo.toml). When
+# Swofty is ahead it opens one issue for that release, assigned to the repo owner: GitHub emails the
+# assignment, so the owner hears of it and the merge can start. Nothing is merged or released here.
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Compare with Swofty's latest release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+
+      - name: Open an issue when Swofty is ahead
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: Swofty-Developments/SwoftyLauncher
+        run: |
+          set -euo pipefail
+          ours=$(sed -n 's/^version = "\([0-9][0-9.]*\)\(+f1mp\.[0-9][0-9]*\)\{0,1\}"$/\1/p' Cargo.toml | head -n1)
+          if [ -z "$ours" ]; then echo "::error::no workspace version in Cargo.toml"; exit 1; fi
+          release=$(gh api "repos/$UPSTREAM/releases/latest")
+          tag=$(jq -r .tag_name <<<"$release")
+          theirs=${tag#v}
+          url=$(jq -r .html_url <<<"$release")
+          published=$(jq -r .published_at <<<"$release")
+          echo "ours $ours, Swofty $theirs ($published)"
+          newest=$(printf '%s\n%s\n' "$ours" "$theirs" | sort -V | tail -n1)
+          if [ "$theirs" = "$ours" ] || [ "$newest" = "$ours" ]; then
+            echo "up to date"
+            exit 0
+          fi
+          title="Swofty Launcher $tag is out (F1 Multiplayer is on $ours)"
+          seen=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --limit 100 --json title \
+            --jq "[.[] | select(.title == \"$title\")] | length")
+          if [ "$seen" != 0 ]; then
+            echo "already reported: $title"
+            exit 0
+          fi
+          body=$(cat <<EOF
+          Swofty published **$tag** on $published: $url
+
+          F1 Multiplayer is built on Swofty $ours. To take the new version:
+
+          1. Merge Swofty's tag into the local repo on a \`merge/upstream-$theirs\` branch, keeping F1 Multiplayer's host server, league career, design and names.
+          2. Set \`version = "$theirs+f1mp.1"\` in \`Cargo.toml\` and run the tests.
+          3. Export to this repo, then run the **Release** workflow. It makes a draft; publishing the draft is the approval that sends the update to every player.
+
+          Swofty's release notes:
+
+          $(jq -r '.body // ""' <<<"$release" | head -c 50000)
+          EOF
+          )
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" \
+            --assignee "$GITHUB_REPOSITORY_OWNER" --label upstream 2>/dev/null \
+          || gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" \
+            --assignee "$GITHUB_REPOSITORY_OWNER"

@@ -1,0 +1,204 @@
+name: Release
+
+# Builds F1 Multiplayer for Windows from the chosen ref and makes a DRAFT release `v<version>` (the version
+# in Cargo.toml, `<Swofty's version>+f1mp.<n>`). Nobody gets a draft: publishing it on GitHub (Releases >
+# the draft > Edit > Publish release) is the approval, and only then does every launcher with self-update
+# see it. The archive is `f1-multiplayer-<tag with + as .>-windows-x86_64.zip` with `SHA256SUMS`, the names
+# `swofty_core::update::asset_name` looks for.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The branch, tag or commit to build
+        default: main
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      asset: ${{ steps.v.outputs.asset }}
+      display: ${{ steps.v.outputs.display }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          case "$v" in
+            *+f1mp.*) ;;
+            *) echo "::error::Cargo.toml's version '$v' is not <upstream>+f1mp.<n>"; exit 1 ;;
+          esac
+          tag="v$v"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release $tag already exists; raise +f1mp.<n> in Cargo.toml first"
+            exit 1
+          fi
+          display=$(sed -n 's/^pub const DISPLAY_VERSION: &str = "\(.*\)";$/\1/p' packages/core/src/update.rs)
+          {
+            echo "version=$v"
+            echo "tag=$tag"
+            echo "asset=f1-multiplayer-${tag//+/.}-windows-x86_64"
+            echo "display=$display"
+          } >> "$GITHUB_OUTPUT"
+          echo "building $tag (shown as $display)"
+
+  tests:
+    name: Tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Core, CLI and add-on API tests
+        run: cargo test -p swofty-core -p swofty-addon -p swofty-formats --lib
+
+  native:
+    name: Native loader
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      # build.sh pins its compilers to cores a runner doesn't have; run them on every core instead.
+      - name: Use every runner core
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/taskset" <<'EOF'
+          [ "$1" = -c ] && shift 2
+          exec "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/taskset"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: native/build.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native
+          path: native/dist/
+          if-no-files-found: error
+
+  windows:
+    name: Windows build
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
+      # No usage or log server is baked in: F1 Multiplayer's builds send nothing to Swofty's.
+      - name: Build
+        run: cargo build --release -p swofty-cli -p swofty-launcher
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-binaries
+          path: |
+            target/release/f1mp.exe
+            target/release/f1-multiplayer.exe
+          if-no-files-found: error
+
+  package:
+    name: Package and draft
+    needs: [version, tests, native, windows]
+    runs-on: windows-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      ASSET: ${{ needs.version.outputs.asset }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-binaries
+          path: target/release
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native
+          path: native/dist
+
+      # The shader compiler for postfx addons, from Swofty's dxc pre-release, checked against tools/dxc/SHA256SUMS.
+      - name: Fetch dxc
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: Swofty-Developments/SwoftyLauncher
+        run: tools/dxc/fetch.sh dxc-windows-x86_64.tar.gz
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = $env:ASSET
+          New-Item -ItemType Directory -Force "$out/bin", "$out/loader" | Out-Null
+          Copy-Item target/release/f1mp.exe, target/release/f1-multiplayer.exe "$out/bin/"
+          Copy-Item -Recurse native/dist/* "$out/loader/"
+          if (Test-Path dxc) { Copy-Item -Recurse dxc "$out/dxc" }
+          Copy-Item LICENSE "$out/"
+          foreach ($f in 'README.md', 'THIRD_PARTY.md') { if (Test-Path $f) { Copy-Item $f "$out/" } }
+          Compress-Archive -Path $out -DestinationPath "$out.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "$out.zip").Hash.ToLower()
+          [IO.File]::WriteAllText("SHA256SUMS", "$hash  $out.zip`n")
+          Get-Content SHA256SUMS
+
+      - name: Draft the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPLAY_VERSION: ${{ needs.version.outputs.display }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          notes="F1 Multiplayer $DISPLAY_VERSION, built on Swofty Launcher ${VERSION%%+*} ($VERSION, $sha).
+
+          This is a draft. Publishing it sends the update to every F1 Multiplayer launcher."
+          gh release create "$TAG" "$ASSET.zip" SHA256SUMS --repo "$GITHUB_REPOSITORY" --draft \
+            --target "$sha" --title "F1 Multiplayer $DISPLAY_VERSION ($VERSION)" --notes "$notes"
+          echo "draft $TAG is ready; publish it on GitHub to release it"

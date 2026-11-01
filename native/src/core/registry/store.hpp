@@ -50,6 +50,7 @@ struct Def {
     std::string provider_registry, provides, resolved, shared_prefix;
     std::string schema;
     bool core = false;
+    bool group_scoped = false;
 };
 
 Def parse_schema(const std::string &name, const Value &schema);
@@ -65,6 +66,7 @@ struct Change {
 struct LayerSpec {
     std::string addon, registry, id;
     Scope scope = Scope::global;
+    bool automatic = false;
     bool selector = false;
     SwoftyMatchFn match = nullptr;
     void *match_user = nullptr;

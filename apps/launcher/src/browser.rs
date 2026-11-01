@@ -5,6 +5,7 @@ mod authors;
 
 pub(crate) use authors::View;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -582,6 +583,21 @@ fn fetch(root: &Path, shown: Vec<Addon>, known: BTreeSet<String>) -> Fetched {
     }
 }
 
+type AddonNeeds = (Vec<String>, Option<String>);
+
+type GridKey = (String, Sort, Tab, BTreeSet<Facet>, bool, u64);
+
+struct GridCache {
+    key: GridKey,
+    query: Arc<Query>,
+    scores: Vec<Option<u32>>,
+    shown: Arc<[usize]>,
+    types: Vec<Facet>,
+    authors: Vec<Facet>,
+    natives: usize,
+    categories: Vec<usize>,
+}
+
 pub(crate) struct Browser {
     pub(crate) addons: Vec<Addon>,
     pub(crate) updates: Vec<Update>,
@@ -598,6 +614,12 @@ pub(crate) struct Browser {
     view: View,
     trail: Vec<(View, Point<Pixels>)>,
     scroll: ScrollHandle,
+    grid_scroll: ListState,
+    grid_cache: Option<GridCache>,
+    catalog_revision: u64,
+    facet_counts: RefCell<HashMap<Facet, usize>>,
+    needs_cache: RefCell<HashMap<String, AddonNeeds>>,
+    grid_layout: (Arc<[usize]>, usize, bool, u32),
     pub(crate) smooth: crate::scroll::SmoothScroll,
     details: HashMap<String, Addon>,
     loading: BTreeSet<String>,
@@ -654,6 +676,12 @@ impl Browser {
             view: View::Grid,
             trail: Vec::new(),
             scroll: ScrollHandle::new(),
+            grid_scroll: ListState::new(0, ListAlignment::Top, px(200.)),
+            grid_layout: Default::default(),
+            grid_cache: None,
+            catalog_revision: 0,
+            facet_counts: RefCell::default(),
+            needs_cache: RefCell::default(),
             smooth: Default::default(),
             details: HashMap::new(),
             loading: BTreeSet::new(),
@@ -709,6 +737,10 @@ impl Browser {
             text.push_str(" · checking…");
         }
         text
+    }
+
+    pub(crate) fn has(&self, id: &str) -> bool {
+        self.find(id).is_some()
     }
 
     fn find(&self, id: &str) -> Option<&Addon> {
@@ -877,6 +909,7 @@ impl Shell {
                         let applied = reply.applied;
                         let b = &mut s.browser;
                         b.stars.synced(&sent, reply, catalog::iso_now());
+                        b.catalog_revision = b.catalog_revision.wrapping_add(1);
                         let detail = format!(
                             "{} sent, {applied} applied · {} starred · {}",
                             plural(sent.len(), "change", "changes"),
@@ -925,6 +958,7 @@ impl Shell {
                 plural(self.browser.stars.pending.len(), "change", "changes")
             ),
         );
+        self.browser.catalog_revision = self.browser.catalog_revision.wrapping_add(1);
         self.browser.star_gen += 1;
         let ticket = self.browser.star_gen;
         cx.spawn(async move |this, cx| {
@@ -941,6 +975,9 @@ impl Shell {
     }
 
     pub(crate) fn sync_catalog_updates(&mut self) {
+        // Catalog refreshes and library reloads both change cached filters and dependency previews.
+        self.browser.catalog_revision = self.browser.catalog_revision.wrapping_add(1);
+        self.browser.needs_cache.borrow_mut().clear();
         let installed = self
             .library
             .addons
@@ -972,7 +1009,7 @@ impl Shell {
         match (a.offered(&current_version()), self.installed_version(&a.id)) {
             (Some(v), Some(m)) if v.version > m => Offer::Update(m, v.version.clone()),
             (_, Some(m)) => Offer::Installed(m),
-            (Some(_), None) if matches!(self.requirements(a), Some(Err(_))) => Offer::Blocked,
+            (Some(_), None) if self.needs_of(a).1.is_some() => Offer::Blocked,
             (Some(_), None) => Offer::Install,
             (None, None) => Offer::TooOld,
         }
@@ -984,6 +1021,8 @@ impl Shell {
     fn requirements(&self, a: &Addon) -> Option<swofty_core::Result<Plan>> {
         let launcher = current_version();
         let v = a.offered(&launcher)?;
+        // An unknown root requirement list can never produce a complete preview.
+        v.requires.as_ref()?;
         let builtin: BTreeSet<&str> = self
             .library
             .addons
@@ -1006,11 +1045,19 @@ impl Shell {
         if self.installed_version(&a.id).is_some() {
             return (Vec::new(), None);
         }
-        match self.requirements(a) {
+        if let Some(cached) = self.browser.needs_cache.borrow().get(&a.id) {
+            return cached.clone();
+        }
+        let needs = match self.requirements(a) {
             Some(Ok(plan)) => (plan.also().iter().map(|s| s.label()).collect(), None),
             Some(Err(e)) => (Vec::new(), Some(e.to_string())),
             None => (Vec::new(), None),
-        }
+        };
+        self.browser
+            .needs_cache
+            .borrow_mut()
+            .insert(a.id.clone(), needs.clone());
+        needs
     }
 
     /// A version's requirements as `Requires Name >=1.0.0, other.id`.
@@ -1667,6 +1714,7 @@ impl Shell {
         if b.landing || b.tab != tab {
             b.smooth.cancel();
             b.scroll.set_offset(Point::default());
+            b.grid_scroll.scroll_to(ListOffset::default());
         }
         b.landing = false;
         b.tab = tab;
@@ -1679,6 +1727,7 @@ impl Shell {
         b.tab = None;
         b.smooth.cancel();
         b.scroll.set_offset(Point::default());
+        b.grid_scroll.scroll_to(ListOffset::default());
         self.clear_filters(cx);
     }
 
@@ -1977,17 +2026,24 @@ impl Shell {
             )
     }
 
-    fn filter_column(&self, matched: &[(&Addon, Option<u32>)], p: Palette, cx: &mut Context<Self>) -> Div {
+    fn filter_column(&self, p: Palette, cx: &mut Context<Self>) -> Div {
         let b = &self.browser;
         let query = b.search.read(cx).value().trim().to_owned();
         let active = !b.facets.is_empty() || b.hide_code || !query.is_empty();
         let count = |f: &Facet| {
-            matched
+            if let Some(&count) = b.facet_counts.borrow().get(f) {
+                return count;
+            }
+            let count = b
+                .addons
                 .iter()
+                .zip(&b.grid_cache.as_ref().unwrap().scores)
                 .filter(|(a, s)| {
                     self.catalog_passes(a, s.is_some(), Some(f.group())) && self.catalog_facet(a, f)
                 })
-                .count()
+                .count();
+            b.facet_counts.borrow_mut().insert(f.clone(), count);
+            count
         };
         let row = |f: Facet, cx: &mut Context<Self>| {
             let n = count(&f);
@@ -2008,29 +2064,11 @@ impl Shell {
                 .child(div().pb(px(4.)).child(label(title, p)))
                 .children(rows)
         };
-        let types: Vec<AnyElement> = Type::ALL
-            .into_iter()
-            .map(Facet::Type)
-            .filter(|f| b.facets.contains(f) || b.addons.iter().any(|a| self.catalog_facet(a, f)))
-            .map(|f| row(f, cx))
-            .collect();
-        let states: Vec<AnyElement> = Want::ALL.into_iter().map(|w| row(Facet::State(w), cx)).collect();
-        let authors: Vec<AnyElement> = publishers::by_publisher(&b.addons)
-            .into_iter()
-            .map(|(pb, _)| Facet::Author {
-                id: pb.id,
-                name: pb.name,
-            })
-            .enumerate()
-            .filter(|(i, f)| *i < AUTHORS_SHOWN || b.facets.contains(f))
-            .map(|(_, f)| row(f, cx))
-            .collect();
-        let natives = matched
-            .iter()
-            .filter(|(a, s)| {
-                a.native(&current_version()) && self.catalog_passes(a, s.is_some(), Some(Group::Code))
-            })
-            .count();
+        let cache = b.grid_cache.as_ref().unwrap();
+        let types = cache.types.iter().cloned().map(|f| row(f, cx)).collect();
+        let states = Want::ALL.into_iter().map(|w| row(Facet::State(w), cx)).collect();
+        let authors: Vec<_> = cache.authors.iter().cloned().map(|f| row(f, cx)).collect();
+        let natives = cache.natives;
         let code = facet_row(
             "browser-filter-code",
             b.hide_code,
@@ -2101,18 +2139,13 @@ impl Shell {
             )
     }
 
-    fn category_bar(&self, matched: &[(&Addon, Option<u32>)], p: Palette, cx: &mut Context<Self>) -> Div {
+    fn category_bar(&self, p: Palette, cx: &mut Context<Self>) -> Div {
         let tabs: Vec<Tab> = [None].into_iter().chain(shelves()).collect();
         let pills: Vec<AnyElement> = tabs
             .into_iter()
-            .map(|tab| {
-                let n = matched
-                    .iter()
-                    .filter(|(a, s)| {
-                        self.catalog_passes(a, s.is_some(), Some(Group::Category))
-                            && tab.is_none_or(|t| a.category() == t)
-                    })
-                    .count();
+            .enumerate()
+            .map(|(i, tab)| {
+                let n = self.browser.grid_cache.as_ref().unwrap().categories[i];
                 let on = self.browser.tab == tab;
                 h_flex()
                     .id(SharedString::from(format!("browser-tab-{tab:?}")))
@@ -2205,29 +2238,114 @@ impl Shell {
         if text.is_empty() {
             self.browser.search_sort = None;
         }
-        let query = Query::parse(&text);
-        let matched: Vec<(&Addon, Option<u32>)> =
-            self.browser.addons.iter().map(|a| (a, query.score(a))).collect();
-        let mut shown: Vec<(&Addon, u32)> = matched
-            .iter()
-            .filter(|(a, s)| self.catalog_passes(a, s.is_some(), None))
-            .map(|(a, s)| (*a, s.unwrap_or(0)))
-            .collect();
+        let query = self
+            .browser
+            .grid_cache
+            .as_ref()
+            .filter(|cache| cache.key.0 == text)
+            .map_or_else(|| Arc::new(Query::parse(&text)), |cache| cache.query.clone());
         let sort = self.sort_now(&query);
-        shown.sort_by(|(a, sa), (b, sb)| {
-            let first = match sort {
-                Sort::Match => sb
-                    .cmp(sa)
-                    .then_with(|| self.browser.stars_of(b).cmp(&self.browser.stars_of(a))),
-                Sort::Stars => self.browser.stars_of(b).cmp(&self.browser.stars_of(a)),
-                Sort::Downloads => b.downloads.cmp(&a.downloads),
-                Sort::Trending => b.downloads_30d.cmp(&a.downloads_30d),
-                Sort::Updated => b.updated_at.cmp(&a.updated_at),
-                Sort::Newest => b.created_at.cmp(&a.created_at),
-                Sort::Name => std::cmp::Ordering::Equal,
-            };
-            first.then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        let key = (
+            text.clone(),
+            sort,
+            self.browser.tab,
+            self.browser.facets.clone(),
+            self.browser.hide_code,
+            self.browser.catalog_revision,
+        );
+        if self
+            .browser
+            .grid_cache
+            .as_ref()
+            .is_none_or(|cache| cache.key != key)
+        {
+            let scores: Vec<_> = self.browser.addons.iter().map(|a| query.score(a)).collect();
+            let names: Vec<_> = self
+                .browser
+                .addons
+                .iter()
+                .map(|a| a.name.to_lowercase())
+                .collect();
+            let mut shown: Vec<usize> = self
+                .browser
+                .addons
+                .iter()
+                .enumerate()
+                .filter(|(i, a)| self.catalog_passes(a, scores[*i].is_some(), None))
+                .map(|(i, _)| i)
+                .collect();
+            shown.sort_by(|&ai, &bi| {
+                let a = &self.browser.addons[ai];
+                let b = &self.browser.addons[bi];
+                let first = match sort {
+                    Sort::Match => scores[bi]
+                        .cmp(&scores[ai])
+                        .then_with(|| self.browser.stars_of(b).cmp(&self.browser.stars_of(a))),
+                    Sort::Stars => self.browser.stars_of(b).cmp(&self.browser.stars_of(a)),
+                    Sort::Downloads => b.downloads.cmp(&a.downloads),
+                    Sort::Trending => b.downloads_30d.cmp(&a.downloads_30d),
+                    Sort::Updated => b.updated_at.cmp(&a.updated_at),
+                    Sort::Newest => b.created_at.cmp(&a.created_at),
+                    Sort::Name => std::cmp::Ordering::Equal,
+                };
+                first.then_with(|| names[ai].cmp(&names[bi]))
+            });
+            let types = Type::ALL
+                .into_iter()
+                .map(Facet::Type)
+                .filter(|f| {
+                    self.browser.facets.contains(f)
+                        || self.browser.addons.iter().any(|a| self.catalog_facet(a, f))
+                })
+                .collect();
+            let authors = publishers::by_publisher(&self.browser.addons)
+                .into_iter()
+                .map(|(pb, _)| Facet::Author {
+                    id: pb.id,
+                    name: pb.name,
+                })
+                .enumerate()
+                .filter(|(i, f)| *i < AUTHORS_SHOWN || self.browser.facets.contains(f))
+                .map(|(_, f)| f)
+                .collect();
+            let natives = self
+                .browser
+                .addons
+                .iter()
+                .zip(&scores)
+                .filter(|(a, score)| {
+                    a.native(&current_version()) && self.catalog_passes(a, score.is_some(), Some(Group::Code))
+                })
+                .count();
+            let categories = [None]
+                .into_iter()
+                .chain(shelves())
+                .map(|tab| {
+                    self.browser
+                        .addons
+                        .iter()
+                        .zip(&scores)
+                        .filter(|(a, score)| {
+                            self.catalog_passes(a, score.is_some(), Some(Group::Category))
+                                && tab.is_none_or(|t| a.category() == t)
+                        })
+                        .count()
+                })
+                .collect();
+            self.browser.grid_cache = Some(GridCache {
+                key,
+                query: query.clone(),
+                scores,
+                shown: shown.into(),
+                types,
+                authors,
+                natives,
+                categories,
+            });
+            self.browser.facet_counts.borrow_mut().clear();
+        }
+        let cache = self.browser.grid_cache.as_ref().unwrap();
+        let shown = cache.shown.clone();
         let filtering = !query.is_empty()
             || !self.browser.facets.is_empty()
             || self.browser.tab.is_some()
@@ -2240,21 +2358,16 @@ impl Shell {
         let landing = !self.browser.addons.is_empty() && self.browser.on_landing(!query.is_empty());
         let width = self.content_width - FILTERS_W - 20.;
         if landing {
-            let filters = self.filter_column(&matched, p, cx);
-            let addons: Vec<&Addon> = shown.iter().map(|(a, _)| *a).collect();
-            let rows = self.card_rows(&addons, &query, width, p, cx);
-            let page = self
-                .landing(width, p, cx)
-                .child(self.all_heading(count, sort, width, p, cx))
-                .children(rows);
-            return self.browser_columns(filters, div(), self.scroll_area(page, cx));
+            let filters = self.filter_column(p, cx);
+            let body = self.virtual_cards(shown, query, width, true, count, sort, p, cx);
+            return self.browser_columns(filters, div(), body);
         }
         let bar = h_flex()
             .pb(px(14.))
             .gap(px(12.))
             .flex_shrink_0()
             .items_start()
-            .child(div().flex_1().min_w_0().child(self.category_bar(&matched, p, cx)))
+            .child(div().flex_1().min_w_0().child(self.category_bar(p, cx)))
             .child(
                 h_flex()
                     .gap(px(10.))
@@ -2265,12 +2378,15 @@ impl Shell {
                         div()
                             .text_size(px(12.))
                             .text_color(p.text_placeholder)
-                            .child(count),
+                            .child(count.clone()),
                     )
                     .child(self.sort_button(sort, !query.is_empty(), cx)),
             );
-        let filters = self.filter_column(&matched, p, cx);
-        let found = self.creators_found(&query, p, cx);
+        let filters = self.filter_column(p, cx);
+        let found = shown
+            .is_empty()
+            .then(|| self.creators_found(&query, p, cx))
+            .flatten();
         let bare = query.is_empty() && self.browser.facets.is_empty() && !self.browser.hide_code;
         let body = if shown.is_empty() && found.is_some() {
             self.scroll_area(
@@ -2321,18 +2437,7 @@ impl Shell {
             };
             self.empty(IconName::PackageSearch, title, body, action, p)
         } else {
-            let addons: Vec<&Addon> = shown.iter().map(|(a, _)| *a).collect();
-            let rows = self.card_rows(&addons, &query, width, p, cx);
-            self.scroll_area(
-                v_flex()
-                    .id("browser-cards")
-                    .pb(px(24.))
-                    .gap(px(GAP))
-                    .children(found)
-                    .children(rows),
-                cx,
-            )
-            .into_any_element()
+            self.virtual_cards(shown, query, width, false, count, sort, p, cx)
         };
         self.browser_columns(filters, bar, body)
     }
@@ -2386,31 +2491,27 @@ impl Shell {
                 div()
                     .text_size(px(12.))
                     .text_color(p.text_placeholder)
-                    .child(count),
+                    .child(count.clone()),
             )
             .child(self.sort_button(sort, false, cx))
     }
 
-    fn landing(&self, width: f32, p: Palette, cx: &mut Context<Self>) -> Stateful<Div> {
-        let tabs: Vec<Tab> = shelves().collect();
+    fn landing_row(&self, row: usize, width: f32, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        if row == 0 {
+            return self.landing_bar().pb(px(GAP)).into_any_element();
+        }
         let columns = shelf_columns(width);
         let tile_w = ((width - GAP * (columns - 1) as f32) / columns as f32).floor() - 1.;
-        let rows: Vec<AnyElement> = tabs
-            .chunks(columns)
-            .map(|chunk| {
-                h_flex()
-                    .flex_shrink_0()
-                    .gap(px(GAP))
-                    .children(chunk.iter().map(|t| self.shelf_tile(*t, tile_w, p, cx)))
-                    .into_any_element()
-            })
-            .collect();
-        v_flex()
-            .id("browser-landing")
-            .pb(px(24.))
+        h_flex()
+            .pb(px(GAP))
             .gap(px(GAP))
-            .child(self.landing_bar())
-            .children(rows)
+            .children(
+                shelves()
+                    .skip((row - 1) * columns)
+                    .take(columns)
+                    .map(|tab| self.shelf_tile(tab, tile_w, p, cx)),
+            )
+            .into_any_element()
     }
 
     fn has_icon(&self, a: &Addon) -> bool {
@@ -2639,6 +2740,76 @@ impl Shell {
                     .into_any_element()
             })
             .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn virtual_cards(
+        &mut self,
+        indices: Arc<[usize]>,
+        query: Arc<Query>,
+        width: f32,
+        landing: bool,
+        count: String,
+        sort: Sort,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let columns = ((width + GAP) / (CARD_W + GAP)).floor().max(1.) as usize;
+        let card_w = ((width - GAP * (columns - 1) as f32) / columns as f32).floor() - 1.;
+        let rows = indices.len().div_ceil(columns);
+        let header_rows = if landing {
+            shelves().count().div_ceil(shelf_columns(width)) + 2
+        } else {
+            1
+        };
+        let layout = (indices.clone(), columns, landing, width.to_bits());
+        if self.browser.grid_layout != layout {
+            let offset = self.browser.grid_scroll.logical_scroll_top();
+            // Give unvisited rows height so scrolling is not clamped to only the measured content.
+            self.browser
+                .grid_scroll
+                .reset_with_uniform_height(rows + header_rows, px(260.));
+            self.browser.grid_scroll.scroll_to(offset);
+            self.browser.grid_layout = layout;
+        }
+        let content = list(
+            self.browser.grid_scroll.clone(),
+            cx.processor(move |this, row: usize, _, cx| {
+                if row < header_rows {
+                    return if landing {
+                        if row + 1 == header_rows {
+                            this.all_heading(count.clone(), sort, width, p, cx)
+                                .pb(px(GAP))
+                                .into_any_element()
+                        } else {
+                            this.landing_row(row, width, p, cx)
+                        }
+                    } else {
+                        v_flex()
+                            .children(this.creators_found(&query, p, cx))
+                            .into_any_element()
+                    };
+                }
+                let start = (row - header_rows) * columns;
+                let end = (start + columns).min(indices.len());
+                h_flex()
+                    .pb(px(GAP))
+                    .items_stretch()
+                    .gap(px(GAP))
+                    .children(indices[start..end].iter().filter_map(|&index| {
+                        this.browser
+                            .addons
+                            .get(index)
+                            .map(|a| this.browser_card(a, &query, card_w, p, cx))
+                    }))
+                    .into_any_element()
+            }),
+        )
+        .size_full();
+        self.browser
+            .smooth
+            .wrap(content, &self.browser.grid_scroll, cx)
+            .into_any_element()
     }
 
     fn scroll_area(&self, body: Stateful<Div>, cx: &Context<Self>) -> Div {

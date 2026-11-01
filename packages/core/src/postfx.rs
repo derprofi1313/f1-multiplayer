@@ -70,10 +70,78 @@ impl From<String> for CompileError {
     }
 }
 
-fn key(source: &Path) -> Result<String, String> {
+/// Converts a PNG to the core's `.tex`: `SWTX`, width, height, format 0 (RGBA8), then the rows
+/// top-down.
+pub fn png_to_tex(png: &[u8]) -> Result<Vec<u8>, String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let mut buf = vec![0; reader.output_buffer_size().ok_or("the image is too large")?];
+    let frame = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    let (w, h) = (frame.width, frame.height);
+    if w == 0 || h == 0 || w > 8192 || h > 8192 {
+        return Err(format!("{w}x{h} is not from 1x1 to 8192x8192"));
+    }
+    let px = &buf[..frame.buffer_size()];
+    let mut out = Vec::with_capacity(16 + w as usize * h as usize * 4);
+    out.extend_from_slice(b"SWTX");
+    out.extend_from_slice(&w.to_le_bytes());
+    out.extend_from_slice(&h.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    match frame.color_type {
+        png::ColorType::Rgba => out.extend_from_slice(px),
+        png::ColorType::Rgb => px
+            .chunks_exact(3)
+            .for_each(|c| out.extend_from_slice(&[c[0], c[1], c[2], 255])),
+        png::ColorType::Grayscale => px.iter().for_each(|&g| out.extend_from_slice(&[g, g, g, 255])),
+        png::ColorType::GrayscaleAlpha => px
+            .chunks_exact(2)
+            .for_each(|c| out.extend_from_slice(&[c[0], c[0], c[0], c[1]])),
+        png::ColorType::Indexed => return Err("an indexed image was not expanded".into()),
+    }
+    Ok(out)
+}
+
+/// How a pass's source is compiled: which function is the effect, or the compute entry point of
+/// a raw pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Entry<'a> {
+    pub name: Option<&'a str>,
+    pub raw: bool,
+}
+
+impl<'a> Entry<'a> {
+    pub fn of(pass: &'a crate::manifest::PostFx) -> Self {
+        Self {
+            name: pass.entry.as_deref(),
+            raw: pass.raw,
+        }
+    }
+
+    fn args(&self) -> Vec<String> {
+        match (self.raw, self.name) {
+            (true, name) => vec![
+                "-D".into(),
+                "SWOFTY_RAW=1".into(),
+                "-E".into(),
+                name.unwrap_or("main").into(),
+            ],
+            (false, Some(name)) => vec![
+                "-D".into(),
+                format!("SWOFTY_EFFECT={name}"),
+                "-E".into(),
+                "main".into(),
+            ],
+            (false, None) => vec!["-E".into(), "main".into()],
+        }
+    }
+}
+
+fn key(source: &Path, entry: Entry) -> Result<String, String> {
     let mut h = Sha256::new();
     h.update(PROFILE);
     h.update(HEADER);
+    h.update(format!("{:?};", entry.args()));
     let dir = source.parent().unwrap_or(Path::new("."));
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
@@ -99,9 +167,9 @@ fn key(source: &Path) -> Result<String, String> {
 }
 
 /// Compiles `source` to signed DXIL, reusing `cache` when the source, the files beside it and
-/// the contract are unchanged.
-pub fn compile(source: &Path, cache: &Path) -> Result<Compiled, CompileError> {
-    let key = key(source)?;
+/// the contract and the entry are unchanged.
+pub fn compile(source: &Path, cache: &Path, entry: Entry) -> Result<Compiled, CompileError> {
+    let key = key(source, entry)?;
     let cached = cache.join(format!("{key}.dxil"));
     if let Ok(dxil) = std::fs::read(&cached)
         && signed(&dxil)
@@ -119,7 +187,9 @@ pub fn compile(source: &Path, cache: &Path) -> Result<Compiled, CompileError> {
     std::fs::write(&header, HEADER).map_err(|e| format!("{}: {e}", header.display()))?;
     let out = cache.join(format!("{key}.tmp"));
     let run = Command::new(&dxc)
-        .args(["-nologo", "-T", PROFILE, "-E", "main", "-HV", "2021", "-O3", "-I"])
+        .args(["-nologo", "-T", PROFILE, "-HV", "2021", "-O3"])
+        .args(entry.args())
+        .arg("-I")
         .arg(&include)
         .arg("-Fo")
         .arg(&out)
@@ -164,10 +234,90 @@ mod tests {
         let root = std::env::temp_dir().join(format!("swofty-postfx-{}", std::process::id()));
         let source =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates/postfx-pass/fx/vignette.hlsl");
-        let dxil = compile(&source, &root).unwrap().dxil;
+        let dxil = compile(&source, &root, Entry::default()).unwrap().dxil;
         assert!(signed(&dxil), "the validator signs the container");
-        assert_eq!(compile(&source, &root).unwrap().dxil, dxil);
+        assert_eq!(compile(&source, &root, Entry::default()).unwrap().dxil, dxil);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn entries_and_raw_passes_compile_to_their_own_dxil() {
+        if dxc().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("swofty-postfx-entry-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = root.join("cache");
+        let two = root.join("two.hlsl");
+        std::fs::write(
+            &two,
+            "#include \"swofty/postfx.hlsli\"\n\
+             float4 down(float2 uv, uint2 p) { return scene(uv) * 0.5; }\n\
+             float4 up(float2 uv, uint2 p) { return input(0, uv) * 2.0; }\n",
+        )
+        .unwrap();
+        let entry = |name| Entry {
+            name: Some(name),
+            raw: false,
+        };
+        let down = compile(&two, &cache, entry("down")).unwrap().dxil;
+        let up = compile(&two, &cache, entry("up")).unwrap().dxil;
+        assert!(signed(&down) && signed(&up));
+        assert_ne!(down, up, "each entry is its own shader");
+        assert_eq!(compile(&two, &cache, entry("down")).unwrap().dxil, down);
+        let err = compile(&two, &cache, Entry::default()).unwrap_err();
+        assert!(err.summary.starts_with("dxc: "), "no effect() in the file: {err}");
+
+        let raw = root.join("raw.hlsl");
+        std::fs::write(
+            &raw,
+            "#include \"swofty/postfx.hlsli\"\n\
+             [numthreads(16, 16, 1)] void fill(uint3 id : SV_DispatchThreadID)\n\
+             { if (all(id.xy < swofty_size)) swofty_output[id.xy] = float4(1, 0, 0, 1); }\n",
+        )
+        .unwrap();
+        let compiled = compile(
+            &raw,
+            &cache,
+            Entry {
+                name: Some("fill"),
+                raw: true,
+            },
+        )
+        .unwrap();
+        assert!(signed(&compiled.dxil));
+        assert!(
+            compile(
+                &raw,
+                &cache,
+                Entry {
+                    name: None,
+                    raw: true
+                }
+            )
+            .is_err(),
+            "raw defaults to main"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_png_becomes_a_tex() {
+        let mut png = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut png, 2, 1);
+            e.set_color(png::ColorType::Rgb);
+            e.set_depth(png::BitDepth::Eight);
+            let mut w = e.write_header().unwrap();
+            w.write_image_data(&[255, 0, 0, 0, 255, 0]).unwrap();
+        }
+        let tex = png_to_tex(&png).unwrap();
+        assert_eq!(&tex[..4], b"SWTX");
+        assert_eq!(tex[4..8], 2u32.to_le_bytes());
+        assert_eq!(tex[8..12], 1u32.to_le_bytes());
+        assert_eq!(tex[12..16], 0u32.to_le_bytes());
+        assert_eq!(tex[16..], [255, 0, 0, 255, 0, 255, 0, 255]);
+        assert!(png_to_tex(b"nope").is_err());
     }
 
     #[test]
@@ -183,7 +333,7 @@ mod tests {
             "#include \"swofty/postfx.hlsli\"\nfloat4 effect(float2 uv, uint2 p) { return nope; }\n",
         )
         .unwrap();
-        let err = compile(&source, &root.join("cache")).unwrap_err();
+        let err = compile(&source, &root.join("cache"), Entry::default()).unwrap_err();
         assert!(
             err.summary.starts_with("dxc: ") && err.summary.contains("nope"),
             "{err}"

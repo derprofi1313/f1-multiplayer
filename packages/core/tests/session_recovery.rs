@@ -121,6 +121,7 @@ impl Fixture {
         std::fs::copy(self.src.join("stub"), &launcher).unwrap();
         let journal = swofty_core::offline::journal_path(&self.data);
         let lines = [
+            serde_json::json!({"op": "meta", "game_dir": self.game, "created_utc": "", "schema_version": "1"}),
             serde_json::json!({"op": "rename", "from": launcher, "to": parked}),
             serde_json::json!({"op": "copy", "from": self.src.join("stub"), "to": launcher,
                 "sha256": sha256_bytes(b"session-launcher")}),
@@ -141,6 +142,28 @@ impl Fixture {
 
     fn read(&self, rel: &str) -> String {
         std::fs::read_to_string(self.game.join(rel)).unwrap()
+    }
+
+    /// The game folder moved by hand while a session was open.
+    fn move_game(&self) -> Game {
+        let to = self.root.join("moved/F1 25");
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::rename(&self.game, &to).unwrap();
+        Game {
+            identity: Identity::detect(&to, Some(1)).unwrap(),
+            dir: to,
+            user_reg: Some(self.reg.clone()),
+        }
+    }
+
+    fn snapshot_of(&self, game: &Path) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        walk(game, game, &mut out);
+        out.insert(
+            "<user.reg>".into(),
+            sha256_bytes(&std::fs::read(&self.reg).unwrap()),
+        );
+        out
     }
 
     fn lose_journals(&self) {
@@ -254,6 +277,20 @@ fn a_session_rolled_back_when_the_game_exits_leaves_the_folder_byte_identical() 
         assert_eq!(f.snapshot(), original);
         assert_eq!(inst.verify().unwrap(), []);
     }
+}
+
+#[test]
+fn tidy_removes_the_launcher_saves_status_and_nothing_else_of_the_loaders() {
+    let f = Fixture::new("status");
+    let game = f.game();
+    let status = f.game.join("swofty").join("launcher-saves.json");
+    write(&status, "{}");
+    let other = f.game.join("swofty").join("keep.json");
+    write(&other, "{}");
+    let inst = Installer::new(&f.data, &game);
+    inst.tidy(&f.data.join("sessions").join("logs")).unwrap();
+    assert!(!status.exists());
+    assert!(other.is_file());
 }
 
 #[test]
@@ -541,5 +578,131 @@ fn a_build_whose_process_died_is_cleaned_up_by_the_next_session() {
     assert!(
         !busy::cancel_requested(&f.data),
         "an old cancel never stops the next build"
+    );
+}
+
+#[test]
+fn a_session_whose_game_folder_was_moved_is_rolled_back_where_its_files_are() {
+    let f = Fixture::new("moved");
+    let original = f.snapshot();
+    let game = f.game();
+    f.session(&game);
+    f.play();
+    assert_eq!(
+        Journal::open(&f.data).unwrap()[0].game.as_deref(),
+        Some(f.game.as_path())
+    );
+    let moved = f.move_game();
+
+    let lock = SessionLock::try_acquire(&f.data).unwrap().unwrap();
+    let r = recovery::recover(&lock, &f.data, &moved, Scope::Sessions).unwrap();
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+    assert!(r.offline);
+    let lines = r.lines();
+    assert!(
+        lines[0].starts_with(&format!(
+            "offline play's record was for F1 25 in {}, which is gone",
+            f.game.display()
+        )),
+        "{lines:?}"
+    );
+    assert!(r.journals.iter().all(|j| j.drift.is_empty()), "{lines:?}");
+    assert_eq!(f.snapshot_of(&moved.dir), original);
+    assert!(Journal::open(&f.data).unwrap().is_empty());
+    assert!(!swofty_core::offline::journal_path(&f.data).exists());
+}
+
+#[test]
+fn a_moved_folder_whose_files_changed_keeps_the_undo_record() {
+    let f = Fixture::new("moved-changed");
+    let game = f.game();
+    f.session(&game);
+    f.play();
+    let moved = f.move_game();
+    write(&moved.dir.join(GVDB), "db-from-elsewhere");
+    write(&moved.dir.join(LAUNCHER), "another program");
+    std::fs::remove_file(moved.dir.join(format!("{LAUNCHER}.bak"))).unwrap();
+
+    let lock = SessionLock::try_acquire(&f.data).unwrap().unwrap();
+    let err = recovery::recover(&lock, &f.data, &moved, Scope::Sessions)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(&format!(
+            "undo record is for F1 25 in {}, which is gone",
+            f.game.display()
+        )),
+        "{err}"
+    );
+    assert!(
+        err.ends_with(&format!(
+            "Move the F1 25 folder back to {} and try again",
+            f.game.display()
+        )),
+        "{err}"
+    );
+    assert_eq!(Journal::open(&f.data).unwrap().len(), 1);
+    assert_eq!(std::fs::read_to_string(moved.dir.join(UI)).unwrap(), "ui-modded");
+
+    let offline = recovery::relocate_offline(&f.data, &moved.dir)
+        .unwrap_err()
+        .to_string();
+    assert!(offline.contains("doesn't hold the files it placed"), "{offline}");
+    assert!(swofty_core::offline::journal_path(&f.data).exists());
+    drop(lock);
+    let restore = recovery::restore(&f.data, &moved).unwrap_err().to_string();
+    assert!(
+        restore.contains("offline play's record is for F1 25 in"),
+        "{restore}"
+    );
+}
+
+#[test]
+fn a_record_for_a_folder_still_there_is_left_alone() {
+    let f = Fixture::new("not-moved");
+    let game = f.game();
+    f.session(&game);
+    f.play();
+    let journal = swofty_core::offline::journal_path(&f.data);
+    let before = std::fs::read_to_string(&journal).unwrap();
+    let other = f.root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    assert_eq!(recovery::relocate_offline(&f.data, &other).unwrap(), None);
+    assert_eq!(recovery::relocate_offline(&f.data, &f.game).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&journal).unwrap(), before);
+}
+
+#[test]
+fn a_record_for_a_folder_that_is_gone_closes_on_a_copy_without_its_files() {
+    let f = Fixture::new("moved-other-copy");
+    let game = f.game();
+    f.session(&game);
+    f.play();
+    std::fs::remove_dir_all(&f.game).unwrap();
+    let other = f.root.join("other/F1 25");
+    for (rel, body) in [
+        ("F1_25.exe", "exe-v1"),
+        (GVDB, "db-v2"),
+        (UI, "ui-v2"),
+        (LAUNCHER, "anticheat"),
+    ] {
+        write(&other.join(rel), body);
+    }
+    let copy = Game {
+        identity: Identity::detect(&other, Some(1)).unwrap(),
+        dir: other.clone(),
+        user_reg: Some(f.reg.clone()),
+    };
+
+    let lock = SessionLock::try_acquire(&f.data).unwrap().unwrap();
+    let r = recovery::recover(&lock, &f.data, &copy, Scope::Sessions).unwrap();
+    assert!(Journal::open(&f.data).unwrap().is_empty());
+    assert_eq!(std::fs::read_to_string(other.join(GVDB)).unwrap(), "db-v2");
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| p.contains("doesn't hold the files it placed")),
+        "{:?}",
+        r.problems
     );
 }

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "mod.carphysics",
+  "name": "Car Physics",
+  "description": "A 1990 race engine and AI grip as a car.profile record, a six-speed Ferrari without ERS as a vehicle.handling record, and live layers on the wings.",
+  "version": "1.0.0",
+  "author": "you",
+  "license": "MIT",
+  "kind": ["native", "files"],
+  "category": "cars",
+  "compat": { "game": "f1_25", "launcher": ">=1.7.0" },
+  "operations": { "native": [ { "dll": "native/carphysics.dll" } ] }
+}

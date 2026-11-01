@@ -1,0 +1,17 @@
+{
+  "career.mode": {
+    "notes_2012": { "data_group": "f1_career_notes_2012", "save_container": "driver_career_notes_2012", "title": "lng_notes_2012_title" }
+  },
+  "career.content": {
+    "notes_2012": {
+      "mode": "mod.career-notes/notes_2012",
+      "data_group": "f1_career_notes_2012",
+      "suffix": "N12",
+      "description": "lng_notes_2012_desc",
+      "needs": [
+        { "id": "mod.career-notes", "range": "^1.0.0", "why": "its visit counter" },
+        { "id": "community.sochi", "range": "^1.1.0", "why": "calendar round 4" }
+      ]
+    }
+  }
+}

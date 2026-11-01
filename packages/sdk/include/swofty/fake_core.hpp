@@ -56,7 +56,7 @@ namespace swofty::fake {
 
 inline const char *scope_name(uint32_t s)
 {
-    return s == SWOFTY_SCOPE_PROFILE ? "profile" : s == SWOFTY_SCOPE_CAREER ? "career" : s == SWOFTY_SCOPE_GLOBAL ? "global" : "unknown";
+    return s == SWOFTY_SCOPE_PROFILE ? "profile" : s == SWOFTY_SCOPE_CAREER ? "career" : s == SWOFTY_SCOPE_GLOBAL ? "global" : s == SWOFTY_SCOPE_AUTOMATIC ? "automatic" : "unknown";
 }
 
 inline const char *phase_name(uint32_t p)

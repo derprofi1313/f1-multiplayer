@@ -63,4 +63,7 @@ static_assert(offsetof(EntrantWriteData, badge_stat_id) == 0x18);
 static_assert(offsetof(EntrantWriteData, seat_value) == 0x28);
 static_assert(sizeof(EntrantWriteData) == 0x2c);
 
+using Ent_Deserialise_EntrantVector_t = int(void *vector_object, void *bag);
+inline constexpr fn<"Ent_Deserialise_EntrantVector", Ent_Deserialise_EntrantVector_t> Ent_Deserialise_EntrantVector{}; // L2 experimental
+
 }

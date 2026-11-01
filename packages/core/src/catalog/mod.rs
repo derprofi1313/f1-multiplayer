@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::manifest::{AddonManifest, Category, Requirement};
 use crate::store::Store;
+use crate::transfer;
 use crate::{Error, Result, io_err};
 
 pub const URL_ENV: &str = "SWOFTY_REGISTRY_URL";
@@ -306,13 +307,22 @@ pub fn catalog_url() -> String {
     format!("{}/v1/addons", base_url())
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 struct Catalog {
-    addons: Vec<Addon>,
+    addons: Vec<serde_json::Value>,
 }
 
+/// The addons of a catalog. An entry this launcher can't read is left out, so one
+/// malformed addon doesn't hide the others.
 pub fn parse(text: &str) -> Option<Vec<Addon>> {
-    serde_json::from_str::<Catalog>(text).ok().map(|c| c.addons)
+    let catalog = serde_json::from_str::<Catalog>(text).ok()?;
+    Some(
+        catalog
+            .addons
+            .into_iter()
+            .filter_map(|a| serde_json::from_value(a).ok())
+            .collect(),
+    )
 }
 
 pub fn cache_path(root: &Path) -> PathBuf {
@@ -600,40 +610,47 @@ pub fn body_timeout(size: u64) -> Duration {
 }
 
 /// Downloads `v` to `to`, following redirects to where the registry keeps the
-/// file, and checks it with [`save`]. The body streams to disk.
+/// file, and checks its size and SHA-256. The body streams to disk, and a
+/// download the connection breaks off resumes from the bytes it has.
 pub fn download(v: &Version, to: &Path, progress: &dyn Fn(Stage)) -> Result<()> {
     within_limit(v)?;
     let url = &v.url;
-    let response = ureq::get(url)
-        .header("User-Agent", agent_name())
-        .config()
-        .timeout_resolve(Some(Duration::from_secs(15)))
-        .timeout_connect(Some(Duration::from_secs(15)))
-        .timeout_send_request(Some(Duration::from_secs(30)))
-        .timeout_recv_response(Some(Duration::from_secs(60)))
-        .timeout_recv_body(Some(body_timeout(v.size)))
-        .http_status_as_error(false)
-        .build()
-        .call()
-        .map_err(|e| Error::Other(format!("{url}: {e}")))?;
-    let status = response.status().as_u16();
-    if status >= 400 {
-        return Err(Error::Other(format!("{url}: HTTP {status}")));
-    }
-    let encoded = response.headers().contains_key("content-encoding");
-    let sent = response
-        .headers()
-        .get("content-length")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.trim().parse::<u64>().ok());
-    if let Some(sent) = sent.filter(|s| !encoded && *s != v.size) {
-        return Err(Error::Other(format!(
-            "{url}: the server sends {sent} bytes, the registry lists {}",
-            v.size
-        )));
-    }
-    let mut body = response.into_body();
-    save(body.with_config().limit(v.size + 1).reader(), v, to, progress)
+    let too_long = || format!("larger than the {} bytes the registry lists", v.size);
+    let fetch = transfer::Fetch {
+        url,
+        size: v.size,
+        lister: "the registry",
+        too_long: &too_long,
+    };
+    let mut open = |from: u64| {
+        let mut request = ureq::get(url)
+            .header("User-Agent", agent_name())
+            .header("Accept-Encoding", "identity");
+        if from > 0 {
+            request = request.header("Range", format!("bytes={from}-"));
+        }
+        let response = request
+            .config()
+            .timeout_resolve(Some(Duration::from_secs(15)))
+            .timeout_connect(Some(Duration::from_secs(15)))
+            .timeout_send_request(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_recv_body(Some(body_timeout(v.size - from)))
+            .http_status_as_error(false)
+            .build()
+            .call()
+            .map_err(transfer::Opening::Call)?;
+        let status = response.status().as_u16();
+        if status >= 400 {
+            return Err(transfer::Opening::Refused(Error::Other(format!(
+                "{url}: HTTP {status}"
+            ))));
+        }
+        Ok(response)
+    };
+    let (len, digest) = transfer::fetch(&fetch, to, &mut open, &|n| progress(Stage::Downloading(n)))?;
+    progress(Stage::Verifying);
+    verify(v, len, &digest)
 }
 
 fn downloads_dir(store: &Store) -> Result<PathBuf> {
@@ -700,6 +717,25 @@ fn file_name(addon: &Addon, v: &Version) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unreadable_entry_leaves_the_rest_of_the_catalog() {
+        let entry = |id: &str, game: serde_json::Value| {
+            serde_json::json!({
+                "id": id, "name": id, "author": "a", "summary": "", "description": "",
+                "versions": [], "latest": { "version": "1.0.0", "game": game, "size": 1,
+                "sha256": "00", "url": "http://x/a.zip", "published_at": "2026-10-30T00:00:00Z" }
+            })
+        };
+        let text = serde_json::json!({ "addons": [
+            entry("a.good", serde_json::json!("f1_25")),
+            entry("a.bad", serde_json::Value::Null),
+        ] })
+        .to_string();
+        let ids: Vec<String> = parse(&text).unwrap().into_iter().map(|a| a.id).collect();
+        assert_eq!(ids, ["a.good"]);
+        assert!(parse("{\"not\": 1}").is_none());
+    }
 
     #[test]
     fn ensure_dir_moves_a_file_aside() {
@@ -1032,6 +1068,123 @@ mod tests {
         v.url = format!("{}/d", exact.url);
         download(&v, &to, &|_| {}).unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), &body[..50]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `answer` without its last `short` bytes.
+    fn cut(mut answer: Vec<u8>, short: usize) -> Vec<u8> {
+        answer.truncate(answer.len() - short);
+        answer
+    }
+
+    fn rest(body: &[u8], from: usize) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {from}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len() - 1,
+            body.len(),
+            body.len() - from
+        )
+        .into_bytes();
+        out.extend(&body[from..]);
+        out
+    }
+
+    #[test]
+    fn resumes_a_download_the_connection_cut_off() {
+        let body = b"0123456789abcdef".repeat(4096);
+        let served = serve(vec![
+            cut(ok(&body, true), body.len() - 20_000),
+            cut(rest(&body, 20_000), body.len() - 40_000),
+            rest(&body, 40_000),
+        ]);
+        let dir = scratch("resume");
+        let to = dir.join("x.zip");
+        let mut v = version("1.0.0", None);
+        v.url = format!("{}/d", served.url);
+        v.size = body.len() as u64;
+        v.sha256 = sha256_hex(&body);
+        download(&v, &to, &|_| {}).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), body);
+        let heads = served.requests.lock().unwrap().clone();
+        assert_eq!(heads.len(), 3);
+        assert_eq!(header(&heads[0], "range"), None);
+        assert_eq!(header(&heads[1], "range"), Some("bytes=20000-"));
+        assert_eq!(header(&heads[2], "range"), Some("bytes=40000-"));
+        assert_eq!(header(&heads[2], "accept-encoding"), Some("identity"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn starts_over_when_the_server_ignores_the_range() {
+        let body = b"0123456789abcdef".repeat(4096);
+        let served = serve(vec![cut(ok(&body, true), body.len() - 20_000), ok(&body, true)]);
+        let dir = scratch("restart");
+        let to = dir.join("x.zip");
+        let mut v = version("1.0.0", None);
+        v.url = format!("{}/d", served.url);
+        v.size = body.len() as u64;
+        v.sha256 = sha256_hex(&body);
+        let seen = Mutex::new(Vec::new());
+        download(&v, &to, &|s| seen.lock().unwrap().push(s)).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), body);
+        assert!(seen.lock().unwrap().contains(&Stage::Downloading(0)));
+        assert_eq!(
+            header(&served.requests.lock().unwrap()[1], "range"),
+            Some("bytes=20000-")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_resumed_download_still_checks_the_sha256() {
+        let body = b"0123456789abcdef".repeat(4096);
+        let mut other = body.clone();
+        other[50_000] ^= 1;
+        let served = serve(vec![
+            cut(ok(&body, true), body.len() - 20_000),
+            rest(&other, 20_000),
+        ]);
+        let dir = scratch("resume-sha");
+        let to = dir.join("x.zip");
+        let mut v = version("1.0.0", None);
+        v.url = format!("{}/d", served.url);
+        v.size = body.len() as u64;
+        v.sha256 = sha256_hex(&body);
+        let e = download(&v, &to, &|_| {}).unwrap_err().to_string();
+        assert!(e.contains("SHA-256"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn gives_advice_when_the_download_keeps_breaking() {
+        let body = b"0123456789abcdef".repeat(4096);
+        let served = serve(vec![cut(ok(&body, true), body.len()); 4]);
+        let dir = scratch("broken");
+        let to = dir.join("x.zip");
+        let mut v = version("1.0.0", None);
+        v.url = format!("{}/d", served.url);
+        v.size = body.len() as u64;
+        v.sha256 = sha256_hex(&body);
+        let e = download(&v, &to, &|_| {}).unwrap_err().to_string();
+        let (advice, raw) = e.split_once('\n').unwrap();
+        assert_eq!(advice, transfer::ADVICE);
+        assert!(raw.starts_with(&format!("({}: ", v.url)), "{e}");
+        assert_eq!(served.requests.lock().unwrap().len(), 4);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn does_not_retry_an_http_error() {
+        let served = serve(vec![
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        ]);
+        let dir = scratch("404");
+        let mut v = version("1.0.0", None);
+        v.url = format!("{}/d", served.url);
+        v.size = 10;
+        let e = download(&v, &dir.join("x.zip"), &|_| {}).unwrap_err().to_string();
+        assert_eq!(e, format!("{}: HTTP 404", v.url));
+        assert_eq!(served.requests.lock().unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

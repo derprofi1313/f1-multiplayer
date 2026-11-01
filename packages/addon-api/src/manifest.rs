@@ -32,6 +32,7 @@ pub struct AddonManifest {
     /// Experimental engines of the core the addon uses; the build turns them on while it is on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub experimental_features: Vec<ExperimentalFeature>,
+    #[serde(default)]
     pub compat: Compat,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<Requirement>,
@@ -63,6 +64,12 @@ pub struct AddonManifest {
     /// Post-process passes run on the game's picture after its tonemap and before the HUD.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub postfx: Vec<PostFx>,
+    /// Render targets and images the [`PostFx`] passes read and write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub postfx_textures: Vec<PostFxTexture>,
+    /// A native `choice` option whose value is the key that turns the addon's passes on and off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub postfx_toggle: Option<String>,
     /// A settings page in game between a Driver Career tile and the new-career wizard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub career_setup: Option<CareerSetup>,
@@ -439,6 +446,112 @@ pub struct PostFx {
     /// GPU milliseconds a frame past which the core turns the pass off. Defaults to 1.5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_ms: Option<f64>,
+    /// The function the pass runs: a `float4 name(float2 uv, uint2 pixel)`, or with `raw` the
+    /// compute entry point. Defaults to `effect`, or `main` with `raw`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// The shader defines its own compute entry point and writes `swofty_output` itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw: bool,
+    /// The thread group of a `raw` pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<[u32; 2]>,
+    /// Up to 8 textures the shader reads with `input(i, uv)`: an addon texture, `original` or
+    /// `previous`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
+    /// The addon texture the pass writes. Omitted, the pass writes the picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// Where the pass runs, by the game's view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<PostFxWhen>,
+    /// `{{id}}` naming a toggle option that turns the pass on and off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<String>,
+}
+
+/// The views a pass runs in and the states it stays out of.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PostFxWhen {
+    /// A subset of [`POSTFX_VIEWS`]. Empty means every view.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<String>,
+    /// A subset of [`POSTFX_SKIPS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip: Vec<String>,
+}
+
+/// A texture a pass reads or writes: sized from the picture or fixed, or an image from the addon.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PostFxTexture {
+    pub name: String,
+    /// The size as a multiple of the picture, above 0 and at most 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// One of [`POSTFX_FORMATS`]. Defaults to `rgba16f`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// Kept from one frame to the next instead of cleared.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub persistent: bool,
+    /// A read-only `.png` inside the addon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+pub const POSTFX_FORMATS: [&str; 7] = [
+    "rgba8",
+    "rgba16f",
+    "rg16f",
+    "r16f",
+    "r32f",
+    "rgb10a2",
+    "r11g11b10f",
+];
+pub const POSTFX_VIEWS: [&str; 6] = [
+    "cockpit",
+    "tcam",
+    "tcam_offset",
+    "chase_near",
+    "chase_far",
+    "other",
+];
+pub const POSTFX_SKIPS: [&str; 6] = ["paused", "replay", "photo", "menu", "cutscene", "spectating"];
+pub const POSTFX_INPUTS: usize = 8;
+/// Names an addon's textures cannot take.
+pub const POSTFX_RESERVED: [&str; 4] = ["scene", "original", "previous", "depth"];
+/// The values a `postfx_toggle` choice may list, besides `A`-`Z`, `0`-`9` and `F1`-`F24`.
+pub const POSTFX_KEYS: [&str; 6] = ["Insert", "Home", "End", "Page Up", "Page Down", "None"];
+
+fn texture_name_ok(n: &str) -> bool {
+    (1..=32).contains(&n.len())
+        && n.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn is_identifier(n: &str) -> bool {
+    let mut c = n.chars();
+    c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_')
+        && c.all(|f| f.is_ascii_alphanumeric() || f == '_')
+}
+
+/// Whether `v` names a key `postfx_toggle` accepts.
+pub fn postfx_key_ok(v: &str) -> bool {
+    let mut c = v.chars();
+    let single =
+        matches!((c.next(), c.next()), (Some(f), None) if f.is_ascii_uppercase() || f.is_ascii_digit());
+    let f_key = v
+        .strip_prefix('F')
+        .and_then(|n| n.parse::<u32>().ok())
+        .is_some_and(|n| (1..=24).contains(&n) && n.to_string() == v[1..]);
+    single || f_key || POSTFX_KEYS.contains(&v)
 }
 
 fn is_zero(v: &i32) -> bool {
@@ -490,6 +603,17 @@ pub struct Compat {
     pub launcher: Option<VersionReq>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seasons: Vec<String>,
+}
+
+impl Default for Compat {
+    fn default() -> Self {
+        Self {
+            game: crate::GAME_ID.to_owned(),
+            game_builds: Vec::new(),
+            launcher: None,
+            seasons: Vec::new(),
+        }
+    }
 }
 
 impl Compat {
@@ -806,6 +930,14 @@ impl AddonManifest {
             self.validate_postfx(p)
                 .or_else(|e| fail(format!("postfx[{i}]: {e}")))?;
         }
+        for (i, t) in self.postfx_textures.iter().enumerate() {
+            self.validate_postfx_texture(t, i)
+                .or_else(|e| fail(format!("postfx_textures[{i}]: {e}")))?;
+        }
+        if let Some(t) = &self.postfx_toggle {
+            self.validate_postfx_toggle(t)
+                .or_else(|e| fail(format!("postfx_toggle: {e}")))?;
+        }
         if let Some(m) = self.hud.as_ref().and_then(|h| h.mfd.as_ref()) {
             self.validate_mfd(m).or_else(|e| fail(format!("hud.mfd: {e}")))?;
         }
@@ -854,11 +986,136 @@ impl AddonManifest {
             if !(t.trim().starts_with("{{") && t.trim().ends_with("}}")) {
                 return Err(format!("option {t:?} must be a number or one {{{{option}}}}"));
             }
-            match self.options.iter().find(|o| o.id == id) {
-                None => return Err(format!("{{{{{id}}}}} names no option")),
-                Some(o) if o.binds != Binds::Db => return Err(format!("option {id} must bind db")),
+            if !self.options.iter().any(|o| o.id == id) {
+                return Err(format!("{{{{{id}}}}} names no option"));
+            }
+        }
+        if let Some(e) = &p.entry
+            && !is_identifier(e)
+        {
+            return Err(format!("entry {e:?} must be an identifier"));
+        }
+        match (p.raw, p.threads) {
+            (true, None) => return Err("a raw pass needs threads".into()),
+            (false, Some(_)) => return Err("threads is for a raw pass".into()),
+            (true, Some([x, y])) if x == 0 || y == 0 || x > 1024 || y > 1024 || x * y > 1024 => {
+                return Err(format!("threads [{x}, {y}] must be 1 to 1024 in total"));
+            }
+            _ => {}
+        }
+        if p.inputs.len() > POSTFX_INPUTS {
+            return Err(format!("{} inputs is more than {POSTFX_INPUTS}", p.inputs.len()));
+        }
+        for n in &p.inputs {
+            if n != "original" && n != "previous" && !self.postfx_textures.iter().any(|t| &t.name == n) {
+                return Err(format!("input {n} names no postfx_textures entry"));
+            }
+        }
+        if let Some(n) = &p.output {
+            match self.postfx_textures.iter().find(|t| &t.name == n) {
+                None => return Err(format!("output {n} names no postfx_textures entry")),
+                Some(t) if t.file.is_some() => {
+                    return Err(format!("output {n} is an image, which is read-only"));
+                }
                 Some(_) => {}
             }
+        }
+        if let Some(w) = &p.when {
+            if let Some(v) = w.views.iter().find(|v| !POSTFX_VIEWS.contains(&v.as_str())) {
+                return Err(format!(
+                    "when.views {v:?} is not one of {}",
+                    POSTFX_VIEWS.join(", ")
+                ));
+            }
+            if let Some(v) = w.skip.iter().find(|v| !POSTFX_SKIPS.contains(&v.as_str())) {
+                return Err(format!(
+                    "when.skip {v:?} is not one of {}",
+                    POSTFX_SKIPS.join(", ")
+                ));
+            }
+        }
+        if let Some(t) = &p.enabled {
+            let id = self.single_placeholder(t, "enabled")?;
+            match self.options.iter().find(|o| o.id == id) {
+                None => return Err(format!("{{{{{id}}}}} names no option")),
+                Some(o) if o.kind != OptionType::Toggle => {
+                    return Err(format!("enabled option {id} must be a toggle"));
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn single_placeholder<'a>(&self, t: &'a str, what: &str) -> std::result::Result<&'a str, String> {
+        match placeholders(t)[..] {
+            [id] if t.trim().starts_with("{{") && t.trim().ends_with("}}") => Ok(id),
+            _ => Err(format!("{what} {t:?} must be one {{{{option}}}}")),
+        }
+    }
+
+    fn validate_postfx_texture(&self, t: &PostFxTexture, at: usize) -> std::result::Result<(), String> {
+        if !self.experimental_features.contains(&ExperimentalFeature::Postfx) {
+            return Err("list \"postfx\" in experimental_features to use it".into());
+        }
+        if !texture_name_ok(&t.name) {
+            return Err(format!("name {:?} must be 1 to 32 of a-z, 0-9 and _", t.name));
+        }
+        if POSTFX_RESERVED.contains(&t.name.as_str()) {
+            return Err(format!("name {} is reserved", t.name));
+        }
+        if self.postfx_textures[..at].iter().any(|o| o.name == t.name) {
+            return Err(format!("name {} is listed twice", t.name));
+        }
+        if let Some(f) = &t.format
+            && !POSTFX_FORMATS.contains(&f.as_str())
+        {
+            return Err(format!(
+                "format {f:?} is not one of {}",
+                POSTFX_FORMATS.join(", ")
+            ));
+        }
+        let sized = t.width.is_some() || t.height.is_some();
+        match (&t.file, t.scale, sized) {
+            (Some(f), None, false) => {
+                if !relative_inside(f) {
+                    return Err(format!("file {f} must be a relative path inside the addon"));
+                }
+                if !f.to_ascii_lowercase().ends_with(".png") {
+                    return Err(format!("file {f} must be a .png file"));
+                }
+                if t.persistent || t.format.is_some() {
+                    return Err("an image texture takes no format or persistent".into());
+                }
+            }
+            (None, Some(s), false) => {
+                if !(s > 0.0 && s <= 2.0) {
+                    return Err(format!("scale {s} is not above 0 and at most 2"));
+                }
+            }
+            (None, None, true) => match (t.width, t.height) {
+                (Some(w), Some(h)) if (1..=8192).contains(&w) && (1..=8192).contains(&h) => {}
+                (Some(_), Some(_)) => return Err("width and height must be 1 to 8192".into()),
+                _ => return Err("width and height go together".into()),
+            },
+            _ => return Err("give exactly one of scale, width and height, or file".into()),
+        }
+        Ok(())
+    }
+
+    fn validate_postfx_toggle(&self, t: &str) -> std::result::Result<(), String> {
+        if !self.experimental_features.contains(&ExperimentalFeature::Postfx) {
+            return Err("list \"postfx\" in experimental_features to use it".into());
+        }
+        let id = self.single_placeholder(t, "value")?;
+        let Some(o) = self.options.iter().find(|o| o.id == id) else {
+            return Err(format!("{{{{{id}}}}} names no option"));
+        };
+        if o.binds != Binds::Native || o.kind != OptionType::Choice {
+            return Err(format!("option {id} must be a native choice"));
+        }
+        if let Some(c) = o.values.iter().find(|c| !postfx_key_ok(&c.value)) {
+            return Err(format!("option {id} value {:?} is not a key name", c.value));
         }
         Ok(())
     }
@@ -1363,6 +1620,184 @@ mod tests {
     }
 
     #[test]
+    fn a_v2_postfx_graph_is_checked_before_it_installs() {
+        let with = |extra: &str, postfx: &str| {
+            AddonManifest::parse(&format!(
+                r#"{{ "schema_version": 1, "id": "author.fx", "name": "Fx", "version": "1.0.0", "author": "a",
+                    "experimental_features": ["postfx"], "compat": {{ "game": "f1_25" }},
+                    "options": [
+                        {{ "id": "amount", "type": "slider", "min": 0, "max": 100, "step": 1, "default": 50, "binds": "native" }},
+                        {{ "id": "on", "type": "toggle", "default": true, "binds": "native" }},
+                        {{ "id": "key", "type": "choice", "default": "F9", "binds": "native",
+                           "values": ["F9", "Page Up", "None"] }},
+                        {{ "id": "db_key", "type": "choice", "default": "F9", "binds": "db", "values": ["F9"] }},
+                        {{ "id": "bad_key", "type": "choice", "default": "F25", "binds": "native", "values": ["F25"] }}
+                    ],
+                    {extra}
+                    "postfx": {postfx} }}"#
+            ))
+            .map_err(|e| e.to_string())
+        };
+        let textures = r#""postfx_textures": [
+            { "name": "half", "scale": 0.5 },
+            { "name": "accum", "width": 512, "height": 288, "format": "r32f", "persistent": true },
+            { "name": "dirt", "file": "tex/dirt.png" }
+        ],"#;
+        let ok = with(
+            &format!(r#"{textures} "postfx_toggle": "{{{{key}}}}","#),
+            r#"[
+                { "shader": "fx/b.hlsl", "entry": "down", "name": "down", "inputs": ["original", "dirt"], "output": "half" },
+                { "shader": "fx/b.hlsl", "entry": "up", "options": ["{{amount}}"], "inputs": ["half", "previous"],
+                  "when": { "views": ["cockpit"], "skip": ["paused", "menu"] }, "enabled": "{{on}}" },
+                { "shader": "fx/c.hlsl", "raw": true, "threads": [16, 16], "output": "accum" }
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(m_threads(&ok), Some([16, 16]));
+        assert_eq!(ok.postfx[1].when.as_ref().unwrap().skip, ["paused", "menu"]);
+        assert!(ok.postfx_textures[1].persistent);
+        let pass = |p: &str| with(textures, &format!("[{p}]")).unwrap_err();
+        let at = |msg: &str| format!("invalid manifest: author.fx: postfx[0]: {msg}");
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "entry": "1x" }"#),
+            at(r#"entry "1x" must be an identifier"#)
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "raw": true }"#),
+            at("a raw pass needs threads")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "threads": [8, 8] }"#),
+            at("threads is for a raw pass")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "raw": true, "threads": [64, 32] }"#),
+            at("threads [64, 32] must be 1 to 1024 in total")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "inputs": ["nope"] }"#),
+            at("input nope names no postfx_textures entry")
+        );
+        assert_eq!(
+            pass(&format!(
+                r#"{{ "shader": "a.hlsl", "inputs": [{}] }}"#,
+                [r#""original""#; 9].join(",")
+            )),
+            at("9 inputs is more than 8")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "output": "dirt" }"#),
+            at("output dirt is an image, which is read-only")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "output": "original" }"#),
+            at("output original names no postfx_textures entry")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "when": { "views": ["sky"] } }"#),
+            at("when.views \"sky\" is not one of cockpit, tcam, tcam_offset, chase_near, chase_far, other")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "when": { "skip": ["lunch"] } }"#),
+            at("when.skip \"lunch\" is not one of paused, replay, photo, menu, cutscene, spectating")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "enabled": "{{amount}}" }"#),
+            at("enabled option amount must be a toggle")
+        );
+        assert_eq!(
+            pass(r#"{ "shader": "a.hlsl", "enabled": "on" }"#),
+            at(r#"enabled "on" must be one {{option}}"#)
+        );
+        let tex = |t: &str| {
+            with(
+                &format!(r#""postfx_textures": [{t}],"#),
+                r#"[{ "shader": "a.hlsl" }]"#,
+            )
+            .unwrap_err()
+        };
+        let tat = |msg: &str| format!("invalid manifest: author.fx: postfx_textures[0]: {msg}");
+        assert_eq!(
+            tex(r#"{ "name": "Half", "scale": 1 }"#),
+            tat(r#"name "Half" must be 1 to 32 of a-z, 0-9 and _"#)
+        );
+        assert_eq!(
+            tex(r#"{ "name": "scene", "scale": 1 }"#),
+            tat("name scene is reserved")
+        );
+        assert_eq!(
+            tex(r#"{ "name": "a", "scale": 3 }"#),
+            tat("scale 3 is not above 0 and at most 2")
+        );
+        assert_eq!(
+            tex(r#"{ "name": "a" }"#),
+            tat("give exactly one of scale, width and height, or file")
+        );
+        assert_eq!(
+            tex(r#"{ "name": "a", "scale": 1, "file": "a.png" }"#),
+            tat("give exactly one of scale, width and height, or file")
+        );
+        assert_eq!(
+            tex(r#"{ "name": "a", "width": 10 }"#),
+            tat("width and height go together")
+        );
+        assert_eq!(
+            tex(r#"{ "name": "a", "width": 9000, "height": 1 }"#),
+            tat("width and height must be 1 to 8192")
+        );
+        assert_eq!(
+            tex(r#"{ "name": "a", "scale": 1, "format": "rgb8" }"#),
+            tat(r#"format "rgb8" is not one of rgba8, rgba16f, rg16f, r16f, r32f, rgb10a2, r11g11b10f"#)
+        );
+        assert_eq!(
+            tex(r#"{ "name": "a", "file": "a.jpg" }"#),
+            tat("file a.jpg must be a .png file")
+        );
+        assert_eq!(
+            tex(r#"{ "name": "a", "file": "../a.png" }"#),
+            tat("file ../a.png must be a relative path inside the addon")
+        );
+        assert_eq!(
+            with(
+                r#""postfx_textures": [{ "name": "a", "scale": 1 }, { "name": "a", "scale": 1 }],"#,
+                r#"[{ "shader": "a.hlsl" }]"#
+            )
+            .unwrap_err(),
+            "invalid manifest: author.fx: postfx_textures[1]: name a is listed twice"
+        );
+        let toggle = |t: &str| {
+            with(
+                &format!(r#""postfx_toggle": "{t}","#),
+                r#"[{ "shader": "a.hlsl" }]"#,
+            )
+            .unwrap_err()
+        };
+        let gat = |msg: &str| format!("invalid manifest: author.fx: postfx_toggle: {msg}");
+        assert_eq!(toggle("{{db_key}}"), gat("option db_key must be a native choice"));
+        assert_eq!(toggle("{{amount}}"), gat("option amount must be a native choice"));
+        assert_eq!(
+            toggle("{{bad_key}}"),
+            gat(r#"option bad_key value "F25" is not a key name"#)
+        );
+        assert_eq!(toggle("{{nope}}"), gat("{{nope}} names no option"));
+        assert_eq!(toggle("F9"), gat(r#"value "F9" must be one {{option}}"#));
+        assert!(
+            ["A", "Z", "0", "F1", "F24", "Insert", "Page Down", "None"]
+                .iter()
+                .all(|k| postfx_key_ok(k))
+        );
+        assert!(
+            !["a", "F0", "F01", "F25", "AB", "", "Space"]
+                .iter()
+                .any(|k| postfx_key_ok(k))
+        );
+    }
+
+    fn m_threads(m: &AddonManifest) -> Option<[u32; 2]> {
+        m.postfx[2].threads
+    }
+
+    #[test]
     fn a_shader_pack_is_checked_before_it_installs() {
         let err = |shader: &str| looks(shader).unwrap_err();
         let at = |msg: &str| format!("invalid manifest: author.looks: shader: {msg}");
@@ -1572,5 +2007,17 @@ mod tests {
         .unwrap();
         assert!(m.options[0].hidden);
         assert_eq!(serde_json::to_value(&m).unwrap()["options"][0]["hidden"], true);
+    }
+
+    #[test]
+    fn a_manifest_without_compat_is_for_f1_25_on_any_build_and_launcher() {
+        let m = AddonManifest::parse(
+            r#"{"schema_version":1,"id":"t.nocompat","name":"No compat","version":"1.0.1","author":"t","kind":["erp"]}"#,
+        )
+        .unwrap();
+        assert_eq!(m.compat, Compat::default());
+        assert_eq!(m.compat.game, crate::GAME_ID);
+        assert!(m.compat.accepts_build(25251167));
+        assert!(m.compat.accepts_launcher(&Version::new(1, 7, 3)));
     }
 }

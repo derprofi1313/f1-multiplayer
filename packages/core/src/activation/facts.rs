@@ -194,7 +194,8 @@ impl<'a> Keyed<'a> {
     }
 }
 
-fn layers(db: &Keyed) -> Vec<Layer> {
+/// The valid track layers in row order, each with its `worldEri` template.
+fn layer_rows(db: &Keyed) -> Vec<(Layer, String)> {
     (0..db.count(LAYERS))
         .filter_map(|i| {
             let row = format!("{LAYERS}_{i}");
@@ -209,13 +210,16 @@ fn layers(db: &Keyed) -> Vec<Layer> {
                 .rsplit_once(WORLD_MARK)
                 .map(|(_, w)| w.trim_end_matches(".wep").to_owned())
                 .filter(|w| !w.is_empty())?;
-            Some(Layer {
-                label: db.text(&format!("{row}._metadata_")).unwrap_or_default(),
-                setup_modes: db.list(&format!("{row}.game_setup_modes")),
-                seasons: db.list(&format!("{row}.seasons")),
-                weekend_formats: db.list(&format!("{row}.weekend_formats")),
-                world,
-            })
+            Some((
+                Layer {
+                    label: db.text(&format!("{row}._metadata_")).unwrap_or_default(),
+                    setup_modes: db.list(&format!("{row}.game_setup_modes")),
+                    seasons: db.list(&format!("{row}.seasons")),
+                    weekend_formats: db.list(&format!("{row}.weekend_formats")),
+                    world,
+                },
+                eri,
+            ))
         })
         .collect()
 }
@@ -271,9 +275,31 @@ fn stock_world_file(code: &str, variant: &str) -> String {
     format!("{TRACKS_DIR}/{code}/wep/{code}_{variant}.erp")
 }
 
-/// The world's room: the instances of the layers its `.wep` and the common `.wep` list, found in
-/// any of `files`. `None` when no file holds the world.
-fn room(files: &[&ErpFile], code: &str, variant: &str) -> Option<grid::Room> {
+/// A layer's world resource at one track: its `worldEri` template with the track's file name.
+fn world_eri(template: &str, code: &str) -> String {
+    template.replace("[FILENAME]", code)
+}
+
+/// The game-folder archive a world resource lives in, by the game's layout: `eaid://<path>.wep`
+/// in `2025_asset_groups/<path>.erp`.
+fn world_file(eri: &str) -> Option<String> {
+    let path = eri.strip_prefix("eaid://")?.strip_suffix(".wep")?;
+    Some(format!("2025_asset_groups/{path}.erp"))
+}
+
+/// Each world the layers load, with the `worldEri` template of the first layer naming it.
+fn world_templates(rows: &[(Layer, String)]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (l, eri) in rows {
+        out.entry(l.world.clone()).or_insert_with(|| eri.clone());
+    }
+    out
+}
+
+/// The world's room: the instances of the layers its `.wep` (`world`, the resource the layer's
+/// `worldEri` names at this track) and the common `.wep` list, found in any of `files`. `None`
+/// when no file holds the world.
+fn room(files: &[&ErpFile], code: &str, world: &str) -> Option<grid::Room> {
     let find = |name: &str| {
         files
             .iter()
@@ -302,9 +328,9 @@ fn room(files: &[&ErpFile], code: &str, variant: &str) -> Option<grid::Room> {
             })
             .unwrap_or_default()
     };
-    find(&wep(code, variant))?;
+    find(world)?;
     let mut wanted = names(&wep(code, "common"));
-    for n in names(&wep(code, variant)) {
+    for n in names(world) {
         if !wanted.contains(&n) {
             wanted.push(n);
         }
@@ -417,7 +443,7 @@ struct Job {
     key: String,
 }
 
-fn job_key(code: &str, files: &[PathBuf], worlds: &BTreeSet<String>) -> String {
+fn job_key(code: &str, files: &[PathBuf], worlds: &BTreeMap<String, String>) -> String {
     let mut h = Sha256::new();
     h.update(format!("{VERSION}|{code}|{worlds:?};"));
     for f in files {
@@ -426,13 +452,13 @@ fn job_key(code: &str, files: &[PathBuf], worlds: &BTreeSet<String>) -> String {
     crate::baseline::hex(&h.finalize())[..16].to_owned()
 }
 
-fn scan_worlds(job: &Job, worlds: &BTreeSet<String>) -> BTreeMap<String, World> {
+fn scan_worlds(job: &Job, worlds: &BTreeMap<String, String>) -> BTreeMap<String, World> {
     let opened: Vec<ErpFile> = job.files.iter().filter_map(|p| ErpFile::open(p).ok()).collect();
     let refs: Vec<&ErpFile> = opened.iter().collect();
     worlds
         .iter()
-        .filter_map(|w| {
-            let r = room(&refs, &job.code, w)?;
+        .filter_map(|(w, template)| {
+            let r = room(&refs, &job.code, &world_eri(template, &job.code))?;
             Some((
                 w.clone(),
                 World {
@@ -450,7 +476,7 @@ fn scan_worlds(job: &Job, worlds: &BTreeSet<String>) -> BTreeMap<String, World> 
 /// once. `cache` gets the scanned ones.
 fn all_worlds(
     jobs: &[Job],
-    worlds: &BTreeSet<String>,
+    worlds: &BTreeMap<String, String>,
     cache: &mut WorldsCache,
 ) -> BTreeMap<String, BTreeMap<String, World>> {
     let todo: Vec<&Job> = jobs
@@ -510,8 +536,9 @@ pub fn facts(scan: &Scan, previous: Option<&Facts>, cache: &mut WorldsCache) -> 
     }
     let db = Keyed::new(&gvdb);
     let grid_size = grid::grid_size(&gvdb);
-    let layers = layers(&db);
-    let worlds: BTreeSet<String> = layers.iter().map(|l| l.world.clone()).collect();
+    let rows = layer_rows(&db);
+    let worlds = world_templates(&rows);
+    let layers: Vec<Layer> = rows.into_iter().map(|(l, _)| l).collect();
     let codes = track_codes(&db);
     hasher.update(format!("grid {grid_size};"));
     stamp(&mut hasher, &scan.db);
@@ -526,9 +553,12 @@ pub fn facts(scan: &Scan, previous: Option<&Facts>, cache: &mut WorldsCache) -> 
             continue;
         }
         let mut files = vec![common];
-        for w in &worlds {
-            let p = (scan.file)(&stock_world_file(code, w));
-            if p.is_file() {
+        for template in worlds.values() {
+            let Some(at) = world_file(&world_eri(template, code)) else {
+                continue;
+            };
+            let p = (scan.file)(&at);
+            if p.is_file() && !files.contains(&p) {
                 files.push(p);
             }
         }
@@ -969,7 +999,7 @@ mod tests {
         let applied = with_edits(&mut gvdb, &serde_json::to_vec(&assets).unwrap());
         assert_eq!(applied, 7);
         let db = Keyed::new(&gvdb);
-        let found = layers(&db);
+        let found: Vec<Layer> = layer_rows(&db).into_iter().map(|(l, _)| l).collect();
         assert_eq!(
             found
                 .iter()
@@ -987,6 +1017,52 @@ mod tests {
     }
 
     #[test]
+    fn a_layer_world_in_an_addon_package_is_read_at_its_own_path() {
+        let template = "eaid://bdx_s18_environment_package/tracks/[FILENAME]/wep/[FILENAME]_2012.wep";
+        let eri = world_eri(template, "monza");
+        assert_eq!(
+            eri,
+            "eaid://bdx_s18_environment_package/tracks/monza/wep/monza_2012.wep"
+        );
+        assert_eq!(
+            world_file(&eri).as_deref(),
+            Some("2025_asset_groups/bdx_s18_environment_package/tracks/monza/wep/monza_2012.erp")
+        );
+        assert_eq!(
+            world_file(&wep_name("monza", "f1_26")),
+            Some(stock_world_file("monza", "f1_26"))
+        );
+        let mut resources = worlds("monza", &[]);
+        resources.push((eri.clone(), wep(&[&format!("{EAID}monza/layers/myteam.layer")])));
+        let dir = std::env::temp_dir().join(format!("swofty-addon-world-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = dir.join("monza_2012.erp");
+        std::fs::write(&at, archive(resources)).unwrap();
+        let file = ErpFile::open(&at).unwrap();
+        let found = room(&[&file], "monza", &eri).unwrap();
+        assert_eq!((found.grid_slots, found.garages, found.pit_boxes), (24, 12, 12));
+        assert_eq!(room(&[&file], "monza", &wep_name("monza", "2012")), None);
+        let rows = vec![
+            (
+                Layer {
+                    world: "2012".into(),
+                    ..Layer::default()
+                },
+                template.to_owned(),
+            ),
+            (
+                Layer {
+                    world: "2012".into(),
+                    ..Layer::default()
+                },
+                "eaid://other/tracks/[FILENAME]/wep/[FILENAME]_2012.wep".to_owned(),
+            ),
+        ];
+        assert_eq!(world_templates(&rows)["2012"], template);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_world_missing_from_every_file_has_no_facts() {
         let file = ErpFile {
             path: PathBuf::new(),
@@ -997,6 +1073,6 @@ mod tests {
             },
             data_off: 0,
         };
-        assert_eq!(room(&[&file], "t", "f1"), None);
+        assert_eq!(room(&[&file], "t", &wep_name("t", "f1")), None);
     }
 }

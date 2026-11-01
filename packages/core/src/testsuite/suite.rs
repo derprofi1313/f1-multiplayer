@@ -47,10 +47,11 @@ pub enum Kind {
     Career,
     GrandPrix,
     TimeTrial,
+    Session,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [
+    pub const ALL: [Kind; 8] = [
         Kind::None,
         Kind::Boot,
         Kind::Benchmark,
@@ -58,6 +59,7 @@ impl Kind {
         Kind::Career,
         Kind::GrandPrix,
         Kind::TimeTrial,
+        Kind::Session,
     ];
 
     pub fn name(self) -> &'static str {
@@ -69,6 +71,7 @@ impl Kind {
             Kind::Career => "career",
             Kind::GrandPrix => "grand_prix",
             Kind::TimeTrial => "time_trial",
+            Kind::Session => "session",
         }
     }
 
@@ -92,6 +95,18 @@ impl Kind {
             ],
             Kind::Route => &[("routes", StrList, true)],
             Kind::Career => &[("fixture", Str, true), ("at", Str, false), ("slot", UInt, false)],
+            Kind::Session => &[
+                ("mode", Str, true),
+                ("box", Str, false),
+                ("track", Str, false),
+                ("team", Str, false),
+                ("driver", Str, false),
+                ("session", Str, false),
+                ("weather", Str, false),
+                ("laps", UInt, false),
+                ("ai_difficulty", UInt, false),
+                ("fixture", Str, false),
+            ],
             Kind::GrandPrix | Kind::TimeTrial => &[
                 ("box", Str, false),
                 ("track", Str, false),
@@ -106,7 +121,7 @@ impl Kind {
     /// Why a test in this environment can't run yet.
     pub fn needs(self) -> Option<&'static str> {
         match self {
-            Kind::None | Kind::Boot | Kind::Benchmark | Kind::Route | Kind::Career => None,
+            Kind::None | Kind::Boot | Kind::Benchmark | Kind::Route | Kind::Career | Kind::Session => None,
             Kind::GrandPrix | Kind::TimeTrial => Some(NEEDS_SESSION_SETUP),
         }
     }
@@ -144,6 +159,7 @@ pub struct Step {
 pub enum Wait {
     Event(String),
     Log(String),
+    Ms(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,7 +214,7 @@ impl Test {
     /// can't do from the logs, a test function, a route environment or a
     /// career, which the agent continues.
     pub fn needs_agent(&self) -> bool {
-        matches!(self.env.kind, Kind::Route | Kind::Career)
+        matches!(self.env.kind, Kind::Route | Kind::Career | Kind::Session)
             || self.function.is_some()
             || self.steps.iter().any(|s| s.host.is_none())
             || self.checks.iter().any(|c| matches!(c, Check::Agent { .. }))
@@ -672,6 +688,13 @@ fn env(at: &At, v: &Value) -> Result<Env, Error> {
             super::career::AT.join(", ")
         )));
     }
+    if kind == Kind::Session {
+        for (key, v) in &params {
+            if let Some(why) = super::session::check(key, v) {
+                return Err(at.at(key).err(why));
+            }
+        }
+    }
     if kind == Kind::Benchmark {
         if let Some(w) = params.get("weather").and_then(Value::as_str)
             && !matches!(w, "clear" | "wet" | "rain")
@@ -737,19 +760,34 @@ fn step(at: &At, v: &Value) -> Result<Step, Error> {
     let host = match action {
         "wait" => {
             let w = here.object(value)?;
-            here.keys(w, &["event", "log", "screen"])?;
-            match (w.get("event"), w.get("log"), w.get("screen")) {
-                (Some(e), None, None) => Some(Wait::Event(here.at("event").str(e)?.to_owned())),
-                (None, Some(l), None) => {
+            here.keys(w, &["event", "log", "screen", "ms", "settle_ms"])?;
+            if w.contains_key("settle_ms") {
+                if !w.contains_key("screen") {
+                    return Err(here.at("settle_ms").err("settle_ms goes with \"screen\""));
+                }
+                here.at("settle_ms").uint(&w["settle_ms"])?;
+            }
+            match (w.get("event"), w.get("log"), w.get("screen"), w.get("ms")) {
+                (Some(e), None, None, None) => Some(Wait::Event(here.at("event").str(e)?.to_owned())),
+                (None, None, None, Some(n)) => {
+                    let ms = here.at("ms").uint(n)?;
+                    if ms > 3_600_000 {
+                        return Err(here.at("ms").err("expected at most 3600000 (an hour)"));
+                    }
+                    Some(Wait::Ms(ms))
+                }
+                (None, Some(l), None, None) => {
                     let pattern = here.at("log").str(l)?;
                     here.at("log").regex(pattern)?;
                     Some(Wait::Log(pattern.to_owned()))
                 }
-                (None, None, Some(n)) => {
+                (None, None, Some(n), None) => {
                     here.at("screen").str(n)?;
                     None
                 }
-                _ => return Err(here.err("wait for one of \"event\", \"log\" or \"screen\"")),
+                _ => {
+                    return Err(here.err("wait for one of \"event\", \"log\", \"screen\" or \"ms\""));
+                }
             }
         }
         "route" | "skip" | "save" | "capture" | "read" | "tile" => {
@@ -776,6 +814,27 @@ fn step(at: &At, v: &Value) -> Result<Step, Error> {
             }
             for key in ["every_ms", "for_s"] {
                 if let Some(n) = s.get(key) {
+                    here.at(key).uint(n)?;
+                }
+            }
+            None
+        }
+        "pad" => {
+            let p = here.object(value)?;
+            here.keys(
+                p,
+                &[
+                    "press",
+                    "then",
+                    "ms",
+                    "release",
+                    "settle_ms",
+                    "retry",
+                    "retry_after_ms",
+                ],
+            )?;
+            for key in ["ms", "settle_ms", "retry", "retry_after_ms"] {
+                if let Some(n) = p.get(key) {
                     here.at(key).uint(n)?;
                 }
             }

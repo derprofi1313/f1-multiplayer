@@ -4,9 +4,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use swofty_core::ea_app::{self, Handoff};
+use swofty_core::ea_diag::{self, Tracker};
 use swofty_core::install::{Game, Source};
 use swofty_core::launch;
 use swofty_core::offline::{self, Slot};
+use swofty_core::process::own_elevation;
 use swofty_core::process::{GameProcess, game_processes, stop_process};
 use swofty_core::recovery::Scope;
 use swofty_core::steam_client;
@@ -24,6 +26,7 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(not(windows))]
 const SERVER_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const PRESS_PLAY_TIMEOUT: Duration = Duration::from_secs(600);
+const STUB_LOG_WINDOW: i64 = 6 * 3600;
 const HANDOFF_LOG: &str = "ea_handoff.log";
 
 /// Which store Play brings up first for a copy of the game.
@@ -59,6 +62,23 @@ pub fn policy(handoff: bool, on: bool, running: bool) -> Policy {
 
 fn handoff(store: &Store) -> Option<Handoff> {
     ea_app::handoff(store.config().launch.ea_launch_command.as_deref())
+}
+
+/// Stop before anything is built when the EA app has F1 25 in another
+/// folder: its launch link can't start this copy.
+pub fn check_recorded(game: &Path) -> Result<()> {
+    let Some(m) = ea_app::moved(game, &ea_app::recorded_here(), ea_app::is_install) else {
+        return Ok(());
+    };
+    let pick = if m.there {
+        format!(
+            ". To play the copy in {0}: swofty game use \"{0}\"",
+            m.recorded.display()
+        )
+    } else {
+        String::new()
+    };
+    bail!("{}{pick}", m.text())
 }
 
 fn desktop_opener(h: &Handoff) -> Option<(std::process::Command, bool)> {
@@ -224,9 +244,15 @@ fn wait_for_game(
     before: &[u32],
     timeout: Duration,
     handoff: &mut Option<Child>,
+    mut watch: Option<&mut Tracker>,
 ) -> Result<Option<u32>> {
     let since = Instant::now();
     loop {
+        if let Some(t) = watch.as_deref_mut() {
+            for line in t.observe(&ea_diag::running_watched(), Instant::now()) {
+                say("ea app", &line);
+            }
+        }
         if let Some(pid) = new_copy(game, before) {
             return Ok(Some(pid));
         }
@@ -243,10 +269,20 @@ fn wait_for_game(
             }
         }
         if since.elapsed() >= timeout {
+            if let Some(t) = watch.as_deref() {
+                say("ea app", &format!("timeout: {}", t.summary(since.elapsed())));
+            }
             return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+fn say_elevation() {
+    say(
+        "ea app",
+        &ea_diag::elevation_line(own_elevation(), ea_diag::ea_app_elevation()),
+    );
 }
 
 /// The session's game, launched by the EA app: hand it the launch link and
@@ -257,6 +293,15 @@ pub fn start(store: &Store, game: &Path, args: &[String], session: &Path, before
     let stage = StageFile(store.root.join(steam_client::STAGE_FILE));
     stage.set("Starting F1 25 through the EA app…");
     say("ea app", &format!("asking the EA app to launch F1 25: {url}"));
+    say_elevation();
+    let mut tracker = Tracker::new(Instant::now(), &ea_diag::running_watched());
+    say(
+        "ea app",
+        &format!(
+            "launch link sent; waiting up to {} s for F1 25",
+            HANDOFF_TIMEOUT.as_secs()
+        ),
+    );
     let log = std::fs::File::create(session.join(HANDOFF_LOG))?;
     let mut c = h.command(&url);
     c.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
@@ -269,7 +314,7 @@ pub fn start(store: &Store, game: &Path, args: &[String], session: &Path, before
             None
         }
     };
-    let pid = match wait_for_game(game, before, HANDOFF_TIMEOUT, &mut handoff)? {
+    let pid = match wait_for_game(game, before, HANDOFF_TIMEOUT, &mut handoff, Some(&mut tracker))? {
         Some(pid) => pid,
         None => {
             if let Some((mut open, _)) = desktop_opener(&h) {
@@ -279,7 +324,10 @@ pub fn start(store: &Store, game: &Path, args: &[String], session: &Path, before
             match &slot {
                 Ok(Some(Slot::Staged)) => say("ea app", "offline play's file is in place"),
                 Ok(Some(Slot::Replaced)) => say("ea app", "the EA app put its own file over offline play's"),
-                Ok(Some(Slot::Missing)) => say("ea app", "offline play's file is gone from the game folder"),
+                Ok(Some(Slot::Missing)) => {
+                    say("ea app", "offline play's file is gone from the game folder");
+                    note_stub_blocked(store, game);
+                }
                 Ok(Some(Slot::Unknown)) => {
                     say("ea app", "offline play's file was changed by another program")
                 }
@@ -289,16 +337,18 @@ pub fn start(store: &Store, game: &Path, args: &[String], session: &Path, before
             let (line, status) = waiting(slot.ok().flatten());
             say("ea app", line);
             stage.set(status);
-            wait_for_game(game, before, PRESS_PLAY_TIMEOUT, &mut None)?.ok_or_else(|| {
-                anyhow!(
-                    "F1 25 was not started from the EA app within {} min; the game files are rolled back",
-                    PRESS_PLAY_TIMEOUT.as_secs() / 60
-                )
-            })?
+            wait_for_game(game, before, PRESS_PLAY_TIMEOUT, &mut None, Some(&mut tracker))?.ok_or_else(
+                || {
+                    anyhow!(
+                        "F1 25 was not started from the EA app within {} min; the game files are rolled back",
+                        PRESS_PLAY_TIMEOUT.as_secs() / 60
+                    )
+                },
+            )?
         }
     };
     say("ea app", &format!("F1 25 started (pid {pid})"));
-    restage(store);
+    restage(store, game);
     Ok(Started { pid, handoff })
 }
 
@@ -318,10 +368,23 @@ fn waiting(slot: Option<Slot>) -> (&'static str, &'static str) {
     }
 }
 
+pub fn note_stub_blocked(store: &Store, game: &Path) -> bool {
+    let since = swofty_core::catalog::now_secs() - STUB_LOG_WINDOW;
+    let Some(block) = offline::stub_blocked(game, &ea_diag::proxy_logs(), since) else {
+        return false;
+    };
+    let failure = launch::Failure::new(launch::Cause::Blocked(block));
+    say("warning", &format!("{}: {}", failure.title(), failure.text()));
+    if let Err(e) = failure.write(&store.root) {
+        say("info", &format!("could not record it for the launcher: {e}"));
+    }
+    true
+}
+
 /// An EA app repair puts EA's anti-cheat launcher over offline play's file,
 /// and the game it then starts has no mods. Put the file back for the next
 /// Play and tell the player.
-fn restage(store: &Store) {
+fn restage(store: &Store, game: &Path) {
     let journal = offline::journal_path(&store.root);
     if matches!(offline::slot(&journal), Ok(None)) {
         return;
@@ -330,6 +393,9 @@ fn restage(store: &Store) {
     match done {
         Ok(Some(Slot::Staged) | None) => {}
         Ok(Some(Slot::Replaced | Slot::Missing)) => {
+            if note_stub_blocked(store, game) {
+                return;
+            }
             let failure = launch::Failure::new(launch::Cause::EaRepaired);
             say("warning", &format!("{}: {}", failure.title(), failure.text()));
             if let Err(e) = failure.write(&store.root) {
@@ -368,6 +434,15 @@ pub fn launch_installed(store: &Store, g: &Game, vr: bool, opted_out: bool) -> R
     let url = ea_app::install_url(&g.dir, &args).map_err(|e| anyhow!(e))?;
     let h = handoff(store).ok_or_else(|| anyhow!("{}", ea_app::no_handoff()))?;
     say("ea app", &format!("asking the EA app to launch F1 25: {url}"));
+    say_elevation();
+    let mut tracker = Tracker::new(Instant::now(), &ea_diag::running_watched());
+    say(
+        "ea app",
+        &format!(
+            "launch link sent; waiting up to {} s for F1 25",
+            HANDOFF_TIMEOUT.as_secs()
+        ),
+    );
     let state = store.root.join("state");
     std::fs::create_dir_all(&state)?;
     let log = std::fs::File::create(state.join(HANDOFF_LOG))?;
@@ -376,12 +451,13 @@ pub fn launch_installed(store: &Store, g: &Game, vr: bool, opted_out: bool) -> R
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
     let mut child = Some(c.spawn().map_err(|e| anyhow!("could not run {h}: {e}"))?);
-    let pid = wait_for_game(&g.dir, &[], HANDOFF_TIMEOUT, &mut child)?.ok_or_else(|| {
-        anyhow!(
-            "F1 25 did not start within {} min of the launch link; press Play on F1 25 in the EA app",
-            HANDOFF_TIMEOUT.as_secs() / 60
-        )
-    })?;
+    let pid =
+        wait_for_game(&g.dir, &[], HANDOFF_TIMEOUT, &mut child, Some(&mut tracker))?.ok_or_else(|| {
+            anyhow!(
+                "F1 25 did not start within {} min of the launch link; press Play on F1 25 in the EA app",
+                HANDOFF_TIMEOUT.as_secs() / 60
+            )
+        })?;
     say("ea app", &format!("F1 25 started (pid {pid})"));
     if let Some(line) = command_line(pid) {
         say("ea app", &format!("command line: {line}"));

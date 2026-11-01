@@ -2,8 +2,9 @@
 //!
 //! Release builds report, every five minutes while the launcher is open and
 //! during each modded session, which launcher version is running on which
-//! kind of system, and how each session ended: quit, crash, stopped by the
-//! player, or unknown, with the exit code when the session could read it.
+//! kind of system, which store the game copy is from (Steam, the EA app or
+//! unknown), and how each session ended: quit, crash, stopped by the player,
+//! or unknown, with the exit code when the session could read it.
 //! A report carries a random id
 //! made for this install and nothing that identifies the player. Nothing is
 //! sent until the offline play terms, which say so, are accepted; builds from
@@ -17,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
+use crate::install::Source;
 use crate::session::SessionEnd;
 
 pub const INTERVAL: Duration = Duration::from_secs(300);
@@ -94,12 +96,27 @@ pub fn os() -> &'static str {
     }
 }
 
+pub fn platform(source: Source) -> &'static str {
+    match source {
+        Source::Steam => "steam",
+        Source::EaApp => "ea",
+        Source::Unknown => "unknown",
+    }
+}
+
+/// The store of the copy Play uses, or unknown when no copy is found.
+pub fn active_platform(data: &Path) -> &'static str {
+    crate::copies::find_active(&crate::store::Store::new(data).config())
+        .map_or("unknown", |c| platform(c.source))
+}
+
 #[derive(Debug, Serialize, PartialEq)]
 pub struct Event {
     pub kind: &'static str,
     pub install: String,
     pub version: String,
     pub os: &'static str,
+    pub platform: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,12 +130,13 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn new(kind: &'static str, install: &str) -> Self {
+    pub fn new(kind: &'static str, install: &str, platform: &'static str) -> Self {
         Self {
             kind,
             install: install.to_owned(),
             version: crate::update::current_version().to_string(),
             os: os(),
+            platform,
             session: None,
             exit_code: None,
             seconds: None,
@@ -130,14 +148,20 @@ impl Event {
     /// A session's last report. Servers before `end` was added require an
     /// integer exit code, so a code the session could not read goes as -1,
     /// the value they always had for it.
-    pub fn session_end(install: &str, session: &str, seconds: u64, end: &SessionEnd) -> Self {
+    pub fn session_end(
+        install: &str,
+        platform: &'static str,
+        session: &str,
+        seconds: u64,
+        end: &SessionEnd,
+    ) -> Self {
         Self {
             session: Some(session.to_owned()),
             exit_code: Some(end.exit_code.unwrap_or(-1)),
             seconds: Some(seconds),
             end: Some(end.end.as_str()),
             crash_code: end.crash_code,
-            ..Self::new("session_end", install)
+            ..Self::new("session_end", install, platform)
         }
     }
 }
@@ -175,7 +199,8 @@ pub fn launcher_heartbeats(data: PathBuf) {
                 if let (Some(url), true) = (endpoint(), crate::offline::is_accepted(&data))
                     && let Some(id) = install_id(&data)
                 {
-                    send(&url, &Event::new("launcher", &id), TIMEOUT);
+                    let event = Event::new("launcher", &id, active_platform(&data));
+                    send(&url, &event, TIMEOUT);
                 }
                 std::thread::sleep(INTERVAL);
             }
@@ -183,31 +208,34 @@ pub fn launcher_heartbeats(data: PathBuf) {
         .ok();
 }
 
-/// One modded session: reported when it starts, every [INTERVAL] while it
-/// runs, and when the game exits.
+/// One modded session of the copy in `game`: reported when it starts, every
+/// [INTERVAL] while it runs, and when the game exits.
 pub struct Session {
     url: String,
     install: String,
+    platform: &'static str,
     id: String,
     started: Instant,
     stop: Arc<AtomicBool>,
 }
 
 impl Session {
-    pub fn start(data: &Path) -> Option<Self> {
+    pub fn start(data: &Path, game: &Path) -> Option<Self> {
         if !enabled(data) {
             return None;
         }
         let session = Self {
             url: endpoint()?,
             install: install_id(data)?,
+            platform: platform(Source::detect(game)),
             id: random_hex(1),
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
         };
-        let (url, install, id, stop) = (
+        let (url, install, platform, id, stop) = (
             session.url.clone(),
             session.install.clone(),
+            session.platform,
             session.id.clone(),
             session.stop.clone(),
         );
@@ -216,7 +244,7 @@ impl Session {
             .spawn(move || {
                 let event = |kind| Event {
                     session: Some(id.clone()),
-                    ..Event::new(kind, &install)
+                    ..Event::new(kind, &install, platform)
                 };
                 send(&url, &event("session_start"), TIMEOUT);
                 let mut last = Instant::now();
@@ -234,7 +262,13 @@ impl Session {
 
     pub fn end(self, end: &SessionEnd) {
         self.stop.store(true, Ordering::Relaxed);
-        let event = Event::session_end(&self.install, &self.id, self.started.elapsed().as_secs(), end);
+        let event = Event::session_end(
+            &self.install,
+            self.platform,
+            &self.id,
+            self.started.elapsed().as_secs(),
+            end,
+        );
         send(&self.url, &event, END_TIMEOUT);
     }
 }
@@ -280,7 +314,7 @@ mod tests {
             crash_code: Some(0xc000_0005),
             reason: "the mod loader saw an unhandled exception".into(),
         };
-        let event = Event::session_end(&"a".repeat(32), "0123456789abcdef", 42, &crash);
+        let event = Event::session_end(&"a".repeat(32), "ea", "0123456789abcdef", 42, &crash);
         let json: serde_json::Value = serde_json::to_value(&event).unwrap();
         let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
@@ -293,6 +327,7 @@ mod tests {
                 "install",
                 "kind",
                 "os",
+                "platform",
                 "seconds",
                 "session",
                 "version"
@@ -302,9 +337,11 @@ mod tests {
             (&json["end"], &json["exit_code"], &json["crash_code"]),
             (&"crash".into(), &(-1).into(), &0xc000_0005u32.into())
         );
-        let launcher = serde_json::to_value(Event::new("launcher", &"b".repeat(32))).unwrap();
-        assert_eq!(launcher.as_object().unwrap().len(), 4);
+        assert_eq!(json["platform"], "ea");
+        let launcher = serde_json::to_value(Event::new("launcher", &"b".repeat(32), "steam")).unwrap();
+        assert_eq!(launcher.as_object().unwrap().len(), 5);
         assert_eq!(launcher["os"], os());
+        assert_eq!(launcher["platform"], "steam");
     }
 
     #[test]
@@ -317,6 +354,7 @@ mod tests {
         };
         let json = serde_json::to_value(Event::session_end(
             &"a".repeat(32),
+            "unknown",
             "0123456789abcdef",
             7,
             &unknown,
@@ -335,6 +373,7 @@ mod tests {
         };
         let json = serde_json::to_value(Event::session_end(
             &"a".repeat(32),
+            "unknown",
             "0123456789abcdef",
             7,
             &stopped,
@@ -347,7 +386,7 @@ mod tests {
     fn nothing_is_sent_before_the_terms_are_accepted() {
         let d = temp("terms");
         assert!(!enabled(&d));
-        assert!(Session::start(&d).is_none());
+        assert!(Session::start(&d, &d).is_none());
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -385,12 +424,41 @@ mod tests {
                 .unwrap();
             String::from_utf8(got).unwrap()
         });
-        assert!(send(&url, &Event::new("launcher", &"c".repeat(32)), TIMEOUT));
+        assert!(send(
+            &url,
+            &Event::new("launcher", &"c".repeat(32), "ea"),
+            TIMEOUT
+        ));
         let request = server.join().unwrap();
         assert!(request.starts_with("POST /v1/events "));
         let body: serde_json::Value =
             serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(body["kind"], "launcher");
         assert_eq!(body["install"], "c".repeat(32));
+        assert_eq!(body["platform"], "ea");
+    }
+
+    #[test]
+    fn the_platform_is_the_store_of_the_copy_play_uses() {
+        let d = temp("platform");
+        let (ea, other) = (d.join("ea/F1 25"), d.join("other/F1 25"));
+        for dir in [&ea, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(crate::GAME_EXE), b"MZ").unwrap();
+        }
+        std::fs::create_dir_all(ea.join("__Installer")).unwrap();
+        std::fs::write(ea.join(crate::ea_app::MARKER), "<contentID>1</contentID>").unwrap();
+        assert_eq!(platform(Source::detect(&ea)), "ea");
+        assert_eq!(platform(Source::detect(&other)), "unknown");
+        assert_eq!(platform(Source::Steam), "steam");
+        let data = d.join("data");
+        let store = crate::store::Store::new(&data);
+        for (dir, want) in [(&ea, "ea"), (&other, "unknown")] {
+            let mut config = store.config();
+            crate::copies::add(&mut config, dir).unwrap();
+            store.save_config(&config).unwrap();
+            assert_eq!(active_platform(&data), want);
+        }
+        std::fs::remove_dir_all(&d).ok();
     }
 }

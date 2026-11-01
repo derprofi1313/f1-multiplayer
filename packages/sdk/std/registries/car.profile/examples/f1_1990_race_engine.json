@@ -1,0 +1,19 @@
+{
+  "car.profile": {
+    "race_engine": {
+      "$comment": "F1 1990: the race engine and the AI grip outside qualifying",
+      "within": [
+        {
+          "data_group": "f1_career_1990"
+        }
+      ],
+      "when": [
+        "practice",
+        "race"
+      ],
+      "power_scale": 0.9725,
+      "limiter_offset_rpm": -300,
+      "ai_grip_scale": 0.87
+    }
+  }
+}

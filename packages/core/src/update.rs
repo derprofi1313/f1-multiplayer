@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::launcher::Progress;
+use crate::transfer;
 use crate::{Error, Result, io_err};
 
 /// F1 Multiplayer's own releases. Swofty's releases must never be offered as an update.
@@ -18,11 +18,16 @@ pub const PRETEND_ENV: &str = "SWOFTY_UPDATE_PRETEND_VERSION";
 pub const FIXTURE_ENV: &str = "SWOFTY_TEST_GITHUB";
 pub const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 pub const STAGING_DIR: &str = ".update";
-/// Whether the launcher looks for releases of itself. Off until F1 Multiplayer publishes its own:
-/// [`LATEST_URL`] still names Swofty's, which must never replace this app.
-pub const SELF_UPDATE: bool = false;
+/// The version players see, F1 Multiplayer's own release line. The package version
+/// (`<Swofty's upstream version>+f1mp.<n>`) is what addon `compat.launcher` and update checks compare:
+/// the `+f1mp.<n>` part is build metadata, so `1.7.15+f1mp.2` still meets `>=1.7.15`.
+pub const DISPLAY_VERSION: &str = "1.0";
+/// Whether the launcher looks for releases of itself in [`LATEST_URL`], F1 Multiplayer's own repo.
+pub const SELF_UPDATE: bool = true;
 /// The launcher's executable, without `.exe`.
 pub const LAUNCHER_BIN: &str = "f1-multiplayer";
+pub const INSTALL_MANIFEST: &str = ".install-manifest";
+const SWEPT_DIRS: [&str; 3] = ["loader", "addons", crate::postfx::DXC_DIR];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpdateConfig {
@@ -67,10 +72,13 @@ pub fn notes_url(tag: &str) -> String {
     format!("{RELEASES_URL}/tag/{tag}")
 }
 
+/// The archive a release carries for a platform. GitHub renames a `+` in an uploaded asset's name,
+/// so the tag's build metadata (`v1.7.15+f1mp.1`) travels as `.`: the release workflow names it so too.
 pub fn asset_name(tag: &str, os: &str, arch: &str) -> Option<String> {
+    let tag = tag.replace('+', ".");
     match (os, arch) {
-        ("linux", "x86_64") => Some(format!("swofty-launcher-{tag}-linux-x86_64.tar.gz")),
-        ("windows", "x86_64") => Some(format!("swofty-launcher-{tag}-windows-x86_64.zip")),
+        ("linux", "x86_64") => Some(format!("f1-multiplayer-{tag}-linux-x86_64.tar.gz")),
+        ("windows", "x86_64") => Some(format!("f1-multiplayer-{tag}-windows-x86_64.zip")),
         _ => None,
     }
 }
@@ -176,7 +184,7 @@ pub fn check_download(
 
 fn user_agent() -> String {
     format!(
-        "swofty-launcher/{} (+https://github.com/Swofty-Developments/SwoftyLauncher)",
+        "f1-multiplayer/{} (+https://github.com/derprofi1313/f1-multiplayer)",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -251,11 +259,11 @@ pub fn refusal(
     }
 }
 
-pub fn request(
+fn builder(
     url: &str,
     head: bool,
     timeout: Option<Duration>,
-) -> std::result::Result<ureq::http::Response<ureq::Body>, Failure> {
+) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
     let target = endpoint(url);
     let builder = if head {
         ureq::head(&target)
@@ -270,10 +278,13 @@ pub fn request(
     .timeout_recv_response(Some(Duration::from_secs(30)))
     .http_status_as_error(false);
     let config = if head { builder.max_redirects(0) } else { builder };
-    let response = config
-        .build()
-        .call()
-        .map_err(|e| Failure::Failed(format!("{url}: {e}")))?;
+    config.build()
+}
+
+fn answered(
+    url: &str,
+    response: ureq::http::Response<ureq::Body>,
+) -> std::result::Result<ureq::http::Response<ureq::Body>, Failure> {
     let status = response.status().as_u16();
     if status < 400 {
         return Ok(response);
@@ -287,6 +298,17 @@ pub fn request(
         header("x-ratelimit-reset"),
         now_secs(),
     ))
+}
+
+pub fn request(
+    url: &str,
+    head: bool,
+    timeout: Option<Duration>,
+) -> std::result::Result<ureq::http::Response<ureq::Body>, Failure> {
+    let response = builder(url, head, timeout)
+        .call()
+        .map_err(|e| Failure::Failed(format!("{url}: {e}")))?;
+    answered(url, response)
 }
 
 pub fn get(url: &str, timeout: Option<Duration>) -> Result<ureq::Body> {
@@ -322,34 +344,32 @@ pub fn verifiable(release: &Release, asset: &Asset) -> bool {
     release.sums().is_some() || asset.digest.as_deref().is_some_and(|d| d.starts_with("sha256:"))
 }
 
+/// Downloads `asset` to `to` and returns its length and SHA-256. A download
+/// the connection breaks off resumes from the bytes it has.
 pub fn download(asset: &Asset, to: &Path, progress: &dyn Fn(u64)) -> Result<(u64, String)> {
     let url = &asset.browser_download_url;
-    let mut reader = get(url, Some(Duration::from_secs(30 * 60)))?.into_reader();
-    let mut file = std::fs::File::create(to).map_err(io_err(to))?;
-    let mut hash = Sha256::new();
-    let mut buf = vec![0; 64 * 1024];
-    let mut len = 0u64;
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| Error::Other(format!("{url}: {e}")))?;
-        if n == 0 {
-            break;
+    let too_long = || {
+        format!(
+            "{}: larger than the {} bytes the release lists",
+            asset.name, asset.size
+        )
+    };
+    let fetch = transfer::Fetch {
+        url,
+        size: asset.size,
+        lister: "the release",
+        too_long: &too_long,
+    };
+    let mut open = |from: u64| {
+        let mut request =
+            builder(url, false, Some(Duration::from_secs(30 * 60))).header("Accept-Encoding", "identity");
+        if from > 0 {
+            request = request.header("Range", format!("bytes={from}-"));
         }
-        len += n as u64;
-        if len > asset.size {
-            return Err(Error::Other(format!(
-                "{}: larger than the {} bytes the release lists",
-                asset.name, asset.size
-            )));
-        }
-        hash.update(&buf[..n]);
-        file.write_all(&buf[..n]).map_err(io_err(to))?;
-        progress(len);
-    }
-    file.sync_all().map_err(io_err(to))?;
-    let digest = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    Ok((len, digest))
+        let response = request.call().map_err(transfer::Opening::Call)?;
+        answered(url, response).map_err(|f| transfer::Opening::Refused(f.into()))
+    };
+    transfer::fetch(&fetch, to, &mut open, progress)
 }
 
 fn safe_path(name: &str) -> Option<PathBuf> {
@@ -524,6 +544,7 @@ impl Install {
         if crate::process::game_running() {
             return Err(Error::Other("close F1 25 before updating".into()));
         }
+        refuse_data_root(&self.root, &crate::paths::data_dir())?;
         let asset = release.platform_asset()?;
         self.cleanup();
         let work = self
@@ -563,6 +584,7 @@ impl Install {
         if crate::process::game_running() {
             return Err(Error::Other("close F1 25 before updating".into()));
         }
+        refuse_data_root(&self.root, &crate::paths::data_dir())?;
         progress.report(0.95, "Replacing files");
         apply(&new, &self.root, &staging.join("old"))
     }
@@ -644,18 +666,92 @@ fn roll_back(done: &[Swap]) {
     }
 }
 
+pub fn refuse_data_root(root: &Path, data: &Path) -> Result<()> {
+    let resolve = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let (root_abs, data_abs) = (resolve(root), resolve(data));
+    let why = if data_abs.starts_with(&root_abs) {
+        Some(format!(
+            "the install folder {} is or contains the data folder {}",
+            root.display(),
+            data.display()
+        ))
+    } else {
+        ["config.json", "profiles", "saves"]
+            .iter()
+            .find(|m| root.join(m).symlink_metadata().is_ok())
+            .map(|m| {
+                format!(
+                    "the install folder {} holds {m}, so it looks like a data folder the launcher could not resolve (data folder resolved to {})",
+                    root.display(),
+                    data.display()
+                )
+            })
+    };
+    match why {
+        Some(why) => {
+            let why = format!("refusing to update: {why}");
+            eprintln!("swofty: {why}");
+            Err(Error::Other(why))
+        }
+        None => Ok(()),
+    }
+}
+
+fn read_install_manifest(root: &Path) -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(root.join(INSTALL_MANIFEST)).ok()?;
+    Some(
+        text.lines()
+            .filter(|l| !l.is_empty())
+            .filter(|l| {
+                !l.split('/').any(|c| c == ".." || c.is_empty())
+                    && !l.starts_with('/')
+                    && SWEPT_DIRS.iter().any(|d| l.starts_with(&format!("{d}/")))
+            })
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 pub fn apply(new: &Path, root: &Path, backup: &Path) -> Result<()> {
     let files = crate::builtin::loader_files(new)?;
+    let previous = read_install_manifest(root);
     let mut stale: Vec<String> = Vec::new();
-    for sub in ["loader", "addons", crate::postfx::DXC_DIR] {
-        let dir = root.join(sub);
-        if dir.is_dir() {
-            stale.extend(
-                crate::builtin::loader_files(&dir)?
-                    .into_keys()
-                    .map(|rel| format!("{sub}/{rel}"))
-                    .filter(|rel| !files.contains_key(rel)),
+    match &previous {
+        Some(prev) => stale.extend(
+            prev.iter()
+                .filter(|rel| !files.contains_key(*rel) && root.join(rel).symlink_metadata().is_ok())
+                .cloned(),
+        ),
+        None => {
+            eprintln!(
+                "swofty: no {INSTALL_MANIFEST} from the previous install; sweeping only loader/, dxc/ and the bundled addons the new package holds"
             );
+            let bundled: std::collections::BTreeSet<&str> = files
+                .keys()
+                .filter_map(|rel| rel.strip_prefix("addons/")?.split_once('/').map(|(id, _)| id))
+                .collect();
+            for id in bundled {
+                let dir = root.join("addons").join(id);
+                if dir.is_dir() {
+                    stale.extend(
+                        crate::builtin::loader_files(&dir)?
+                            .into_keys()
+                            .map(|rel| format!("addons/{id}/{rel}"))
+                            .filter(|rel| !files.contains_key(rel)),
+                    );
+                }
+            }
+            for sub in ["loader", crate::postfx::DXC_DIR] {
+                let dir = root.join(sub);
+                if dir.is_dir() {
+                    stale.extend(
+                        crate::builtin::loader_files(&dir)?
+                            .into_keys()
+                            .map(|rel| format!("{sub}/{rel}"))
+                            .filter(|rel| !files.contains_key(rel)),
+                    );
+                }
+            }
         }
     }
     let steps = files
@@ -688,12 +784,40 @@ pub fn apply(new: &Path, root: &Path, backup: &Path) -> Result<()> {
         }
     }
     std::fs::remove_file(&journal).map_err(io_err(&journal))?;
+    let recorded: String = files
+        .keys()
+        .filter(|rel| SWEPT_DIRS.iter().any(|d| rel.starts_with(&format!("{d}/"))))
+        .map(|rel| format!("{rel}\n"))
+        .collect();
+    if let Err(e) = std::fs::write(root.join(INSTALL_MANIFEST), recorded) {
+        eprintln!("swofty: couldn't record {INSTALL_MANIFEST}: {e}");
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use sha2::{Digest, Sha256};
+
     use super::*;
+
+    #[test]
+    fn the_package_version_meets_swoftys_launcher_requirements() {
+        let v = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        assert!(v.pre.is_empty(), "a pre-release would fail every `>=` requirement: {v}");
+        assert!(v.build.as_str().starts_with("f1mp."), "{v}");
+        let upstream = Version::new(v.major, v.minor, v.patch);
+        for req in [format!(">={upstream}"), "^1.7.6".into(), format!("={upstream}")] {
+            assert!(semver::VersionReq::parse(&req).unwrap().matches(&v), "{v} must meet {req}");
+        }
+        assert!(parse_version(&format!("v{v}")).unwrap() == v);
+        let next = Version::parse(&format!("{upstream}+f1mp.{}", 1 + v.build.as_str()[5..].parse::<u32>().unwrap()))
+            .unwrap();
+        assert!(next > v, "our next release on the same upstream version is newer");
+        assert!(!DISPLAY_VERSION.is_empty());
+    }
 
     #[test]
     fn the_launcher_only_looks_at_its_own_releases() {
@@ -746,6 +870,64 @@ mod tests {
             browser_download_url: format!("https://example.invalid/{name}"),
             digest: digest.map(Into::into),
         }
+    }
+
+    #[test]
+    fn resumes_a_release_download_the_connection_cut_off() {
+        let body = b"launcher bytes ".repeat(4000);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut a = asset("swofty-launcher.zip", body.len() as u64, None);
+        a.browser_download_url = format!("http://{}/a.zip", listener.local_addr().unwrap());
+        let half = body.len() / 2;
+        let served = body.clone();
+        let server = std::thread::spawn(move || {
+            let mut heads = Vec::new();
+            for first in [true, false] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
+                    head.push(byte[0]);
+                }
+                heads.push(String::from_utf8_lossy(&head).to_ascii_lowercase());
+                let answer = if first {
+                    let mut out = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        served.len()
+                    )
+                    .into_bytes();
+                    out.extend(&served[..half]);
+                    out
+                } else {
+                    let mut out = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {half}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        served.len() - 1,
+                        served.len(),
+                        served.len() - half
+                    )
+                    .into_bytes();
+                    out.extend(&served[half..]);
+                    out
+                };
+                stream.write_all(&answer).unwrap();
+            }
+            heads
+        });
+        let dir = temp("resume");
+        let to = dir.join("a.zip");
+        let (len, sha256) = download(&a, &to, &|_| {}).unwrap();
+        assert_eq!(len, body.len() as u64);
+        assert_eq!(std::fs::read(&to).unwrap(), body);
+        let whole: String = Sha256::digest(&body).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(sha256, whole);
+        let heads = server.join().unwrap();
+        assert!(!heads[0].contains("range:"), "{}", heads[0]);
+        assert!(
+            heads[1].contains(&format!("range: bytes={half}-")),
+            "{}",
+            heads[1]
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -815,7 +997,7 @@ mod tests {
 
     #[test]
     fn a_release_offers_only_what_it_can_verify() {
-        let name = "swofty-launcher-v0.2.1-linux-x86_64.tar.gz";
+        let name = "f1-multiplayer-v0.2.1-linux-x86_64.tar.gz";
         let mut release = Release {
             tag_name: "v0.2.1".into(),
             html_url: String::new(),
@@ -837,8 +1019,8 @@ mod tests {
             tag_name: tag.into(),
             html_url: String::new(),
             assets: vec![
-                asset("swofty-launcher-v0.2.1-linux-x86_64.tar.gz", 1, None),
-                asset("swofty-launcher-v0.2.1-windows-x86_64.zip", 2, None),
+                asset("f1-multiplayer-v0.2.1-linux-x86_64.tar.gz", 1, None),
+                asset("f1-multiplayer-v0.2.1-windows-x86_64.zip", 2, None),
                 asset(SUMS_FILE, 3, None),
             ],
             ..Default::default()
@@ -849,6 +1031,10 @@ mod tests {
         assert!(release.asset("linux", "aarch64").is_none());
         assert_eq!(release.sums().unwrap().size, 3);
         assert_eq!(release.notes_url(), format!("{RELEASES_URL}/tag/{tag}"));
+        assert_eq!(
+            asset_name("v1.7.15+f1mp.2", "windows", "x86_64").unwrap(),
+            "f1-multiplayer-v1.7.15.f1mp.2-windows-x86_64.zip"
+        );
     }
 
     #[test]
@@ -856,11 +1042,11 @@ mod tests {
         let a = "a".repeat(64);
         let b = "B".repeat(64);
         let sums = parse_sums(&format!(
-            "{a}  swofty-launcher-v0.2.1-linux-x86_64.tar.gz\n{b} *swofty-launcher-v0.2.1-windows-x86_64.zip\nnot a line\n\n"
+            "{a}  f1-multiplayer-v0.2.1-linux-x86_64.tar.gz\n{b} *f1-multiplayer-v0.2.1-windows-x86_64.zip\nnot a line\n\n"
         ));
         assert_eq!(sums.len(), 2);
-        assert_eq!(sums["swofty-launcher-v0.2.1-linux-x86_64.tar.gz"], a);
-        assert_eq!(sums["swofty-launcher-v0.2.1-windows-x86_64.zip"], "b".repeat(64));
+        assert_eq!(sums["f1-multiplayer-v0.2.1-linux-x86_64.tar.gz"], a);
+        assert_eq!(sums["f1-multiplayer-v0.2.1-windows-x86_64.zip"], "b".repeat(64));
     }
 
     #[test]
@@ -954,12 +1140,98 @@ mod tests {
     }
 
     #[test]
+    fn an_install_root_that_is_or_holds_the_data_folder_is_refused() {
+        let dir = temp("refuse");
+        let data = dir.join("Swofty");
+        std::fs::create_dir_all(data.join("addons")).unwrap();
+        assert!(refuse_data_root(&data, &data).is_err());
+        assert!(refuse_data_root(&dir, &data).is_err());
+        assert!(refuse_data_root(&dir.join("elsewhere"), &data).is_ok());
+        assert!(refuse_data_root(&data.join("app"), &data).is_ok());
+        let moved = dir.join("D");
+        write(&moved.join("saves").join("p").join("career.sav"), "career");
+        let stale_config = dir.join("C-old");
+        assert!(refuse_data_root(&moved, &stale_config).is_err());
+        let custom = dir.join("install").join("mydata");
+        std::fs::create_dir_all(&custom).unwrap();
+        assert!(refuse_data_root(&dir.join("install"), &custom).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn user_addons_survive_when_the_install_root_is_the_data_folder() {
+        let dir = temp("data-root");
+        let (root, new) = (dir.join("Swofty"), dir.join("new"));
+        release_tree(&root, "v1");
+        write(&root.join("addons").join("mine").join("addon.json"), "{}");
+        write(&root.join("addons").join("other.swoftyaddon"), "user");
+        write(&root.join("loader").join("stale.dll"), "stale");
+        write(&root.join("saves").join("p").join("career.sav"), "career");
+        release_tree(&new, "v2");
+        apply(&new, &root, &dir.join("old")).unwrap();
+        assert_eq!(read(&root.join("addons").join("mine").join("addon.json")), "{}");
+        assert_eq!(read(&root.join("addons").join("other.swoftyaddon")), "user");
+        assert!(!root.join("loader").join("stale.dll").exists());
+        assert_eq!(read(&root.join("saves").join("p").join("career.sav")), "career");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn without_a_manifest_only_bundled_addon_folders_are_swept() {
+        let dir = temp("no-manifest");
+        let (root, new) = (dir.join("install"), dir.join("new"));
+        release_tree(&root, "v1");
+        write(&root.join("addons").join("core").join("addon.json"), "v1");
+        write(&root.join("addons").join("core").join("removed.txt"), "stale");
+        write(&root.join("addons").join("mine").join("addon.json"), "user");
+        write(&root.join("addons").join("mine").join("extra.txt"), "user");
+        write(&root.join("saves").join("p").join("career.sav"), "career");
+        release_tree(&new, "v2");
+        write(&new.join("addons").join("core").join("addon.json"), "v2");
+        apply(&new, &root, &dir.join("old")).unwrap();
+        assert_eq!(read(&root.join("addons").join("core").join("addon.json")), "v2");
+        assert!(!root.join("addons").join("core").join("removed.txt").exists());
+        assert_eq!(read(&root.join("addons").join("mine").join("addon.json")), "user");
+        assert_eq!(read(&root.join("addons").join("mine").join("extra.txt")), "user");
+        assert_eq!(read(&root.join("saves").join("p").join("career.sav")), "career");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn only_files_in_the_previous_manifest_are_swept() {
+        let dir = temp("manifest-sweep");
+        let (root, new) = (dir.join("install"), dir.join("new"));
+        release_tree(&root, "v1");
+        write(&root.join("addons").join("bundled.swoftyaddon"), "old");
+        write(&root.join("addons").join("user.swoftyaddon"), "user");
+        write(&root.join("loader").join("old.dll"), "old");
+        write(&root.join("loader").join("user-added.dll"), "user");
+        write(
+            &root.join(INSTALL_MANIFEST),
+            "addons/bundled.swoftyaddon\nloader/old.dll\n../escape\naddons/../bin/x\n",
+        );
+        release_tree(&new, "v2");
+        apply(&new, &root, &dir.join("old")).unwrap();
+        assert!(!root.join("addons").join("bundled.swoftyaddon").exists());
+        assert!(!root.join("loader").join("old.dll").exists());
+        assert_eq!(read(&root.join("addons").join("user.swoftyaddon")), "user");
+        assert_eq!(read(&root.join("loader").join("user-added.dll")), "user");
+        let recorded = read(&root.join(INSTALL_MANIFEST));
+        assert!(recorded.contains(&format!("loader/{}", crate::builtin::CORE_DLL)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn replaces_the_install_and_mirrors_the_loader() {
         let dir = temp("apply");
         let (root, new) = (dir.join("install"), dir.join("new"));
         release_tree(&root, "v1");
         write(&root.join("loader/stale.dll"), "stale");
         write(&root.join("addons/gone.swoftyaddon"), "gone");
+        write(
+            &root.join(INSTALL_MANIFEST),
+            "loader/stale.dll\naddons/gone.swoftyaddon\naddons/kept.swoftyaddon\ndxc/lib/libold.so\n",
+        );
         write(&root.join("addons/kept.swoftyaddon"), "kept v1");
         write(&root.join("dxc/lib/libold.so"), "old dxc");
         write(&root.join("bin/user-note.txt"), "mine");

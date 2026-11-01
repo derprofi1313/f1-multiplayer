@@ -7,6 +7,7 @@ pub mod fingerprint;
 pub mod game;
 pub mod host;
 pub mod pinned;
+pub mod progress;
 pub mod rooms;
 pub mod seal;
 pub mod servercode;

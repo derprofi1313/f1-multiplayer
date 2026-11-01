@@ -1,0 +1,107 @@
+{
+ "schema": 1,
+ "generator": "re/tools/anchormk.py",
+ "build": {
+  "sha256": "d873a1c8d2044cef2fd76c99c9d5a97649c5b815d055540995105f46619865ae",
+  "image_base": "0x140000000",
+  "pe_timestamp": 1789118616
+ },
+ "anchors": {
+  "core.log_call": {
+   "string": "void game::championship::Weekend::start(const game::EntrantPointers &, const NEbool)",
+   "func_rva": "0xaf0460",
+   "func_offset": "0x7f",
+   "durable": false
+  },
+  "core.log_gate": {
+   "string": "void game::championship::Weekend::start(const game::EntrantPointers &, const NEbool)",
+   "func_rva": "0xaf0460",
+   "func_offset": "0x1c",
+   "durable": false
+  },
+  "fe_home.after_career_site": {
+   "string": "#customisation_flow.fe_screen_selected_button",
+   "func_rva": "0x173df80",
+   "func_offset": "0x5047",
+   "durable": false
+  },
+  "fe_home.career_adder": {
+   "string": "#customisation_flow.fe_screen_selected_button",
+   "func_rva": "0x173df80",
+   "func_offset": "0x5047",
+   "durable": false
+  },
+  "fe_home.on_command_raised": {
+   "string": "virtual void game::FEHomeViewModel::onCommandRaised(const neon::NeUIString &, const neon::NeUIPrimitiveType &)",
+   "func_rva": "0x1bb3c20",
+   "func_offset": "0x0",
+   "durable": true
+  },
+  "fe_tiles.item_base_populate": {
+   "string": "notification_type",
+   "func_rva": "0x1697b90",
+   "func_offset": "0x0",
+   "durable": true
+  },
+  "fe_tiles.tile_list_builder": {
+   "string": "#customisation_flow.fe_screen_selected_button",
+   "func_rva": "0x173df80",
+   "func_offset": "0x0",
+   "durable": true
+  },
+  "game.race_started": {
+   "string": "neon::NeDispatchAction game::championship::ChampionshipFormationLapComponent::onRaceStarted(neon::NeMessage &)",
+   "func_rva": "0xb808a0",
+   "func_offset": "0x0",
+   "durable": true
+  },
+  "game.session_enter": {
+   "string": "GameModule::onSessionEnter() sets SessionExit to SessionExit::eNONE as an initializer?",
+   "func_rva": "0x80c300",
+   "func_offset": "0x0",
+   "durable": true
+  },
+  "session.ai_vehicle_register_call": {
+   "string": "DevSessionDataContract.ForceStaggeredStart",
+   "func_rva": "0x5ff750",
+   "func_offset": "0x39fd",
+   "durable": false
+  },
+  "session.parse_entrant_setup_mode": {
+   "string": "networkReplicated",
+   "func_rva": "0x249f190",
+   "func_offset": "0x0",
+   "durable": true
+  },
+  "session.weekend_start": {
+   "string": "void game::championship::Weekend::start(const game::EntrantPointers &, const NEbool)",
+   "func_rva": "0xaf0460",
+   "func_offset": "0x0",
+   "durable": true
+  },
+  "vm.flow_update": {
+   "string": "[machine=\"%s\"] State \"%s\" - Deactivating sub task \"%s\"",
+   "func_rva": "0x4423ce0",
+   "func_offset": "0x0",
+   "durable": true
+  },
+  "vm.registry_global": {
+   "string": "notification_type",
+   "func_rva": "0x1697b90",
+   "func_offset": "0x0",
+   "durable": false
+  },
+  "vm.set_bool": {
+   "string": "notification_type",
+   "func_rva": "0x1697b90",
+   "func_offset": "0x0",
+   "durable": false
+  },
+  "vm.set_string": {
+   "string": "notification_type",
+   "func_rva": "0x1697b90",
+   "func_offset": "0x0",
+   "durable": false
+  }
+ }
+}

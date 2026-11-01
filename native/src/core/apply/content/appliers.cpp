@@ -5,6 +5,7 @@
 #include "../files_api.hpp"
 #include "../ids.hpp"
 #include "boot.hpp"
+#include "garage_build.hpp"
 #include "gvdb.hpp"
 #include "logos.hpp"
 #include "teams.hpp"
@@ -137,7 +138,7 @@ rows::Base base_of(Database &d)
 void ensure_stock(Store &st)
 {
     State &s = state();
-    if (s.stock_seeded || (in_load_order(st, "team.identity").empty() && in_load_order(st, "team.pit_times").empty()))
+    if (s.stock_seeded)
         return;
     Database &d = database();
     if (!d.ok)
@@ -450,6 +451,108 @@ void apply_logos(Expansion &x, Report &report)
                            " slice(s) built, " + std::to_string(made.refused) + " refused");
 }
 
+void apply_garages(Expansion &x, Report &report)
+{
+    if (x.garages.empty())
+        return;
+    constexpr const char *CACHE_ADDON = "swofty.garage";
+    char art[8] = {};
+    DWORD art_len = GetEnvironmentVariableA("SWOFTY_GARAGE_ART", art, sizeof art);
+    bool art_on = art_len && art_len < sizeof art && garage_art_enabled(art);
+    if (!art_on)
+        report.lines.push_back(GARAGE_FENCE_LINE);
+    std::string dir = "addons/" + std::string(CACHE_ADDON) + "/";
+    CreateDirectoryW(runtime::under_swofty("addons").c_str(), nullptr);
+    CreateDirectoryW(runtime::under_swofty(dir).c_str(), nullptr);
+    std::set<std::string> keep;
+    for (auto &g : x.garages) {
+        if (!art_on)
+            break;
+        std::filesystem::path root(runtime::under_swofty("addons/" + g.addon + "/" + g.folder));
+        std::vector<garage::Input> inputs;
+        std::error_code ec;
+        for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+            if (!it->is_regular_file(ec))
+                continue;
+            std::string rel = std::filesystem::relative(it->path(), root).generic_string();
+            if (garage::texture_file(rel))
+                inputs.push_back({rel, runtime::read_file(it->path().wstring(), size_t(512) << 20)});
+        }
+        std::sort(inputs.begin(), inputs.end(), [](const garage::Input &a, const garage::Input &b) { return a.rel < b.rel; });
+        if (inputs.empty()) {
+            report.refused++;
+            report.lines.push_back("team.garage " + g.id + ": " + g.folder + " holds no .dds or .png file in swofty/addons/" + g.addon + "/");
+            continue;
+        }
+        uint64_t key = 0xcbf29ce484222325ull;
+        auto mix = [&key](const std::string &t) {
+            for (unsigned char c : t) {
+                key ^= c;
+                key *= 0x100000001b3ull;
+            }
+            key ^= 0xff;
+            key *= 0x100000001b3ull;
+        };
+        mix(g.root);
+        mix(g.srgb ? "srgb" : "linear");
+        for (auto &in : inputs) {
+            mix(in.rel);
+            mix(in.bytes);
+        }
+        std::string file = "garage_" + runtime::hex16(key).substr(2) + ".erp";
+        std::wstring path = runtime::under_swofty(dir + file);
+        uint64_t have = 0;
+        bool reused = runtime::file_size(path, &have) && have > 0;
+        DWORD t0 = GetTickCount();
+        if (!reused) {
+            garage::Built built = garage::build(inputs, g.root, g.srgb);
+            for (auto &l : built.lines)
+                report.lines.push_back("team.garage " + g.id + ": " + l);
+            report.refused += built.refused;
+            if (built.erp.empty()) {
+                report.refused++;
+                report.lines.push_back("team.garage " + g.id + ": no texture could be packed; nothing applied");
+                continue;
+            }
+            if (!runtime::write_file(path, built.erp)) {
+                report.refused++;
+                report.lines.push_back("team.garage " + g.id + ": " + file + " could not be written");
+                continue;
+            }
+            have = built.erp.size();
+        }
+        keep.insert(file);
+        files::Outcome o = files::redirect(g.game_path, CACHE_ADDON, file, "team.garage", g.id, "boot");
+        if (o.refused()) {
+            report.refused++;
+            report.lines.push_back(o.line);
+            continue;
+        }
+        std::size_t attached = 0;
+        for (auto &group : g.groups) {
+            int rc = runtime::group_extend(group, g.game_path);
+            report.lines.push_back("team.garage " + g.id + ": " + group + (rc == SWOFTY_ASSET_OK ? " lists " + g.game_path : " not extended (the manifest is already parsed)"));
+            attached += rc == SWOFTY_ASSET_OK;
+        }
+        if (!attached)
+            report.refused++;
+        report.lines.push_back("team.garage " + g.id + ": " + std::to_string(inputs.size()) + " texture file(s) of " + g.folder + " in " +
+                               file + " (" + std::to_string(have >> 20) + " MB, " + (reused ? "cached archive reused" : "built") + " in " +
+                               std::to_string(GetTickCount() - t0) + " ms), " + g.game_path + " -> swofty/addons/" + CACHE_ADDON + "/" + file +
+                               ", " + std::to_string(attached) + " of " + std::to_string(g.groups.size()) + " group(s) extended");
+    }
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((runtime::under_swofty(dir) + L"garage_*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            std::string n = runtime::narrow(fd.cFileName);
+            if (!keep.count(n))
+                DeleteFileW((runtime::under_swofty(dir) + runtime::wide(n)).c_str());
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+}
+
 void set_up_dresser()
 {
     Live &l = live();
@@ -555,6 +658,8 @@ public:
         apply_texts(x, registry_, report);
         if (std::string_view(registry_) == "team.identity")
             apply_logos(x, report);
+        if (std::string_view(registry_) == "team.garage")
+            apply_garages(x, report);
         if (std::string_view(registry_) == "rules.drs")
             publish_drs(st, x);
         if (staged) {
@@ -573,6 +678,15 @@ class Constructors : public Applier {
 public:
     const char *registry() const override { return "team.constructor"; }
     Applies applies() const override { return Applies::boot; }
+
+    void prepare(Store &st) override
+    {
+        std::lock_guard g(mu);
+        ensure_stock(st);
+        if (!has_records(st))
+            release_database();
+    }
+
     void boot(Store &st, Report &report) override
     {
         std::lock_guard g(mu);

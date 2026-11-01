@@ -303,11 +303,23 @@ Option *find_option(const Owner *w, const char *id)
 
 }
 
+namespace {
+std::string settings_text;
+}
+
+namespace runtime {
+const std::string &settings_json_text()
+{
+    return settings_text;
+}
+}
+
 void settings_attach(SwoftyApi *a, const std::wstring &dir)
 {
     api = a;
     std::wstring path = full(dir + L"..\\..\\settings.json");
     std::string text = read_file(path);
+    settings_text = text;
     json::Value doc;
     if (text.empty())
         return api->log("[settings] no settings.json; every addon setting keeps its code default");

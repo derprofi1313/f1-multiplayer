@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -7,23 +7,22 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{Disableable, Icon, Sizable, h_flex, v_flex};
+use gpui_kit::component::{Disableable, Icon, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use swofty_core::catalog::{self, Addon};
+use swofty_core::catalog;
 use swofty_core::install::Game;
 use swofty_core::multiplayer::diag;
-use swofty_core::multiplayer::fingerprint::{Mismatch, MismatchKind};
 use swofty_core::multiplayer::game::{self as mp_game, Command, GameStatus, Screen};
-use swofty_core::multiplayer::rooms::{Api, RoomSettings, RoomSummary};
-use swofty_core::multiplayer::session::{
-    FixStep, Local, MemberState, Phase, PrintMatch, RelayStatus, Session, SessionState, Setup,
-};
+use swofty_core::multiplayer::progress::{self, MemberStage, Problem, Progress, Step};
+use swofty_core::multiplayer::rooms::{Api, RoomAddon, RoomSettings, RoomSummary};
+use swofty_core::multiplayer::session::{Local, MemberState, Phase, Session, SessionState, Setup};
 use swofty_core::store::Store;
 
 use crate::library::plural;
-use crate::pages::{GUTTER, TRACK, badge, label, monogram, tag};
+use crate::pages::{GUTTER, badge, label, monogram, tag};
 use crate::shell::{Page, Shell};
 use crate::theme::{Palette, ScrollArea};
 
@@ -33,7 +32,6 @@ const ROOMS_EVERY: Duration = Duration::from_secs(5);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const MIN_PLAYERS: u8 = 2;
 const MAX_PLAYERS: u8 = 24;
-const TRACKS_SHOWN: usize = 3;
 const AVATARS_DIR: &str = "avatars";
 
 /// Where the game is, in the page header.
@@ -65,40 +63,15 @@ impl GameState {
             Self::Busy => "F1 25 is busy",
         }
     }
-
-    /// Why Create and Join wait, or `None` on the main menu.
-    pub(crate) fn not_ready(self) -> Option<&'static str> {
-        match self {
-            Self::MainMenu => None,
-            Self::NotRunning => Some("Start F1 25 to create or join a room."),
-            Self::LanLobby => Some("Leave F1 25's LAN lobby to create or join a room."),
-            Self::Busy => Some("Go to F1 25's main menu to create or join a room."),
-        }
-    }
-}
-
-pub(crate) fn tracks_text(tracks: &[String]) -> Option<String> {
-    if tracks.is_empty() {
-        return None;
-    }
-    let mut text = tracks
-        .iter()
-        .take(TRACKS_SHOWN)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ");
-    if tracks.len() > TRACKS_SHOWN {
-        text.push_str(&format!(" and {} more", tracks.len() - TRACKS_SHOWN));
-    }
-    Some(text)
 }
 
 /// The room row's second line: host and players.
 pub(crate) fn room_meta(room: &RoomSummary) -> String {
-    format!(
-        "{} \u{00b7} {}/{} players",
-        room.host.name, room.members, room.max_members
-    )
+    format!("{} \u{00b7} {}", room.host.name, room_meta_players(room))
+}
+
+pub(crate) fn room_meta_players(room: &RoomSummary) -> String {
+    format!("{}/{} players", room.members, room.max_members)
 }
 
 /// What a room's one status line says, and whether it needs the player's attention.
@@ -143,261 +116,132 @@ fn capitalised(text: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tone {
     Working,
-    Blocked,
     Good,
+    Blocked,
     Over,
-    Failed,
 }
 
-/// The room's state as the player reads it: a short line and what to do next. The session's
-/// own wording goes to the multiplayer log.
-pub(crate) fn status_text(state: &SessionState) -> (Tone, String, Option<&'static str>) {
-    let host = state.host;
-    match &state.phase {
-        Phase::Connecting(_) if host => (Tone::Working, "Opening your room\u{2026}".into(), None),
-        Phase::Connecting(_) => (Tone::Working, "Joining the room\u{2026}".into(), None),
-        Phase::WaitingForGame(_) if !state.mismatches.is_empty() => {
-            (Tone::Blocked, "Your addons don't match the host's".into(), None)
-        }
-        Phase::WaitingForGame(why) => waiting_text(why, host),
-        Phase::InLobby if host => (
+pub(crate) const STEPS: [(Step, &str); 6] = [
+    (Step::SigningIn, "Signing in"),
+    (Step::Joining, "Joining"),
+    (Step::Connecting, "Connecting"),
+    (Step::StartingGame, "Starting F1 25"),
+    (Step::Loading, "Loading"),
+    (Step::InLobby, "In the lobby"),
+];
+
+pub(crate) fn step_number(step: Step) -> usize {
+    STEPS.iter().position(|(s, _)| *s == step).unwrap_or(0)
+}
+
+/// What the status area shows: the step, how far along, and the problem when there is one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Status {
+    pub(crate) tone: Tone,
+    pub(crate) progress: Progress,
+    pub(crate) problem: Option<Problem>,
+    pub(crate) hint: Option<&'static str>,
+}
+
+pub(crate) fn room_status(state: &SessionState) -> Status {
+    let progress = progress::progress(state);
+    if let Phase::Ended(why) = &state.phase {
+        return Status {
+            tone: Tone::Over,
+            progress: Progress {
+                label: capitalised(why),
+                ..progress
+            },
+            problem: None,
+            hint: None,
+        };
+    }
+    let problem = progress::problem(state);
+    let (tone, hint) = match (&problem, progress.step, state.host, &state.phase) {
+        (Some(_), ..) => (Tone::Blocked, None),
+        (None, Step::InLobby, true, Phase::Racing) => (
             Tone::Good,
-            "Your room is open".into(),
-            Some("Pick tracks and settings in F1 25's LAN lobby, then start the race there."),
-        ),
-        Phase::InLobby => (
-            Tone::Good,
-            "You're in the lobby".into(),
-            Some("The host picks the tracks and starts the race."),
-        ),
-        Phase::Racing if host => (
-            Tone::Good,
-            "Racing".into(),
             Some("Mark the race over when everyone is back in the lobby."),
         ),
-        Phase::Racing => (Tone::Good, "Racing".into(), None),
-        Phase::Ended(why) => (Tone::Over, capitalised(why), None),
-        Phase::Failed(_) => (
-            Tone::Failed,
-            "The room stopped unexpectedly".into(),
-            Some("Leave it and try again. Send Logs has the details."),
+        (None, Step::InLobby, true, _) => (
+            Tone::Good,
+            Some("Pick tracks and settings in F1 25's lobby, then start the race there."),
         ),
-    }
-}
-
-fn waiting_text(why: &str, host: bool) -> (Tone, String, Option<&'static str>) {
-    let has = |s: &str| why.contains(s);
-    let (tone, text, hint): (Tone, &str, Option<&'static str>) = if has("didn't host") {
-        (
-            Tone::Blocked,
-            "Couldn't start hosting. Go back to F1 25's main menu and try again.",
-            None,
-        )
-    } else if has("didn't join") {
-        (
-            Tone::Blocked,
-            "Couldn't join the host's lobby. Go back to F1 25's main menu and try again.",
-            None,
-        )
-    } else if has("left the LAN session") {
-        (
-            Tone::Blocked,
-            "F1 25 left the lobby. Try again, or leave the room.",
-            None,
-        )
-    } else if has("room settings") {
-        (
-            Tone::Blocked,
-            "F1 25 didn't take the room. Restart it from the launcher and try again.",
-            None,
-        )
-    } else if has("car category") {
-        (
-            Tone::Working,
-            "Pick the car category in F1 25",
-            Some("F1 25 opens its LAN lobby after that."),
-        )
-    } else if has("joining the host") {
-        (Tone::Working, "Joining the host's lobby in F1 25\u{2026}", None)
-    } else if has("host's addon list") {
-        (Tone::Working, "Waiting for the host\u{2026}", None)
-    } else if has("already in a LAN session") {
-        (Tone::Blocked, "Leave the LAN lobby in F1 25 first.", None)
-    } else if has("start F1 25") {
-        (
-            Tone::Blocked,
-            "Start F1 25 from the launcher.",
-            Some("Play starts it ready for multiplayer."),
-        )
-    } else if has("main menu") {
-        (Tone::Blocked, "Go to F1 25's main menu.", None)
-    } else if host {
-        (Tone::Blocked, "Waiting for F1 25 to host.", None)
-    } else {
-        (Tone::Blocked, "Waiting for F1 25 to join.", None)
+        (None, Step::InLobby, false, _) => {
+            (Tone::Good, Some("The host picks the tracks and starts the race."))
+        }
+        (None, ..) => (Tone::Working, None),
     };
-    (tone, text.to_owned(), hint)
-}
-
-/// Retry drives the game again: offered while the session waits on the game for anything but
-/// the addons, or after an error.
-pub(crate) fn retry_offered(state: &SessionState) -> bool {
-    match &state.phase {
-        Phase::WaitingForGame(_) => state.mismatches.is_empty(),
-        Phase::Connecting(_) | Phase::InLobby | Phase::Racing => state.last_error.is_some(),
-        Phase::Ended(_) | Phase::Failed(_) => false,
+    Status {
+        tone,
+        progress,
+        problem,
+        hint,
     }
 }
 
-/// One word for a member in the player list.
-pub(crate) fn member_status(m: &MemberState, phase: &Phase) -> &'static str {
-    if !m.connected {
-        "Disconnected"
-    } else if m.fingerprint == PrintMatch::Differs {
-        "Addons differ"
-    } else if m.me {
-        match phase {
-            Phase::InLobby | Phase::Racing => "Ready",
-            _ => "Joining\u{2026}",
-        }
-    } else if m.relay == RelayStatus::Ready && (m.host || m.fingerprint == PrintMatch::Matches) {
-        "Ready"
+/// F1 25 closing while the player is in a room that started it leaves the room: `seen` is that the room's
+/// game has been running, `busy` that a launch, build or restore is still going.
+pub(crate) fn exit_leaves(seen: bool, running: bool, busy: bool) -> bool {
+    seen && !running && !busy
+}
+
+pub(crate) fn exit_notice(host: bool) -> &'static str {
+    if host {
+        "F1 25 closed, so your room closed."
     } else {
-        "Joining\u{2026}"
+        "F1 25 closed, so you left the room."
     }
 }
 
-/// A difference from the host in plain words.
-pub(crate) fn difference_text(m: &Mismatch) -> String {
-    match &m.kind {
-        MismatchKind::GameBuild { .. } => "Your F1 25 version is not the host's".into(),
-        MismatchKind::Dlc { .. } => "Your DLC is not the host's".into(),
-        MismatchKind::Launcher { .. } => "Your F1 Multiplayer version is not the host's".into(),
-        MismatchKind::MissingAddon { name, version, .. } => format!("{name} {version} is missing"),
-        MismatchKind::ExtraAddon { name, .. } => format!("{name} is on; the host doesn't use it"),
-        MismatchKind::VersionDiffers {
-            name, local, host, ..
-        } => format!("{name}: you have {local}, the host has {host}"),
-        MismatchKind::SourceDiffers { name, .. } => format!("{name} is a different copy from the host's"),
-        MismatchKind::InputsDiffer { name, .. } => format!("{name} has other data than the host's"),
-        MismatchKind::LoadOrder { .. } => "Your addons load in a different order".into(),
-        MismatchKind::OptionDiffers { addon, option, .. } => {
-            format!("A setting differs: {addon} {option}")
-        }
+/// One member's state as the room lists it: what their game is doing. Only a game in the lobby counts as joined.
+pub(crate) fn member_word(m: &MemberState) -> (&'static str, Tone) {
+    if !m.connected {
+        return ("Disconnected", Tone::Blocked);
+    }
+    match m.stage {
+        Some(MemberStage::InLobby) => (MemberStage::InLobby.word(), Tone::Good),
+        Some(stage) => (stage.word(), Tone::Working),
+        None => ("Joining\u{2026}", Tone::Working),
     }
 }
 
-/// The fix steps the launcher can take on its own, and the lines left to the player.
-pub(crate) fn fixable(steps: &[FixStep]) -> (usize, Vec<String>) {
-    let manual = steps
+pub(crate) fn joined(state: &SessionState) -> usize {
+    state
+        .members
         .iter()
-        .filter_map(|s| match s {
-            FixStep::Manual { line } => Some(capitalised(line)),
-            _ => None,
+        .filter(|m| m.connected && m.stage == Some(MemberStage::InLobby))
+        .count()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AddonCheck {
+    pub(crate) name: String,
+    pub(crate) have: bool,
+}
+
+/// The room's addons, each with whether this player has it on.
+pub(crate) fn addon_checks(addons: &[RoomAddon], on: &HashSet<String>) -> Vec<AddonCheck> {
+    addons
+        .iter()
+        .map(|a| AddonCheck {
+            name: a.name.clone(),
+            have: on.contains(&a.id),
         })
-        .collect::<Vec<_>>();
-    (steps.len() - manual.len(), manual)
+        .collect()
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub(crate) struct Fixed {
-    pub(crate) done: Vec<String>,
-    pub(crate) failed: Vec<String>,
+pub(crate) fn missing(checks: &[AddonCheck]) -> usize {
+    checks.iter().filter(|c| !c.have).count()
 }
 
-fn install_exact(
-    store: &Store,
-    profile: &str,
-    catalog: &[Addon],
-    id: &str,
-    version: &semver::Version,
-    sha256: Option<&str>,
-) -> Result<(), String> {
-    let addon = catalog
-        .iter()
-        .find(|a| a.id == id)
-        .ok_or_else(|| format!("{id} is not in the Addon Browser"))?;
-    let v = addon
-        .versions
-        .iter()
-        .chain(addon.latest.iter())
-        .find(|v| v.version == *version && sha256.is_none_or(|s| v.sha256.trim().eq_ignore_ascii_case(s)))
-        .ok_or_else(|| format!("{} {version} is not in the Addon Browser", addon.name))?;
-    catalog::requires::install(store, catalog, addon, v, &|_| {}).map_err(|e| e.to_string())?;
-    let registry = store.registry().map_err(|e| e.to_string())?;
-    store
-        .update_profile(profile, |p| registry.set_enabled(p, id, true))
-        .map_err(|e| e.to_string())
-}
-
-fn reorder(order: &[String], addons: &mut [swofty_core::profile::ProfileAddon]) {
-    let slots: Vec<usize> = (0..addons.len())
-        .filter(|&i| order.contains(&addons[i].id))
-        .collect();
-    let mut placed: Vec<_> = slots.iter().map(|&i| addons[i].clone()).collect();
-    placed.sort_by_key(|a| order.iter().position(|id| *id == a.id));
-    for (slot, addon) in slots.into_iter().zip(placed) {
-        addons[slot] = addon;
+/// The names a room card shows: every addon the host has on when the server lists them, else its tracks.
+pub(crate) fn card_addons(room: &RoomSummary) -> Vec<String> {
+    match &room.addons {
+        Some(a) if !a.list.is_empty() => a.list.iter().map(|x| x.name.clone()).collect(),
+        Some(a) => a.tracks.clone(),
+        None => Vec::new(),
     }
-}
-
-/// Makes `profile` match the host as far as the launcher can: exact registry versions, addons
-/// turned off, options and load order. The game picks the changes up when it starts again.
-fn apply_fix(
-    store: &Store,
-    profile: &str,
-    catalog: &[Addon],
-    steps: &[FixStep],
-) -> (Vec<String>, Vec<String>) {
-    let (mut done, mut failed) = (Vec::new(), Vec::new());
-    for step in steps {
-        let result = match step {
-            FixStep::Install {
-                id,
-                name,
-                version,
-                sha256,
-            } => install_exact(store, profile, catalog, id, version, sha256.as_deref())
-                .map(|_| format!("Installed {name} {version}")),
-            FixStep::Disable { id, name } => store
-                .registry()
-                .and_then(|r| store.update_profile(profile, |p| r.set_enabled(p, id, false)))
-                .map(|_| format!("Turned off {name}"))
-                .map_err(|e| e.to_string()),
-            FixStep::SetOption { addon, option, value } => store
-                .addons()
-                .and_then(|all| {
-                    let m = all
-                        .get(addon)
-                        .ok_or_else(|| swofty_core::Error::Other(format!("{addon} is not installed")))?;
-                    let value = match value {
-                        Some(v) => v.clone(),
-                        None => m
-                            .options
-                            .iter()
-                            .find(|o| o.id == *option)
-                            .map(|o| o.default_value())
-                            .unwrap_or_default(),
-                    };
-                    store.update_profile(profile, |p| p.set_option(m, option, value).map(drop))
-                })
-                .map(|_| format!("Set {addon}.{option} to the host's value"))
-                .map_err(|e| e.to_string()),
-            FixStep::Reorder { order } => store
-                .update_profile(profile, |p| {
-                    reorder(order, &mut p.addons);
-                    Ok(())
-                })
-                .map(|_| "Put the addons in the host's load order".to_owned())
-                .map_err(|e| e.to_string()),
-            FixStep::Manual { .. } => continue,
-        };
-        match result {
-            Ok(line) => done.push(line),
-            Err(e) => failed.push(e),
-        }
-    }
-    (done, failed)
 }
 
 fn read_local(store: &Store, profile: &str, dir: &Path) -> Result<Local, String> {
@@ -415,9 +259,17 @@ fn read_game(dir: &Path, running: bool) -> Option<GameStatus> {
     })
 }
 
+#[derive(Clone)]
 enum Start {
     Create(RoomSettings),
     Join(String),
+}
+
+pub(crate) struct RoomLaunch {
+    pub(crate) row_ids: Option<PathBuf>,
+    /// The direct start request the game reads at boot, as `swofty\direct_start.json`: the room target, this
+    /// player's role, the host's address and the room configuration (`LaunchAsk::direct_start`).
+    pub(crate) direct_start: String,
 }
 
 pub(crate) struct Multiplayer {
@@ -441,12 +293,14 @@ pub(crate) struct Multiplayer {
     session: Option<Session>,
     state: Option<SessionState>,
     leaving: bool,
-    fixing: bool,
-    fixed: Option<Fixed>,
-    refreshing: bool,
-    refreshed: bool,
+    viewing: Option<String>,
+    notice: Option<String>,
+    closing: Option<Vec<u32>>,
+    game_seen: bool,
     error: Option<String>,
     copied: Option<Instant>,
+    launch_seen: u32,
+    room_launching: bool,
     faces: HashMap<String, Arc<Image>>,
     faces_asked: HashSet<String>,
     pub(crate) host: crate::mp_host::HostPanel,
@@ -488,12 +342,14 @@ impl Multiplayer {
             session: None,
             state: None,
             leaving: false,
-            fixing: false,
-            fixed: None,
-            refreshing: false,
-            refreshed: false,
+            viewing: None,
+            notice: None,
+            closing: None,
+            game_seen: false,
             error: None,
             copied: None,
+            launch_seen: 0,
+            room_launching: false,
             faces: HashMap::new(),
             faces_asked: HashSet::new(),
             _inputs: inputs,
@@ -506,12 +362,13 @@ impl Multiplayer {
 
     fn finish_leaving(&mut self) {
         self.session = None;
+        self.launch_seen = 0;
+        self.room_launching = false;
         self.state = None;
         self.leaving = false;
-        self.fixing = false;
-        self.fixed = None;
-        self.refreshing = false;
-        self.refreshed = false;
+        self.closing = None;
+        self.game_seen = false;
+        self.viewing = None;
         self.rooms_at = None;
         self.game_at = None;
         self.digest = None;
@@ -527,13 +384,13 @@ impl Shell {
         self.mp.as_ref().is_some_and(|m| m.allowed)
     }
 
-    pub(crate) fn watch_multiplayer(cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
+    pub(crate) fn watch_multiplayer(window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
                 if this
-                    .update(cx, |s, cx| {
-                        s.mp_tick(cx);
+                    .update_in(cx, |s, window, cx| {
+                        s.mp_tick(window, cx);
                         s.career_tick(cx);
                     })
                     .is_err()
@@ -545,7 +402,9 @@ impl Shell {
         .detach();
     }
 
-    fn mp_tick(&mut self, cx: &mut Context<Self>) {
+    fn mp_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mp_room_launch(window, cx);
+        self.mp_watch_game(cx);
         let m = &mut self.mp_page;
         if m.leaving && m.session.as_ref().is_none_or(Session::is_finished) {
             m.finish_leaving();
@@ -565,10 +424,6 @@ impl Shell {
         }
         if let Some(session) = &m.session {
             let state = session.state();
-            if m.refreshed && state.mismatches.is_empty() {
-                m.fixed = None;
-                m.refreshed = false;
-            }
             if m.state.as_ref() != Some(&state) {
                 m.state = Some(state);
                 cx.notify();
@@ -592,6 +447,179 @@ impl Shell {
             self.mp_read_digest(cx);
         }
         self.mp_load_faces(cx);
+    }
+
+    /// Starts F1 25 for the room when the session asks, the game is closed and the launcher has put the
+    /// game folder back.
+    fn mp_room_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = &self.mp_page.session else {
+            return;
+        };
+        let Some(ask) = session.state().launch else {
+            return;
+        };
+        if self.mp_page.launch_seen == ask.seq || self.launch.is_some() || self.build.is_some() {
+            return;
+        }
+        if !self.processes.is_empty() || self.restoring {
+            return;
+        }
+        self.mp_page.closing = None;
+        if let Some(dir) = self.install.as_ref().map(|i| i.dir.clone()) {
+            std::fs::remove_file(mp_game::mailbox(&dir).join("status.json")).ok();
+        }
+        let row_ids = match &ask.row_ids {
+            Some(ids) => {
+                let file = self.store.root.join("state/room-row-ids.json");
+                if let Err(e) = std::fs::create_dir_all(self.store.root.join("state"))
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| ids.write(&file).map_err(|e| e.to_string()))
+                {
+                    self.mp_page.launch_seen = ask.seq;
+                    session.launch_failed(&format!("the host's ids couldn't be written ({e})"));
+                    return;
+                }
+                Some(file)
+            }
+            None => None,
+        };
+        self.mp_page.launch_seen = ask.seq;
+        self.mp_page.game_seen = false;
+        self.mp_page.room_launching = true;
+        let direct_start = ask.direct_start(session.state().host);
+        let started = self.play_for(
+            Some(RoomLaunch {
+                row_ids,
+                direct_start,
+            }),
+            window,
+            cx,
+        );
+        let Some(session) = &self.mp_page.session else {
+            return;
+        };
+        if started {
+            session.launched();
+        } else {
+            self.mp_page.room_launching = false;
+            session.launch_failed("see the notice, finish what it asks, then try again");
+        }
+        cx.notify();
+    }
+
+    /// The launch `mp_room_launch` started ended without the game: `why` says what stopped it.
+    pub(crate) fn mp_launch_ended(&mut self, why: Option<String>) {
+        if !std::mem::take(&mut self.mp_page.room_launching) {
+            return;
+        }
+        if let (Some(why), Some(session)) = (why, &self.mp_page.session) {
+            session.launch_failed(&why);
+        }
+    }
+
+    fn mp_watch_game(&mut self, cx: &mut Context<Self>) {
+        let busy = self.launch.is_some() || self.build.is_some() || self.restoring;
+        let m = &mut self.mp_page;
+        if m.session.is_none() {
+            return;
+        }
+        if !self.processes.is_empty() && m.launch_seen != 0 && m.closing.is_none() {
+            m.game_seen = true;
+        }
+        if m.closing.is_some() && self.processes.is_empty() {
+            m.closing = None;
+        }
+        let over = m.state.as_ref().is_some_and(|s| s.phase.is_over());
+        if over || m.leaving || !exit_leaves(m.game_seen, !self.processes.is_empty(), busy) {
+            return;
+        }
+        let host = m.state.as_ref().is_some_and(|s| s.host);
+        m.notice = Some(exit_notice(host).to_owned());
+        diag::line(format!(
+            "launcher: F1 25 exited; leaving the room ({})",
+            exit_notice(host)
+        ));
+        self.mp_leave(cx);
+    }
+
+    fn mp_close_game(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(dir) = self.install.as_ref().map(|i| i.dir.clone()) else {
+            return true;
+        };
+        let pids: Vec<u32> = self
+            .processes
+            .iter()
+            .filter(|g| g.is_in(&dir))
+            .map(|g| g.pid)
+            .collect();
+        if pids.is_empty() {
+            return true;
+        }
+        swofty_core::session::request_stop(&self.store.root);
+        for pid in &pids {
+            if let Err(e) = swofty_core::process::stop_process(*pid) {
+                crate::app_log::action("stop f1 25").failed(&e);
+                window.push_notification(Notification::error(e.to_string()), cx);
+                return false;
+            }
+        }
+        self.mp_page.closing = Some(pids);
+        true
+    }
+
+    fn mp_begin(&mut self, start: Start, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mp_page.busy() || !self.mp_close_game(window, cx) {
+            return;
+        }
+        self.mp_page.notice = None;
+        self.mp_start(start, cx);
+    }
+
+    fn mp_play(&mut self, start: Start, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.install.as_ref().map(|i| i.dir.clone());
+        let running = dir
+            .as_ref()
+            .is_some_and(|d| self.processes.iter().any(|g| g.is_in(d)));
+        if !running {
+            self.mp_begin(start, window, cx);
+            return;
+        }
+        let shell = cx.entity().downgrade();
+        let start = std::cell::RefCell::new(Some(start));
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let (shell, pending) = (shell.clone(), start.borrow_mut().take());
+            alert
+                .title("Restart F1 25?")
+                .description("F1 25 will restart for this session. Unsaved progress is lost.")
+                .ok_text("Restart and play")
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    if let Some(start) = pending.clone() {
+                        shell.update(cx, |s, cx| s.mp_begin(start, window, cx)).ok();
+                    }
+                    true
+                })
+        });
+    }
+
+    pub(crate) fn mp_view_play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(code) = self.mp_page.viewing.clone() else {
+            return;
+        };
+        self.go(Page::Multiplayer, cx);
+        self.mp_play(Start::Join(code), window, cx);
+    }
+
+    pub(crate) fn mp_viewed_room(&self) -> Option<&RoomSummary> {
+        let code = self.mp_page.viewing.as_deref()?;
+        self.mp_page.rooms.iter().find(|r| r.code == code)
+    }
+
+    pub(crate) fn mp_can_play_room(&self) -> bool {
+        self.page == Page::Multiplayer
+            && self.mp_allowed()
+            && !self.mp_page.busy()
+            && self.mp_viewed_room().is_some()
     }
 
     fn mp_load_faces(&mut self, cx: &mut Context<Self>) {
@@ -713,7 +741,7 @@ impl Shell {
                 s.mp_page.digest_busy = false;
                 match digest {
                     Ok(d) => s.mp_page.digest = Some(d),
-                    Err(e) => eprintln!("swofty-launcher: couldn't read this profile's addons: {e}"),
+                    Err(e) => eprintln!("f1-multiplayer: couldn't read this profile's addons: {e}"),
                 }
                 cx.notify();
             })
@@ -756,7 +784,13 @@ impl Shell {
                     let local = read_local(&store, &profile, &dir).inspect_err(|e| {
                         diag::line(format!("session not started: couldn't read the addons: {e}"));
                     })?;
-                    let setup = Setup::new(api, &dir, local);
+                    let mut setup = Setup::new(api, &dir, local);
+                    setup.room_launch = true;
+                    let (refresh_store, refresh_profile, refresh_dir) =
+                        (store.clone(), profile.clone(), dir.clone());
+                    setup.refresh = Some(Arc::new(move || {
+                        read_local(&refresh_store, &refresh_profile, &refresh_dir).ok()
+                    }));
                     Ok::<_, String>(match start {
                         Start::Create(settings) => Session::create(setup, settings),
                         Start::Join(code) => Session::join(setup, &code),
@@ -782,7 +816,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn mp_create(&mut self, cx: &mut Context<Self>) {
+    fn mp_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let typed = self.mp_page.name.read(cx).value().trim().to_owned();
         let name = if typed.is_empty() {
             self.mp_default_name()
@@ -795,7 +829,7 @@ impl Shell {
             max_members: self.mp_page.max,
             ..RoomSettings::default()
         };
-        self.mp_start(Start::Create(settings), cx);
+        self.mp_play(Start::Create(settings), window, cx);
     }
 
     fn mp_default_name(&self) -> String {
@@ -814,10 +848,10 @@ impl Shell {
         cx.notify();
     }
 
-    fn mp_join_code(&mut self, cx: &mut Context<Self>) {
+    fn mp_join_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let code = self.mp_page.code.read(cx).value().trim().to_owned();
         if !code.is_empty() {
-            self.mp_start(Start::Join(code), cx);
+            self.mp_play(Start::Join(code), window, cx);
         }
     }
 
@@ -830,78 +864,20 @@ impl Shell {
         cx.notify();
     }
 
-    fn mp_fix(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = &self.mp_page.session else {
-            return;
-        };
-        let steps = session.fix_plan();
-        let (store, profile) = (self.store.clone(), self.library.profile.name.clone());
-        let listing = self.browser.addons.clone();
-        self.mp_page.fixing = true;
-        self.mp_page.error = None;
-        cx.spawn(async move |this, cx| {
-            let (done, failed) = cx
-                .background_executor()
-                .spawn(async move {
-                    let listing = if listing.is_empty() {
-                        catalog::cached(&store.root).unwrap_or_default()
-                    } else {
-                        listing
-                    };
-                    apply_fix(&store, &profile, &listing, &steps)
-                })
-                .await;
-            this.update(cx, |s, cx| {
-                let m = &mut s.mp_page;
-                m.fixing = false;
-                m.refreshed = false;
-                m.fixed = Some(Fixed { done, failed });
-                s.reload(cx);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    fn mp_retry(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = &self.mp_page.session {
+            session.retry();
+        }
         cx.notify();
     }
 
-    /// Drives the game again; after a fix, with this profile's fingerprint read afresh first.
-    fn mp_retry(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = &self.mp_page.session else {
-            return;
-        };
-        let dir = self.install.as_ref().map(|i| i.dir.clone());
-        let Some(dir) = dir.filter(|_| self.mp_page.fixed.is_some()) else {
-            session.retry();
-            cx.notify();
-            return;
-        };
-        let (store, profile) = (self.store.clone(), self.library.profile.name.clone());
-        self.mp_page.refreshing = true;
-        self.mp_page.error = None;
-        cx.spawn(async move |this, cx| {
-            let local = cx
-                .background_executor()
-                .spawn(async move { read_local(&store, &profile, &dir) })
-                .await;
-            this.update(cx, |s, cx| {
-                let m = &mut s.mp_page;
-                m.refreshing = false;
-                if let Some(session) = &m.session {
-                    match local {
-                        Ok(local) => {
-                            session.update_local(local);
-                            m.refreshed = true;
-                        }
-                        Err(e) => m.error = Some(format!("Couldn't read your addons: {e}")),
-                    }
-                    session.retry();
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    fn mp_open_room(&mut self, code: String, cx: &mut Context<Self>) {
+        self.mp_page.viewing = Some(code);
+        cx.notify();
+    }
+
+    fn mp_close_view(&mut self, cx: &mut Context<Self>) {
+        self.mp_page.viewing = None;
         cx.notify();
     }
 
@@ -918,7 +894,10 @@ impl Shell {
         let in_room = self.mp_page.session.is_some();
         match self.mp_page.state.clone() {
             Some(state) if in_room => self.mp_room(&state, p, cx),
-            _ => self.mp_lobby(p, cx),
+            _ => match self.mp_viewed_room().cloned() {
+                Some(room) => self.mp_room_view(&room, p, cx),
+                None => self.mp_lobby(p, cx),
+            },
         }
     }
 
@@ -1002,7 +981,6 @@ impl Shell {
                 )
                 .into_any_element()
         };
-        let hint = self.mp_game_state().not_ready();
         v_flex()
             .size_full()
             .child(self.header(Page::Multiplayer.label(), subtitle, actions, p))
@@ -1032,8 +1010,8 @@ impl Shell {
                                 .child(div().flex_1())
                                 .child(self.code_join(p, cx)),
                             )
-                            .when_some(hint.filter(|_| !self.mp_page.form), |d, h| {
-                                d.child(div().text_size(px(13.)).text_color(p.text_muted).child(h))
+                            .when_some(self.mp_page.notice.clone(), |d, n| {
+                                d.child(div().text_size(px(13.)).text_color(p.text_muted).child(n))
                             })
                             .when_some(self.mp_page.error.clone(), |d, e| {
                                 d.child(div().text_size(px(13.)).text_color(p.error).child(e))
@@ -1045,7 +1023,6 @@ impl Shell {
     }
 
     fn code_join(&self, _p: Palette, cx: &mut Context<Self>) -> Div {
-        let game = self.mp_game_state();
         let typed = !self.mp_page.code.read(cx).value().trim().is_empty();
         let joining = self
             .mp_page
@@ -1067,17 +1044,15 @@ impl Shell {
                     .small()
                     .label("Join with code")
                     .loading(joining && typed)
-                    .disabled(!typed || game.not_ready().is_some() || self.mp_page.busy())
-                    .on_click(cx.listener(|this, _, _, cx| this.mp_join_code(cx))),
+                    .disabled(!typed || self.mp_page.busy())
+                    .on_click(cx.listener(|this, _, window, cx| this.mp_join_code(window, cx))),
             )
     }
 
     fn room_row(&self, room: &RoomSummary, first: bool, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let status = RoomStatus::of(room, self.mp_page.digest.as_deref());
-        let blocked = status == RoomStatus::Full || self.mp_game_state().not_ready().is_some();
-        let joining = self.mp_page.starting.as_deref() == Some(room.code.as_str());
         let code = room.code.clone();
-        let tracks = room.addons.as_ref().and_then(|a| tracks_text(&a.tracks));
+        let names = card_addons(room);
         h_flex()
             .px(px(16.))
             .py(px(14.))
@@ -1104,14 +1079,20 @@ impl Shell {
                             .truncate()
                             .child(room_meta(room)),
                     )
-                    .when_some(tracks, |d, t| {
+                    .when(!names.is_empty(), |d| {
                         d.child(
                             h_flex()
                                 .gap(px(6.))
+                                .items_start()
                                 .text_size(px(12.))
                                 .text_color(p.text_placeholder)
-                                .child(svg().data(TRACK).size(px(13.)).text_color(p.text_placeholder))
-                                .child(div().truncate().child(t)),
+                                .child(
+                                    Icon::new(IconName::Package)
+                                        .size(px(13.))
+                                        .mt(px(1.))
+                                        .text_color(p.text_placeholder),
+                                )
+                                .child(div().flex_1().min_w_0().child(names.join(", "))),
                         )
                     }),
             )
@@ -1127,22 +1108,18 @@ impl Shell {
                     .child(status.text()),
             )
             .child(
-                Button::new(SharedString::from(format!("mp-join-{}", room.code)))
+                Button::new(SharedString::from(format!("mp-view-{}", room.code)))
                     .small()
                     .outline()
-                    .label("Join")
-                    .loading(joining)
-                    .disabled(blocked || self.mp_page.busy())
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.mp_start(Start::Join(code.clone()), cx)),
-                    ),
+                    .label("View")
+                    .disabled(self.mp_page.busy())
+                    .on_click(cx.listener(move |this, _, _, cx| this.mp_open_room(code.clone(), cx))),
             )
             .into_any_element()
     }
 
     fn create_form(&self, p: Palette, cx: &mut Context<Self>) -> Div {
         let m = &self.mp_page;
-        let blocked = self.mp_game_state().not_ready();
         let creating = m.starting.as_deref() == Some("create");
         let shell = cx.entity().downgrade();
         let players = Button::new("mp-max")
@@ -1249,14 +1226,7 @@ impl Shell {
                     .border_t_1()
                     .border_color(p.border_variant)
                     .bg(p.surface)
-                    .children(blocked.map(|why| {
-                        div()
-                            .flex_1()
-                            .text_size(px(13.))
-                            .text_color(p.text_muted)
-                            .child(why)
-                    }))
-                    .when(blocked.is_none(), |d| d.child(div().flex_1()))
+                    .child(div().flex_1())
                     .child(
                         Button::new("mp-create-cancel")
                             .ghost()
@@ -1273,8 +1243,8 @@ impl Shell {
                             .small()
                             .label("Create room")
                             .loading(creating)
-                            .disabled(blocked.is_some() || m.busy())
-                            .on_click(cx.listener(|this, _, _, cx| this.mp_create(cx))),
+                            .disabled(m.busy())
+                            .on_click(cx.listener(|this, _, window, cx| this.mp_create(window, cx))),
                     ),
             )
     }
@@ -1288,58 +1258,249 @@ impl Shell {
             .border_color(p.border)
     }
 
-    fn fixed_card(&self, f: &Fixed, p: Palette, cx: &mut Context<Self>) -> Div {
-        let blocked = self.mp_game_state() != GameState::MainMenu;
-        let m = &self.mp_page;
-        let title = if f.failed.is_empty() {
-            "Addons updated"
+    fn mp_enabled_addons(&self) -> HashSet<String> {
+        self.library
+            .profile
+            .addons
+            .iter()
+            .filter(|a| a.enabled)
+            .map(|a| a.id.clone())
+            .collect()
+    }
+
+    fn mp_room_view(&mut self, room: &RoomSummary, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.mp_enabled_addons();
+        let listed = room.addons.as_ref().filter(|a| !a.list.is_empty());
+        let checks = listed.map(|a| addon_checks(&a.list, &on)).unwrap_or_default();
+        let lacking = missing(&checks);
+        let subtitle = room_meta(room);
+        let actions = h_flex().gap(px(8.)).items_center().child(
+            Button::new("mp-view-back")
+                .outline()
+                .icon(IconName::ArrowLeft)
+                .label("Back to rooms")
+                .on_click(cx.listener(|this, _, _, cx| this.mp_close_view(cx))),
+        );
+        let summary = if checks.is_empty() {
+            "The host's launcher hasn't listed its addons.".to_owned()
+        } else if lacking == 0 {
+            "You have every addon the host has on.".to_owned()
         } else {
-            "Some changes didn't work"
-        };
-        self.mp_card(p)
-            .child(
-                v_flex()
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .children(
-                        f.done
-                            .iter()
-                            .map(|l| div().text_size(px(13.)).text_color(p.text_muted).child(l.clone())),
-                    )
-                    .children(f.failed.iter().map(|l| {
-                        div()
-                            .text_size(px(13.))
-                            .text_color(p.warning)
-                            .child(capitalised(l))
-                    })),
+            format!(
+                "You are missing or have off {} of {}.",
+                lacking,
+                plural(checks.len(), "addon", "addons")
             )
-            .child(
+        };
+        let rows: Vec<AnyElement> = checks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
                 h_flex()
+                    .px(px(16.))
+                    .py(px(10.))
                     .gap(px(12.))
-                    .pt(px(12.))
-                    .border_t_1()
-                    .border_color(p.border_variant)
+                    .items_center()
+                    .when(i > 0, |d| d.border_t_1().border_color(p.border_variant))
+                    .child(
+                        Icon::new(if c.have { IconName::Check } else { IconName::X })
+                            .size(px(16.))
+                            .text_color(if c.have { p.success } else { p.error }),
+                    )
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(13.))
-                            .child("Close F1 25 and press Play so it loads them, then join again."),
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(14.))
+                            .child(c.name.clone()),
                     )
                     .child(
-                        Button::new("mp-rejoin")
-                            .small()
-                            .primary()
-                            .label("Join again")
-                            .loading(m.refreshing)
-                            .disabled(blocked || m.refreshing || m.leaving)
-                            .on_click(cx.listener(|this, _, _, cx| this.mp_retry(cx))),
-                    ),
+                        div()
+                            .text_size(px(13.))
+                            .text_color(p.text_muted)
+                            .child(if c.have {
+                                "You have it"
+                            } else {
+                                "You don't have it on"
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        v_flex()
+            .size_full()
+            .child(self.header(room.name.clone(), subtitle, actions, p))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .scroll_y("mp-room-view")
+                    .px(px(GUTTER))
+                    .pt(px(4.))
+                    .pb(px(24.))
+                    .gap(px(16.))
+                    .child(div().text_size(px(13.)).text_color(p.text_muted).child(summary))
+                    .child(div().text_size(px(13.)).text_color(p.text_muted).child(format!(
+                        "Press Play {}'s Lobby in the bar below to start F1 25 in this room.",
+                        room.host.name
+                    )))
+                    .when(!rows.is_empty(), |d| {
+                        d.child(
+                            v_flex()
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(p.border)
+                                .overflow_hidden()
+                                .children(rows),
+                        )
+                    }),
             )
+            .into_any_element()
+    }
+
+    fn status_card(&self, st: &Status, state: &SessionState, p: Palette, cx: &mut Context<Self>) -> Div {
+        let m = &self.mp_page;
+        let (icon, color) = match st.tone {
+            Tone::Working => (IconName::LoaderCircle, p.accent),
+            Tone::Blocked => (IconName::CircleAlert, p.warning),
+            Tone::Good => (IconName::CircleCheck, p.success),
+            Tone::Over => (IconName::Info, p.text_placeholder),
+        };
+        let over = state.phase.is_over();
+        let current = step_number(st.progress.step);
+        let steps = h_flex()
+            .gap(px(14.))
+            .flex_wrap()
+            .children(STEPS.iter().enumerate().map(|(i, (_, name))| {
+                div()
+                    .text_size(px(12.))
+                    .text_color(if i == current && !over {
+                        p.text
+                    } else if i < current && !over {
+                        p.text_muted
+                    } else {
+                        p.text_placeholder
+                    })
+                    .when(i == current && !over, |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .child(*name)
+            }));
+        let fraction = f32::from(st.progress.percent) / 100.0;
+        let bar = div()
+            .h(px(6.))
+            .w_full()
+            .rounded_full()
+            .bg(p.border_variant)
+            .child(
+                div()
+                    .h_full()
+                    .w(relative(fraction))
+                    .rounded_full()
+                    .bg(if st.tone == Tone::Blocked {
+                        p.warning
+                    } else {
+                        p.accent
+                    }),
+            );
+        let headline = match &st.problem {
+            Some(problem) => problem.text.clone(),
+            None => st.progress.label.clone(),
+        };
+        let action = st
+            .problem
+            .as_ref()
+            .filter(|_| !m.leaving && !over)
+            .map(|problem| {
+                if problem.retry {
+                    Button::new("mp-retry")
+                        .primary()
+                        .small()
+                        .icon(IconName::RefreshCw)
+                        .label("Retry")
+                        .on_click(cx.listener(|this, _, _, cx| this.mp_retry(cx)))
+                } else {
+                    Button::new("mp-problem-leave")
+                        .primary()
+                        .small()
+                        .icon(IconName::LogOut)
+                        .label("Leave")
+                        .on_click(cx.listener(|this, _, _, cx| this.mp_leave(cx)))
+                }
+            });
+        let running = !self.processes.is_empty();
+        let reopen = (st.problem.is_some()
+            && state.launch.is_some()
+            && running
+            && m.closing.is_none()
+            && !over
+            && !m.leaving)
+            .then(|| {
+                Button::new("mp-restart-game")
+                    .primary()
+                    .small()
+                    .label("Restart F1 25")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.mp_close_game(window, cx);
+                        cx.notify();
+                    }))
+            });
+        let race =
+            (state.host && !over && !m.leaving && matches!(state.phase, Phase::InLobby | Phase::Racing))
+                .then(|| {
+                    let started = state.room.as_ref().is_some_and(|r| r.started);
+                    Button::new("mp-race")
+                        .outline()
+                        .small()
+                        .icon(IconName::Flag)
+                        .label(if started { "Race over" } else { "Race started" })
+                        .tooltip(if started {
+                            "Show the room in the list again"
+                        } else {
+                            "Hide the room from the list while you race"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(s) = &this.mp_page.session {
+                                s.mark_race(!started);
+                            }
+                            cx.notify();
+                        }))
+                });
+        self.mp_card(p)
+            .gap(px(14.))
+            .child(
+                h_flex()
+                    .gap(px(12.))
+                    .items_center()
+                    .child(Icon::new(icon).size(px(22.)).text_color(color))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(3.))
+                            .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child(
+                                if m.leaving && !over {
+                                    "Leaving the room\u{2026}".to_owned()
+                                } else {
+                                    headline
+                                },
+                            ))
+                            .children(
+                                st.hint
+                                    .filter(|_| !m.leaving)
+                                    .map(|h| div().text_size(px(13.)).text_color(p.text_muted).child(h)),
+                            )
+                            .children(reopen.is_some().then(|| {
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(p.text_muted)
+                                    .child("F1 25 is open. It restarts for this session.")
+                            })),
+                    )
+                    .children(race)
+                    .children(reopen)
+                    .children(action),
+            )
+            .when(!over, |d| d.child(bar).child(steps))
     }
 
     fn mp_room(&mut self, state: &SessionState, p: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -1353,6 +1514,7 @@ impl Shell {
             || "Setting up the room\u{2026}".to_owned(),
             |r| {
                 let mut parts = vec![
+                    format!("{} in the lobby", joined(state)),
                     format!("{}/{} players", state.members.len(), r.max_members),
                     if r.public { "Listed" } else { "Private" }.to_owned(),
                 ];
@@ -1366,7 +1528,6 @@ impl Shell {
         let actions = h_flex()
             .gap(px(8.))
             .items_center()
-            .child(div().pr(px(6.)).child(self.game_status(p)))
             .when_some(code, |d, code| {
                 let copy = code.clone();
                 d.child(
@@ -1397,96 +1558,16 @@ impl Shell {
                     } else {
                         "Leave"
                     })
-                    .disabled(m.leaving || m.fixing)
+                    .disabled(m.leaving)
                     .on_click(cx.listener(|this, _, _, cx| this.mp_leave(cx))),
             );
-        let (tone, headline, hint) = if m.leaving && !over {
-            (Tone::Working, "Leaving the room\u{2026}".to_owned(), None)
-        } else {
-            status_text(state)
-        };
-        let (icon, color) = match tone {
-            Tone::Working => (IconName::LoaderCircle, p.text_placeholder),
-            Tone::Blocked => (IconName::CircleAlert, p.warning),
-            Tone::Good => (IconName::CircleCheck, p.success),
-            Tone::Over => (IconName::Info, p.text_placeholder),
-            Tone::Failed => (IconName::CircleAlert, p.error),
-        };
-        let started = room.as_ref().is_some_and(|r| r.started);
-        let race =
-            (state.host && !over && !m.leaving && matches!(state.phase, Phase::InLobby | Phase::Racing))
-                .then(|| {
-                    Button::new("mp-race")
-                        .outline()
-                        .small()
-                        .icon(IconName::Flag)
-                        .label(if started { "Race over" } else { "Race started" })
-                        .tooltip(if started {
-                            "Show the room in the list again"
-                        } else {
-                            "Hide the room from the list while you race"
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(s) = &this.mp_page.session {
-                                s.mark_race(!started);
-                            }
-                            cx.notify();
-                        }))
-                });
-        let retry = (retry_offered(state) && !m.leaving && m.fixed.is_none()).then(|| {
-            Button::new("mp-retry")
-                .outline()
-                .small()
-                .icon(IconName::RefreshCw)
-                .label("Try again")
-                .loading(m.refreshing)
-                .disabled(m.refreshing)
-                .on_click(cx.listener(|this, _, _, cx| this.mp_retry(cx)))
-        });
-        let trouble = state
-            .last_error
-            .as_ref()
-            .filter(|_| !over && !m.leaving)
-            .map(|_| "Having trouble reaching the other players. Still trying.");
-        let status = self.mp_card(p).child(
-            h_flex()
-                .gap(px(12.))
-                .items_center()
-                .child(Icon::new(icon).size(px(18.)).text_color(color))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(3.))
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(headline),
-                        )
-                        .children(
-                            hint.filter(|_| !m.leaving)
-                                .map(|h| div().text_size(px(13.)).text_color(p.text_muted).child(h)),
-                        )
-                        .children(
-                            trouble.map(|t| div().text_size(px(13.)).text_color(p.text_muted).child(t)),
-                        ),
-                )
-                .children(race)
-                .children(retry),
-        );
-        let differences = match &m.fixed {
-            Some(f) => Some(self.fixed_card(f, p, cx)),
-            None if !state.mismatches.is_empty() && !m.leaving && !over => {
-                Some(self.mismatch_card(state, p, cx))
-            }
-            None => None,
-        };
+        let st = room_status(state);
+        let status = self.status_card(&st, state, p, cx);
         let players: Vec<AnyElement> = state
             .members
             .iter()
             .enumerate()
-            .map(|(i, member)| self.member_row(member, &state.phase, i == 0, p))
+            .map(|(i, member)| self.member_row(member, i == 0, p))
             .collect();
         v_flex()
             .size_full()
@@ -1501,7 +1582,6 @@ impl Shell {
                     .pb(px(24.))
                     .gap(px(24.))
                     .child(status)
-                    .children(differences)
                     .child(
                         v_flex()
                             .gap(px(8.))
@@ -1526,78 +1606,8 @@ impl Shell {
             .into_any_element()
     }
 
-    fn mismatch_card(&self, state: &SessionState, p: Palette, cx: &mut Context<Self>) -> Div {
-        let steps = swofty_core::multiplayer::session::fix_plan(&state.mismatches);
-        let (auto, manual) = fixable(&steps);
-        let fixing = self.mp_page.fixing;
-        let note = if manual.is_empty() {
-            "Fix & join installs the host's exact versions. F1 25 then needs a restart."
-        } else if auto > 0 {
-            "Fix & join changes what it can; the rest is up to you. F1 25 then needs a restart."
-        } else {
-            "Change these yourself, then join again."
-        };
-        self.mp_card(p)
-            .child(
-                div()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("What's different from the host"),
-            )
-            .child(v_flex().gap(px(6.)).children(state.mismatches.iter().map(|mm| {
-                h_flex()
-                    .gap(px(10.))
-                    .items_start()
-                    .text_size(px(13.))
-                    .child(
-                        div()
-                            .mt(px(7.))
-                            .size(px(4.))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(p.text_placeholder),
-                    )
-                    .child(v_flex().flex_1().min_w_0().child(difference_text(mm)).when_some(
-                        mm.differences.first(),
-                        |d, first| {
-                            d.child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(p.text_muted)
-                                    .child(first.clone()),
-                            )
-                        },
-                    ))
-            })))
-            .child(
-                h_flex()
-                    .gap(px(12.))
-                    .pt(px(12.))
-                    .border_t_1()
-                    .border_color(p.border_variant)
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(13.))
-                            .text_color(p.text_muted)
-                            .child(note),
-                    )
-                    .when(auto > 0, |d| {
-                        d.child(
-                            Button::new("mp-fix")
-                                .primary()
-                                .small()
-                                .label("Fix & join")
-                                .loading(fixing)
-                                .disabled(fixing)
-                                .on_click(cx.listener(|this, _, _, cx| this.mp_fix(cx))),
-                        )
-                    }),
-            )
-    }
-
-    fn member_row(&self, m: &MemberState, phase: &Phase, first: bool, p: Palette) -> AnyElement {
-        let word = member_status(m, phase);
+    fn member_row(&self, m: &MemberState, first: bool, p: Palette) -> AnyElement {
+        let (word, tone) = member_word(m);
         h_flex()
             .px(px(16.))
             .py(px(12.))
@@ -1622,10 +1632,10 @@ impl Shell {
             .child(
                 div()
                     .text_size(px(13.))
-                    .text_color(if word == "Addons differ" {
-                        p.warning
-                    } else {
-                        p.text_muted
+                    .text_color(match tone {
+                        Tone::Good => p.success,
+                        Tone::Blocked => p.warning,
+                        _ => p.text_muted,
                     })
                     .child(word),
             )
@@ -1635,16 +1645,16 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use swofty_core::multiplayer::game::{GameStatus, Role, Screen};
-    use swofty_core::multiplayer::rooms::{RoomAddons, RoomSummary, User};
-    use swofty_core::multiplayer::session::{
-        FixStep, MemberState, Phase, PrintMatch, RelayStatus, SessionState,
-    };
-    use swofty_core::profile::ProfileAddon;
+    use std::collections::HashSet;
+
+    use swofty_core::multiplayer::game::{Cover, GameStatus, Role, Screen};
+    use swofty_core::multiplayer::progress::{MemberStage, Step};
+    use swofty_core::multiplayer::rooms::{RoomAddon, RoomAddons, RoomSummary, User};
+    use swofty_core::multiplayer::session::{MemberState, Phase, PrintMatch, RelayStatus, SessionState};
 
     use super::{
-        GameState, RoomStatus, Tone, fixable, member_status, reorder, retry_offered, room_meta, status_text,
-        tracks_text,
+        GameState, RoomStatus, Tone, addon_checks, card_addons, exit_leaves, exit_notice, joined,
+        member_word, missing, room_meta, room_status, step_number,
     };
 
     fn status(screen: Screen) -> GameStatus {
@@ -1655,6 +1665,15 @@ mod tests {
             configured: false,
             self_member: 0,
             base: 0,
+            cover: None,
+            room_failed: None,
+        }
+    }
+
+    fn addon(id: &str, name: &str) -> RoomAddon {
+        RoomAddon {
+            id: id.into(),
+            name: name.into(),
         }
     }
 
@@ -1673,7 +1692,12 @@ mod tests {
             digest: digest.map(str::to_owned),
             addons: Some(RoomAddons {
                 count: 4,
-                tracks: Vec::new(),
+                tracks: vec!["Okayama".into()],
+                list: vec![
+                    addon("a.tracks", "Okayama"),
+                    addon("b.cars", "2026 Cars"),
+                    addon("c.hud", "Timing HUD"),
+                ],
             }),
             created_at: 0,
         }
@@ -1693,10 +1717,11 @@ mod tests {
             bridge: None,
             game: None,
             last_error: None,
+            launch: None,
         }
     }
 
-    fn member(connected: bool, print: PrintMatch, relay: RelayStatus) -> MemberState {
+    fn member(connected: bool, stage: Option<MemberStage>) -> MemberState {
         MemberState {
             id: "u2".into(),
             name: "Max".into(),
@@ -1706,8 +1731,9 @@ mod tests {
             host: false,
             me: false,
             connected,
-            fingerprint: print,
-            relay,
+            fingerprint: PrintMatch::Matches,
+            relay: RelayStatus::Ready,
+            stage,
             traffic: None,
         }
     }
@@ -1728,11 +1754,6 @@ mod tests {
         );
         assert_eq!(GameState::of(true, Some(&status(Screen::Other))), GameState::Busy);
         assert_eq!(GameState::of(true, None), GameState::Busy);
-        assert_eq!(GameState::MainMenu.not_ready(), None);
-        assert_eq!(
-            GameState::NotRunning.not_ready(),
-            Some("Start F1 25 to create or join a room.")
-        );
     }
 
     #[test]
@@ -1753,110 +1774,151 @@ mod tests {
             RoomStatus::of(&room(3, 8, None), Some("sha256:b")),
             RoomStatus::Unknown
         );
-        assert_eq!(RoomStatus::Differ.text(), "Your addons differ");
     }
 
     #[test]
-    fn describes_a_room() {
+    fn describes_a_room_with_every_addon() {
         assert_eq!(room_meta(&room(3, 8, None)), "swofty \u{00b7} 3/8 players");
-        let tracks = ["Okayama", "Bahrain 2024", "Monza 1990", "Imola"].map(String::from);
         assert_eq!(
-            tracks_text(&tracks).as_deref(),
-            Some("Okayama, Bahrain 2024, Monza 1990 and 1 more")
+            card_addons(&room(3, 8, None)),
+            ["Okayama", "2026 Cars", "Timing HUD"]
         );
-        assert_eq!(tracks_text(&[]), None);
+        let mut old = room(3, 8, None);
+        old.addons.as_mut().unwrap().list.clear();
+        assert_eq!(
+            card_addons(&old),
+            ["Okayama"],
+            "a server that lists no addons shows the tracks"
+        );
+        old.addons = None;
+        assert!(card_addons(&old).is_empty());
     }
 
     #[test]
-    fn words_the_room_for_the_player() {
-        let refused = session(
+    fn marks_each_room_addon_with_whether_the_player_has_it_on() {
+        let listed = room(3, 8, None).addons.unwrap().list;
+        let on: HashSet<String> = ["a.tracks".to_owned(), "c.hud".to_owned()].into();
+        let checks = addon_checks(&listed, &on);
+        assert_eq!(
+            checks
+                .iter()
+                .map(|c| (c.name.as_str(), c.have))
+                .collect::<Vec<_>>(),
+            [("Okayama", true), ("2026 Cars", false), ("Timing HUD", true)]
+        );
+        assert_eq!(missing(&checks), 1);
+    }
+
+    #[test]
+    fn maps_each_phase_to_one_step_with_a_bar() {
+        let at = |phase: Phase| room_status(&session(phase, false));
+        let signing = at(Phase::Connecting("signing in".into()));
+        let joining = at(Phase::Connecting("joining F1-7KQ2MX".into()));
+        assert_eq!(signing.progress.step, Step::SigningIn);
+        assert_eq!(joining.progress.step, Step::Joining);
+        assert!(signing.progress.percent < joining.progress.percent);
+        assert!(step_number(Step::SigningIn) < step_number(Step::InLobby));
+        assert_eq!(signing.tone, Tone::Working);
+        assert!(signing.problem.is_none());
+    }
+
+    #[test]
+    fn shows_the_covers_step_while_the_game_loads_and_done_only_in_the_lobby() {
+        let mut s = session(Phase::WaitingForGame("F1 25 is starting".into()), false);
+        let mut game = status(Screen::Other);
+        game.cover = Some(Cover {
+            step: "Joining the lobby".into(),
+            percent: 90,
+        });
+        s.game = Some(game.clone());
+        let loading = room_status(&s);
+        assert_eq!(loading.progress.step, Step::Loading);
+        assert_eq!(loading.progress.label, "Joining the lobby");
+        assert!(loading.progress.percent < 100);
+        game.in_session = true;
+        game.screen = Screen::LanLobby;
+        s.game = Some(game);
+        let lobby = room_status(&s);
+        assert_eq!(
+            (lobby.progress.step, lobby.progress.percent),
+            (Step::InLobby, 100)
+        );
+        assert_eq!(lobby.tone, Tone::Good);
+        assert_eq!(lobby.hint, Some("The host picks the tracks and starts the race."));
+    }
+
+    #[test]
+    fn an_error_is_one_sentence_with_one_action() {
+        let refused = room_status(&session(
             Phase::WaitingForGame(
-                "the game didn't host the LAN session: timed out; retry or leave the room".into(),
-            ),
-            true,
-        );
-        let (tone, text, _) = status_text(&refused);
-        assert_eq!(tone, Tone::Blocked);
-        assert_eq!(
-            text,
-            "Couldn't start hosting. Go back to F1 25's main menu and try again."
-        );
-        let (_, text, _) = status_text(&session(Phase::Connecting("opening the relay".into()), false));
-        assert_eq!(text, "Joining the room\u{2026}");
-        let (tone, _, hint) = status_text(&session(Phase::InLobby, true));
-        assert_eq!(tone, Tone::Good);
-        assert!(hint.unwrap().contains("tracks"));
-        let (_, text, _) = status_text(&session(Phase::Ended("the host closed the room".into()), false));
-        assert_eq!(text, "The host closed the room");
-    }
-
-    #[test]
-    fn gives_each_player_one_word() {
-        let lobby = Phase::InLobby;
-        assert_eq!(
-            member_status(&member(true, PrintMatch::Matches, RelayStatus::Ready), &lobby),
-            "Ready"
-        );
-        assert_eq!(
-            member_status(&member(true, PrintMatch::Differs, RelayStatus::Ready), &lobby),
-            "Addons differ"
-        );
-        assert_eq!(
-            member_status(&member(false, PrintMatch::Matches, RelayStatus::Ready), &lobby),
-            "Disconnected"
-        );
-        assert_eq!(
-            member_status(&member(true, PrintMatch::Unknown, RelayStatus::Pending), &lobby),
-            "Joining\u{2026}"
-        );
-    }
-
-    #[test]
-    fn splits_fixes_from_manual_steps() {
-        let steps = vec![
-            FixStep::Disable {
-                id: "a".into(),
-                name: "A".into(),
-            },
-            FixStep::Manual {
-                line: "game build 1 is not the host's 2".into(),
-            },
-        ];
-        assert_eq!(
-            fixable(&steps),
-            (1, vec!["Game build 1 is not the host's 2".to_owned()])
-        );
-    }
-
-    #[test]
-    fn puts_the_shared_addons_in_the_hosts_order() {
-        let addon = |id: &str| ProfileAddon {
-            id: id.into(),
-            enabled: true,
-            unknown: Default::default(),
-        };
-        let mut addons = vec![addon("core"), addon("b"), addon("x"), addon("a")];
-        reorder(&["a".into(), "b".into()], &mut addons);
-        let ids: Vec<&str> = addons.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["core", "a", "x", "b"]);
-    }
-
-    #[test]
-    fn offers_retry_when_the_game_refused_but_not_for_addons() {
-        let refused = session(
-            Phase::WaitingForGame(
-                "the game didn't join the LAN session: busy; retry or leave the room".into(),
+                "F1 25 didn't start for the room: the wrapper exited (exit code: 1); retry or leave the room"
+                    .into(),
             ),
             false,
+        ));
+        let problem = refused.problem.expect("a problem");
+        assert_eq!(problem.text, "F1 25 didn't start.");
+        assert!(problem.retry);
+        let dead = room_status(&session(Phase::Failed("boom".into()), false));
+        assert!(
+            !dead.problem.expect("a problem").retry,
+            "a failed room only leaves"
         );
-        assert!(retry_offered(&refused));
-        assert!(!retry_offered(&session(Phase::InLobby, false)));
-        assert!(!retry_offered(&session(
-            Phase::Ended("you left the room".into()),
-            false
-        )));
-        let mut failing = session(Phase::Connecting("opening the relay".into()), false);
-        failing.last_error = Some("the relay refused".into());
-        assert!(retry_offered(&failing));
+        let over = room_status(&session(
+            Phase::Ended("the host left, so the room closed".into()),
+            false,
+        ));
+        assert_eq!(over.progress.label, "The host left, so the room closed");
+        assert_eq!(over.tone, Tone::Over);
+    }
+
+    #[test]
+    fn lists_each_player_by_what_their_game_is_doing() {
+        assert_eq!(
+            member_word(&member(true, Some(MemberStage::Starting))).0,
+            "Starting the game"
+        );
+        assert_eq!(
+            member_word(&member(true, Some(MemberStage::Loading))).0,
+            "Loading"
+        );
+        assert_eq!(
+            member_word(&member(true, Some(MemberStage::InLobby))).0,
+            "In the lobby"
+        );
+        assert_eq!(
+            member_word(&member(false, Some(MemberStage::InLobby))).0,
+            "Disconnected"
+        );
+        assert_eq!(member_word(&member(true, None)).0, "Joining\u{2026}");
+    }
+
+    #[test]
+    fn only_a_game_in_the_lobby_counts_as_joined() {
+        let mut s = session(Phase::InLobby, false);
+        s.members = vec![
+            member(true, Some(MemberStage::InLobby)),
+            member(true, Some(MemberStage::Loading)),
+            member(true, Some(MemberStage::Starting)),
+            member(false, Some(MemberStage::InLobby)),
+            member(true, None),
+        ];
+        assert_eq!(joined(&s), 1);
+    }
+
+    #[test]
+    fn leaves_the_room_when_the_rooms_game_exits() {
+        assert!(exit_leaves(true, false, false));
+        assert!(
+            !exit_leaves(false, false, false),
+            "a game that never ran is not an exit"
+        );
+        assert!(!exit_leaves(true, true, false), "a running game stays");
+        assert!(
+            !exit_leaves(true, false, true),
+            "a launch or restore in flight stays"
+        );
+        assert_eq!(exit_notice(false), "F1 25 closed, so you left the room.");
+        assert_eq!(exit_notice(true), "F1 25 closed, so your room closed.");
     }
 }

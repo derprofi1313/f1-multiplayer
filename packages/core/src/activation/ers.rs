@@ -138,7 +138,7 @@ pub fn add_track(root: &mut Element, map: &ErsMap) -> Result<bool> {
     Ok(true)
 }
 
-fn set_data(res: &mut Resource, index: usize, data: &[u8]) -> Result<()> {
+pub(crate) fn set_data(res: &mut Resource, index: usize, data: &[u8]) -> Result<()> {
     let f = res
         .fragments
         .get_mut(index)
@@ -177,7 +177,14 @@ pub fn edit_vtf(res: &Resource, maps: &[ErsMap]) -> Result<Option<Resource>> {
 
 /// Whether `rel` is a team archive of a vehicle package, whose handling files take the tracks' entries.
 pub fn is_car_archive(rel: &str) -> bool {
+    let rel = rel.to_ascii_lowercase();
     rel.starts_with("2025_asset_groups/") && rel.contains("_vehicle_package/teams/") && rel.ends_with(".erp")
+}
+
+pub fn in_teams(rel: &str) -> bool {
+    rel.len() >= TEAMS.len()
+        && rel.is_char_boundary(TEAMS.len())
+        && rel[..TEAMS.len()].eq_ignore_ascii_case(TEAMS)
 }
 
 /// Writes to `out` a copy of the archive at `src` with the tracks' entries in its handling files, and returns how

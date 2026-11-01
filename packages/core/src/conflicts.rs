@@ -31,6 +31,16 @@ pub struct Report {
     /// Per addon id, the game's entrant lists it renamed or removed that the build kept.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub kept_lists: BTreeMap<String, Vec<String>>,
+    /// Addons whose database changes waited for rows another addon adds, so they load below it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waits: Vec<Wait>,
+}
+
+/// `addon` changes rows that `on` adds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wait {
+    pub addon: String,
+    pub on: String,
 }
 
 impl Report {
@@ -192,6 +202,7 @@ pub(crate) fn summarise(
         order: Vec::new(),
         stock_removals: BTreeMap::new(),
         kept_lists: BTreeMap::new(),
+        waits: Vec::new(),
     };
     (report, within)
 }

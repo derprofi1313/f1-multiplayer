@@ -42,6 +42,9 @@ pub struct Journal {
     pub committed: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub session: bool,
+    /// The game folder the entries' paths are in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<PathBuf>,
     #[serde(skip)]
     pub file: PathBuf,
 }
@@ -66,6 +69,7 @@ impl Journal {
             entries: Vec::new(),
             committed: false,
             session,
+            game: None,
             file,
         };
         j.save()?;

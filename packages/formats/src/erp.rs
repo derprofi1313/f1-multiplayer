@@ -11,6 +11,11 @@ pub const HEADER_LEN: usize = 0x30;
 pub const ZSTD: u8 = 0x11;
 pub const STORED: u8 = 0x91;
 pub const ZSTD_LEVEL: i32 = 19;
+/// The window every frame is written with, whatever the level: 1 MiB, the
+/// largest the game's own archives use. The game's stream decoder sizes its
+/// buffer from a frame's window and content size, inside a fixed heap, so a
+/// level-19 window (8 MiB) on every fragment runs that heap out.
+pub const ZSTD_WINDOW_LOG: u32 = 20;
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 /// The waits between tries of an archive's open or replace that Windows
 /// refused for now: an antivirus holds a file it scans for a moment.
@@ -222,7 +227,8 @@ fn zstd_error(code: usize) -> Error {
     Error::Format(format!("zstd: {}", zstd::zstd_safe::get_error_name(code)))
 }
 
-/// The settings the zstd command line compresses with: a checksum, and its
+/// The settings `zstd -c -<level> --zstd=wlog=20 --stream-size=<n>` compresses
+/// with: a checksum, the content size, a 1 MiB window, and the command line's
 /// multithreaded path with one worker, whose output differs from the
 /// single-threaded encoder's on large inputs.
 fn encoder(level: i32) -> Result<Encoder> {
@@ -231,6 +237,8 @@ fn encoder(level: i32) -> Result<Encoder> {
         Encoder::try_create().ok_or_else(|| Error::Format("zstd: no memory for an encoder".into()))?;
     for p in [
         CParameter::CompressionLevel(level),
+        CParameter::WindowLog(ZSTD_WINDOW_LOG),
+        CParameter::ContentSizeFlag(true),
         CParameter::ChecksumFlag(true),
         CParameter::NbWorkers(1),
     ] {
@@ -253,11 +261,12 @@ fn encode(data: &[u8], level: i32) -> Result<Vec<u8>> {
         None => encoder(level)?,
     };
     ctx.reset(ResetDirective::SessionOnly).map_err(zstd_error)?;
+    ctx.set_pledged_src_size(Some(data.len() as u64))
+        .map_err(zstd_error)?;
     let mut out: Vec<u8> = Vec::with_capacity(zstd::compress_bound(data.len()) + 64);
     let mut input = InBuffer::around(data);
-    // The input goes in first and the frame ends after, as a stream writer
-    // does, so the frame header carries no content size, like the command
-    // line's.
+    // The input goes in first and the frame ends after, as the command line
+    // does with a pledged size, so the bytes match the command line's.
     while input.pos() < data.len() {
         if out.capacity() - out.len() < (1 << 16) {
             out.reserve(1 << 16);
@@ -295,7 +304,7 @@ fn encode(data: &[u8], level: i32) -> Result<Vec<u8>> {
 fn compress_cached(dir: &Path, data: &[u8], level: i32) -> Result<Vec<u8>> {
     let digest: String = Md5::digest(data).iter().map(|b| format!("{b:02x}")).collect();
     let name = format!(
-        "{digest}-{}-{level}-{}",
+        "{digest}-{}-{level}-w{ZSTD_WINDOW_LOG}-{}",
         data.len(),
         zstd::zstd_safe::version_number()
     );
@@ -679,6 +688,9 @@ mod tests {
     fn streamed(data: &[u8], level: i32) -> Vec<u8> {
         let mut enc = zstd::Encoder::new(Vec::new(), level).unwrap();
         enc.include_checksum(true).unwrap();
+        enc.include_contentsize(true).unwrap();
+        enc.window_log(ZSTD_WINDOW_LOG).unwrap();
+        enc.set_pledged_src_size(Some(data.len() as u64)).unwrap();
         enc.multithread(1).unwrap();
         std::io::Write::write_all(&mut enc, data).unwrap();
         enc.finish().unwrap()
@@ -725,6 +737,84 @@ mod tests {
         assert_eq!(
             encode(&inputs[2], ZSTD_LEVEL).unwrap(),
             streamed(&inputs[2], ZSTD_LEVEL)
+        );
+    }
+
+    /// The content size and window a frame header declares (RFC 8878 3.1.1.1).
+    fn frame_header(raw: &[u8]) -> (Option<u64>, u64) {
+        assert_eq!(raw[..4], ZSTD_MAGIC);
+        let fhd = raw[4];
+        let single = fhd & 0x20 != 0;
+        let mut at = 5;
+        let mut window = 0;
+        if !single {
+            let (exponent, mantissa) = (u64::from(raw[at] >> 3), u64::from(raw[at] & 7));
+            let base = 1u64 << (10 + exponent);
+            window = base + base / 8 * mantissa;
+            at += 1;
+        }
+        at += [0, 1, 2, 4][usize::from(fhd & 3)];
+        let size = match (fhd >> 6, single) {
+            (0, false) => None,
+            (0, true) => Some(u64::from(raw[at])),
+            (1, _) => Some(u64::from(u16::from_le_bytes([raw[at], raw[at + 1]])) + 256),
+            (2, _) => Some(u64::from(u32::from_le_bytes(raw[at..at + 4].try_into().unwrap()))),
+            _ => Some(u64::from_le_bytes(raw[at..at + 8].try_into().unwrap())),
+        };
+        (size, if single { size.unwrap() } else { window })
+    }
+
+    /// What zstd 1.5.6+'s stream decoder allocates for a frame: its input
+    /// block buffer and its window ring, which a known content size caps.
+    fn decoder_buffer(size: Option<u64>, window: u64) -> u64 {
+        let block = window.min(128 << 10);
+        let ring = window + 2 * block + 64;
+        size.map_or(ring, |s| s.min(ring)) + block.max(4)
+    }
+
+    #[test]
+    fn every_frame_carries_its_content_size_and_at_most_a_1_mib_window() {
+        let noisy = |n: usize| -> Vec<u8> {
+            let mut seed = n as u64 | 1;
+            (0..n)
+                .map(|i| {
+                    seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    if i % 4 == 0 {
+                        (seed >> 56) as u8
+                    } else {
+                        b"livery_"[i % 7]
+                    }
+                })
+                .collect()
+        };
+        for level in [3, ZSTD_LEVEL] {
+            for n in [0, 1, 300, 70 << 10, 1 << 20, (1 << 20) + 1, 3 << 20, 9 << 20] {
+                let data = noisy(n);
+                let raw = compress_at(&data, level).unwrap();
+                let (size, window) = frame_header(&raw);
+                assert_eq!(size, Some(n as u64), "{n} bytes, level {level}");
+                assert_eq!(
+                    zstd::zstd_safe::get_frame_content_size(&raw).ok(),
+                    Some(Some(n as u64))
+                );
+                assert!(
+                    window <= 1 << ZSTD_WINDOW_LOG,
+                    "{n} bytes, level {level}: window {window}"
+                );
+                assert!(
+                    decoder_buffer(size, window) <= (1 << 20) + 393_280,
+                    "{n} bytes, level {level}: {}",
+                    decoder_buffer(size, window)
+                );
+                assert_eq!(zstd::decode_all(raw.as_slice()).unwrap(), data);
+            }
+        }
+        let (size, window) = frame_header(&compress(&noisy(9 << 20)).unwrap());
+        assert_eq!(
+            (size, window, decoder_buffer(size, window)),
+            (Some(9 << 20), 1 << 20, 1_441_856)
         );
     }
 

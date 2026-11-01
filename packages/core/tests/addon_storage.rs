@@ -272,7 +272,7 @@ fn a_restore_after_a_crashed_session_keeps_what_the_addon_wrote() {
 
 const LOGOS: &str = "swofty/addons/swofty.logos/logos_0123456789abcdef.manifest";
 const LOGO_ARCHIVE: &str = "swofty/addons/swofty.logos/logos_0123456789abcdef_databases.erp";
-const LOGO_STAMPS: &str = "swofty/addons/swofty.logos/archives.stamps";
+const LOGO_STAMPS: &str = "swofty/addons/swofty.logos/inputs.stamps";
 
 fn builds_logos(f: &Fixture) {
     f.put(LOGOS, "databases\tlogos_0123456789abcdef_databases.erp\n");
@@ -765,4 +765,88 @@ fn restoring_the_game_folder_keeps_the_career_index_and_the_stat_id_store() {
             .expect("the install names the state folder");
         assert!(state.contains("\"state_dir\""), "{state}");
     });
+}
+
+fn two_profiles(f: &Fixture) -> PathBuf {
+    let profile = |name: &str| {
+        let mut p = f.with_addon();
+        p.profile = name.into();
+        p
+    };
+    f.session(&profile("a"), |f| f.put(CAREERS, "a's"));
+    addon_storage::profile_created(&f.data, "b", None).unwrap();
+    f.session(&profile("b"), |f| f.put(CAREERS, "b's"));
+    addon_storage::copies_dir(&f.data, "t.store")
+}
+
+#[test]
+fn a_damaged_ready_marker_reads_as_absent_and_leaves_the_profiles_alone() {
+    let cases: [(&str, &[u8]); 4] = [
+        ("nul", &[0u8; 24]),
+        ("separator", b"a/../b"),
+        ("empty", b""),
+        ("dots", b".."),
+    ];
+    for (name, bytes) in cases {
+        let f = Fixture::new(&format!("bad-marker-{name}"));
+        let copies = two_profiles(&f);
+        write(&copies.join(".saving/careers.json"), "orphan");
+        std::fs::write(copies.join(".saving.ready"), bytes).unwrap();
+        addon_storage::save_current(&f.data, "t.store").unwrap();
+        assert!(!copies.join(".saving.ready").exists(), "{name}");
+        assert!(!copies.join(".saving").exists(), "{name}");
+        assert_eq!(
+            std::fs::read_to_string(copies.join("a/careers.json")).unwrap(),
+            "a's",
+            "{name}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(copies.join("b/careers.json")).unwrap(),
+            "b's",
+            "{name}"
+        );
+        f.session(&as_profile(&f, "a"), |f| {
+            assert_eq!(f.read(CAREERS).as_deref(), Some("a's"))
+        });
+    }
+}
+
+#[test]
+fn a_damaged_current_marker_is_dropped_and_keeps_the_storage() {
+    let f = Fixture::new("bad-current");
+    let copies = two_profiles(&f);
+    std::fs::write(copies.join(".current"), [0u8; 8]).unwrap();
+    addon_storage::save_current(&f.data, "t.store").unwrap();
+    assert!(!copies.join(".current").exists());
+    assert!(copies.join("a/careers.json").is_file());
+    assert!(copies.join("b/careers.json").is_file());
+}
+
+#[test]
+fn a_valid_interrupted_save_still_completes() {
+    let f = Fixture::new("saving-valid");
+    let copies = two_profiles(&f);
+    write(&copies.join(".saving/careers.json"), "finished");
+    write(&copies.join(".saving.ready"), "a");
+    addon_storage::save_current(&f.data, "t.store").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(copies.join("a/careers.json")).unwrap(),
+        "finished"
+    );
+    assert!(!copies.join(".saving.ready").exists());
+}
+
+#[test]
+fn one_addons_failed_recovery_doesnt_stop_a_session() {
+    let f = Fixture::new("recover-fails");
+    let copies = two_profiles(&f);
+    write(&copies.join(".saving/careers.json"), "x");
+    write(&copies.join(".saving.ready"), "a");
+    write(&copies.join(".saved-old/careers.json"), "old");
+    addon_storage::save_current(&f.data, "t.store").unwrap();
+    assert!(!addon_storage::load_profile(&f.data, "t.store", "a").unwrap());
+    f.session(&as_profile(&f, "b"), |f| {
+        assert_eq!(f.read(CAREERS).as_deref(), Some("b's"))
+    });
+    assert!(copies.join("a/careers.json").is_file());
 }

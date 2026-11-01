@@ -421,12 +421,28 @@ fn point_textures(
     Ok(n)
 }
 
+/// Picks the stat id of a track row the build adds: the table's highest plus one, and whether a row holds an id; gives
+/// the id and what to log.
+pub type StatIds<'a> =
+    &'a mut dyn FnMut(i64, &dyn Fn(i64) -> bool) -> std::result::Result<(i64, String), String>;
+
 pub fn activate(
     gvdb: &mut Gvdb,
     pkg: &TrackPackage,
     reg: &Registry,
     route: Option<&TrackHost>,
     ui_lists: &std::collections::BTreeSet<String>,
+) -> Result<Report> {
+    activate_with(gvdb, pkg, reg, route, ui_lists, None)
+}
+
+pub fn activate_with(
+    gvdb: &mut Gvdb,
+    pkg: &TrackPackage,
+    reg: &Registry,
+    route: Option<&TrackHost>,
+    ui_lists: &std::collections::BTreeSet<String>,
+    ids: Option<StatIds>,
 ) -> Result<Report> {
     let mut db = Db::new(gvdb);
     let mut report = Report::default();
@@ -459,6 +475,18 @@ pub fn activate(
             };
             let r = add_row_from(&mut db, &spec, tracks, slot_row, code)?;
             report.note(format!("{code}: new track row cloned from {slot}"));
+            if let (Some(ids), Some(u)) = (ids, spec.unique.first()) {
+                let rows: Vec<u64> = (0..tracks.len(&db))
+                    .map(|i| row(tracks.base, i))
+                    .filter(|&o| o != r)
+                    .collect();
+                let taken: std::collections::BTreeSet<i64> =
+                    rows.iter().filter_map(|&o| db.int(field(o, u))).collect();
+                let top = taken.iter().max().map_or(0, |m| m + 1);
+                let (id, why) = ids(top, &|id| taken.contains(&id)).map_err(Error::Resolve)?;
+                db.set_text(field(r, u), &id.to_string(), u)?;
+                report.note(format!("{code}: {why}"));
+            }
             r
         }
     };

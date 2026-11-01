@@ -1,7 +1,7 @@
 use swofty_formats::pkg::{Node, Obj, Val};
 
 use super::node::*;
-use super::pages::{HOME, STATE};
+use super::pages::{HOME, HomePage, NEXT_PAGE, PREV_PAGE, STATE};
 use crate::Result;
 
 pub const ACTION: &str = "Menu Right Stick Click";
@@ -362,14 +362,35 @@ fn route_group(name: &str, routes: Vec<Node>) -> Node {
     ])
 }
 
-pub fn route_groups(pages: &[(String, String)]) -> Vec<Node> {
-    let mut home = screen_routes(HOME);
-    home.push(migrate_route("back", HOME, "frontend_flow", "fe_home"));
-    home.extend(pages.iter().map(|(rid, s)| subpage_route(rid, HOME, s, 1)));
-    let mut groups = vec![route_group(HOME, home)];
-    for (_, s) in pages {
+/// ADDON SETTINGS' route groups: each home screen's, with a route to each of its `pages` (route id,
+/// screen, home screen) and to the home screens before and after it, and each page's, whose `back`
+/// opens its home screen again. `back` on the first home screen leaves for the game's home menu, and on
+/// a later one opens the home screen before it.
+pub fn route_groups(homes: &[HomePage], pages: &[(String, String, String)]) -> Vec<Node> {
+    let mut groups = Vec::new();
+    for h in homes {
+        let mut r = screen_routes(&h.screen);
+        r.push(match &h.prev {
+            Some(prev) => subpage_route("back", &h.screen, prev, 2),
+            None => migrate_route("back", &h.screen, "frontend_flow", "fe_home"),
+        });
+        if let Some(next) = &h.next {
+            r.push(subpage_route(NEXT_PAGE, &h.screen, next, 1));
+        }
+        if let Some(prev) = &h.prev {
+            r.push(subpage_route(PREV_PAGE, &h.screen, prev, 2));
+        }
+        r.extend(
+            pages
+                .iter()
+                .filter(|(_, _, home)| home == &h.screen)
+                .map(|(rid, s, _)| subpage_route(rid, &h.screen, s, 1)),
+        );
+        groups.push(route_group(&h.screen, r));
+    }
+    for (_, s, home) in pages {
         let mut r = screen_routes(s);
-        r.push(subpage_route("back", s, HOME, 2));
+        r.push(subpage_route("back", s, home, 2));
         groups.push(route_group(s, r));
     }
     groups
@@ -1466,7 +1487,12 @@ mod tests {
     #[test]
     fn addon_screens_get_route_groups_and_an_open_route_on_their_anchor() {
         let screens = [("ai".to_owned(), "settings_container".to_owned())];
-        let d = routes(&routes_file(), route_groups(&[]), screen_route_groups(&screens)).unwrap();
+        let d = routes(
+            &routes_file(),
+            route_groups(&[], &[]),
+            screen_route_groups(&screens),
+        )
+        .unwrap();
         // a group already there is kept, not added twice
         let d = routes(&d, Vec::new(), screen_route_groups(&screens)).unwrap();
         let opened = [
@@ -1499,6 +1525,139 @@ mod tests {
         );
         assert_eq!(route_ids(group(&p, "settings_container").unwrap()), ["open_ai"]);
         assert!(group(&p, "no_such_anchor").is_none());
+    }
+
+    #[test]
+    fn a_long_addon_settings_list_gets_a_route_group_per_home_screen() {
+        let homes = super::super::pages::home_plan(70);
+        let pages: Vec<(String, String, String)> = (0..70)
+            .map(|i| {
+                (
+                    format!("open_addon_{i}"),
+                    format!("swofty_addon_{i}"),
+                    super::super::pages::home_of(i),
+                )
+            })
+            .collect();
+        let groups = route_groups(&homes, &pages);
+        assert_eq!(groups.len(), 3 + 70);
+        let ids: Vec<&str> = groups.iter().take(3).map(|g| id_of(g).unwrap()).collect();
+        assert_eq!(ids, ["swofty_settings", "swofty_settings_2", "swofty_settings_3"]);
+        let routes = |g: &Node| route_ids(g);
+        let first = routes(&groups[0]);
+        assert_eq!(&first[..5], ["open", "open_no_input", "close", "back", NEXT_PAGE]);
+        assert_eq!(first.len(), 5 + 24);
+        let second = routes(&groups[1]);
+        assert_eq!(
+            &second[..6],
+            ["open", "open_no_input", "close", "back", NEXT_PAGE, PREV_PAGE]
+        );
+        assert_eq!(second.len(), 6 + 24);
+        let third = routes(&groups[2]);
+        assert_eq!(&third[..5], ["open", "open_no_input", "close", "back", PREV_PAGE]);
+        assert_eq!(third.len(), 5 + 22);
+        for (g, opens) in [(&groups[0], 0..24), (&groups[1], 24..48), (&groups[2], 48..70)] {
+            let ids = routes(g);
+            for i in 0..70 {
+                assert_eq!(
+                    ids.contains(&format!("open_addon_{i}")),
+                    opens.contains(&i),
+                    "{i}"
+                );
+            }
+        }
+        let at = |g: &Node, id: &str| {
+            canonical(
+                g.o()
+                    .unwrap()
+                    .at("Routes")
+                    .unwrap()
+                    .a()
+                    .unwrap()
+                    .iter()
+                    .find(|r| id_of(r) == Some(id))
+                    .unwrap(),
+            )
+        };
+        assert_eq!(
+            at(&groups[0], "back"),
+            canonical(&migrate_route(
+                "back",
+                "swofty_settings",
+                "frontend_flow",
+                "fe_home"
+            ))
+        );
+        assert_eq!(
+            at(&groups[1], "back"),
+            canonical(&subpage_route("back", "swofty_settings_2", "swofty_settings", 2))
+        );
+        assert_eq!(
+            at(&groups[1], NEXT_PAGE),
+            canonical(&subpage_route(
+                NEXT_PAGE,
+                "swofty_settings_2",
+                "swofty_settings_3",
+                1
+            ))
+        );
+        assert_eq!(
+            at(&groups[2], PREV_PAGE),
+            canonical(&subpage_route(
+                PREV_PAGE,
+                "swofty_settings_3",
+                "swofty_settings_2",
+                2
+            ))
+        );
+        let page = |i: usize| {
+            groups
+                .iter()
+                .find(|g| id_of(g) == Some(&format!("swofty_addon_{i}")))
+                .unwrap()
+        };
+        for (i, home) in [
+            (0, "swofty_settings"),
+            (30, "swofty_settings_2"),
+            (69, "swofty_settings_3"),
+        ] {
+            let name = format!("swofty_addon_{i}");
+            assert_eq!(
+                at(page(i), "back"),
+                canonical(&subpage_route("back", &name, home, 2))
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_addon_settings_list_keeps_one_home_screen() {
+        let homes = super::super::pages::home_plan(5);
+        let pages: Vec<(String, String, String)> = (0..5)
+            .map(|i| {
+                (
+                    format!("open_addon_{i}"),
+                    format!("swofty_addon_{i}"),
+                    HOME.to_owned(),
+                )
+            })
+            .collect();
+        let groups = route_groups(&homes, &pages);
+        assert_eq!(groups.len(), 6);
+        let ids = route_ids(&groups[0]);
+        assert_eq!(
+            ids,
+            [
+                "open",
+                "open_no_input",
+                "close",
+                "back",
+                "open_addon_0",
+                "open_addon_1",
+                "open_addon_2",
+                "open_addon_3",
+                "open_addon_4"
+            ]
+        );
     }
 
     fn setup() -> SetupRoutes {

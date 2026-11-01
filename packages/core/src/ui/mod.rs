@@ -21,7 +21,7 @@ use crate::manifest::CAREER_SETUP_BACK;
 use crate::settings::{SessionScreen, SessionSettings, UI_DIR, screen_file};
 use crate::{Error, Result, io_err};
 use node::{boolv, err, s, uidb_var};
-use pages::{ADJUST_TOOLTIP, HOME, Sources, TILES};
+use pages::{ADJUST_TOOLTIP, Sources, TILES};
 use patch::Popup;
 
 pub const UI: &str = "2025_asset_groups/ui_package";
@@ -348,9 +348,17 @@ pub fn build(
         problems.extend(report.hard.iter().map(|h| h.to_string()));
     }
 
-    let pages: Vec<(String, String)> = flow
+    let homes = pages::home_plan(flow.len());
+    let pages: Vec<(String, String, String)> = flow
         .iter()
-        .map(|e| (format!("open_{}_{}", e.kind.key(), e.index), e.screen.clone()))
+        .enumerate()
+        .map(|(i, e)| {
+            (
+                format!("open_{}_{}", e.kind.key(), e.index),
+                e.screen.clone(),
+                pages::home_of(i),
+            )
+        })
         .collect();
     let mut setup_ids: Vec<String> = Vec::new();
     for s in &setups {
@@ -361,8 +369,9 @@ pub fn build(
             format!("{}.{}", s.next, s.back_route),
         ]);
     }
-    let mut groups: Vec<&str> = vec![HOME, "fe_home.mod_menu"];
-    groups.extend(pages.iter().map(|(_, s)| s.as_str()));
+    let mut groups: Vec<&str> = homes.iter().map(|h| h.screen.as_str()).collect();
+    groups.push("fe_home.mod_menu");
+    groups.extend(pages.iter().map(|(_, s, _)| s.as_str()));
     groups.extend(setup_ids.iter().map(String::as_str));
     let mut state = pages::state_entries(&flow)?;
     let mfd_rows = mfd_rows(settings);
@@ -390,7 +399,7 @@ pub fn build(
         (
             ROUTES,
             Box::new(|d| {
-                let mut groups = patch::route_groups(&pages);
+                let mut groups = patch::route_groups(&homes, &pages);
                 groups.extend(setup_groups);
                 let b = patch::routes(d, groups, patch::screen_route_groups(&addon_groups))?;
                 let b = patch::setup_routes(&b, &setups, &mut placed.borrow_mut())?;

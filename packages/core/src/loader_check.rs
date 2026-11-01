@@ -1,7 +1,8 @@
 //! What the session looks at once version.dll did not attach to a running
 //! game: the game folder's copy against the one the launcher placed, which
 //! F1_25.exe runs and which version.dll it holds, and on Windows the DLL
-//! policies on the game process, KnownDLLs, Smart App Control, the Code
+//! policies on the game process and the Exploit protection settings that
+//! turn on "prefer System32 DLLs", KnownDLLs, Smart App Control, the Code
 //! Integrity and Defender events since the game started, and the antivirus
 //! registered with Windows. Under Proton it is the prefix's override and the
 //! version.dll Wine mapped. Every check is read-only, bounded in time, and a
@@ -15,7 +16,7 @@ use crate::baseline::sha256_file;
 use crate::compat::AdminLayer;
 use crate::install::{PROXY, has_override};
 use crate::process::{GameProcess, same_folder};
-use crate::quarantine::{Carrier, Cause};
+use crate::quarantine::{Carrier, Cause, PreferSource};
 use crate::session::LOADER_LOG;
 
 pub type Probe<T> = std::result::Result<T, String>;
@@ -60,6 +61,11 @@ pub struct Findings {
     /// The value names under F1_25.exe's Image File Execution Options key,
     /// where Exploit protection keeps its program settings.
     pub exec_options: Option<Probe<Vec<String>>>,
+    /// What turns on "prefer System32 DLLs" for F1_25.exe: its Image File
+    /// Execution Options and their UseFilter subkeys for the game folder's
+    /// F1_25.exe, Exploit protection's system settings, an Exploit
+    /// protection policy.
+    pub prefer_from: Option<Probe<Vec<PreferSource>>>,
     /// The compatibility settings on the game folder's F1_25.exe, as
     /// `<layers> (for this user|for all users)`.
     pub layers: Option<Probe<Vec<String>>>,
@@ -331,6 +337,71 @@ const HOOKS: &[(&str, &str)] = &[
 /// Options value names. MaxLoaderThreads alone is common and changes nothing.
 const EXPLOIT_PROTECTION: &[&str] = &["MitigationOptions", "MitigationAuditOptions", "EAFModules"];
 
+/// Whether a MitigationOptions value turns "prefer System32 DLLs" on: bits
+/// 60-61 of its first 64-bit word set to always on.
+pub fn prefers_system32(options: &[u8]) -> bool {
+    options
+        .get(..8)
+        .and_then(|b| b.try_into().ok())
+        .is_some_and(|b| (u64::from_le_bytes(b) >> 60) & 0x3 == 0x1)
+}
+
+/// An Exploit protection XML file's text, which PowerShell writes as UTF-16.
+pub fn xml_text(bytes: &[u8]) -> String {
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => String::from_utf16_lossy(
+            &rest
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect::<Vec<_>>(),
+        ),
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+/// Whether an Exploit protection XML turns PreferSystem32 on for F1_25.exe
+/// or for every program.
+pub fn policy_prefers(xml: &str) -> bool {
+    let lower = xml.to_ascii_lowercase();
+    let on = |body: &str| body.contains("prefersystem32=\"true\"") || body.contains("prefersystem32='true'");
+    let mut rest = lower.as_str();
+    while let Some(at) = rest.find("<appconfig") {
+        rest = &rest[at..];
+        let end = rest.find("</appconfig>").unwrap_or(rest.len());
+        let (block, after) = rest.split_at(end);
+        if attr(block, "executable").is_some_and(|e| file_name(e) == GAME_EXE.to_ascii_lowercase())
+            && on(block)
+        {
+            return true;
+        }
+        rest = after.get(1..).unwrap_or("");
+    }
+    lower.find("<systemconfig").is_some_and(|at| {
+        let block = &lower[at..];
+        on(&block[..block.find("</systemconfig>").unwrap_or(block.len())])
+    })
+}
+
+/// An Exploit protection policy's ExploitProtectionSettings value, which is
+/// the XML itself or the file or address that holds it, as a source of
+/// "prefer System32 DLLs" when it turns that on or can't be read.
+pub fn policy_source(setting: &str) -> Option<PreferSource> {
+    let setting = setting.trim();
+    if setting.is_empty() {
+        return None;
+    }
+    if setting.starts_with('<') {
+        return policy_prefers(setting).then_some(PreferSource::Policy { from: None });
+    }
+    let local = Path::new(setting).is_absolute() && !setting.starts_with(r"\\");
+    let xml = local.then(|| std::fs::read(setting).ok()).flatten();
+    let from = Some(tidy(setting));
+    match xml {
+        Some(bytes) => policy_prefers(&xml_text(&bytes)).then_some(PreferSource::Policy { from }),
+        None => Some(PreferSource::Policy { from }),
+    }
+}
+
 /// The version.dll files and outside modules among a process's module paths.
 pub fn modules(paths: &[String], game: &Path, windows: Option<&str>) -> Modules {
     let game = game.to_string_lossy();
@@ -548,6 +619,7 @@ impl Findings {
                 return Some(Cause::OtherCopy {
                     path,
                     prefer_system32: true,
+                    from: self.prefer_source(),
                 });
             }
             if self.exploit_protection() {
@@ -576,6 +648,18 @@ impl Findings {
         }
         if sac {
             return Some(Cause::SmartAppControl { seen: false });
+        }
+        if self
+            .games
+            .iter()
+            .any(|g| matches!(&g.modules, Ok(m) if m.version.iter().any(|p| in_folder(p, game))))
+        {
+            return Some(Cause::LoadedSilently);
+        }
+        if self.games.is_empty() && self.created.is_some() {
+            return Some(Cause::GameEnded {
+                antivirus: self.third_party_antivirus(),
+            });
         }
         let unreadable = !self.games.is_empty() && self.games.iter().all(|g| g.modules.is_err());
         (unreadable && self.third_party_antivirus().is_empty()).then_some(Cause::Unreadable)
@@ -607,6 +691,15 @@ impl Findings {
                 exe: a.image.as_deref().map(tidy),
                 layers: Vec::new(),
             })
+    }
+
+    /// What turns on "prefer System32 DLLs", or with no reading of that,
+    /// F1_25.exe's Exploit protection program settings when it has any.
+    fn prefer_source(&self) -> Option<PreferSource> {
+        match &self.prefer_from {
+            Some(Ok(found)) => found.first().cloned(),
+            _ => self.exploit_protection().then_some(PreferSource::Program),
+        }
     }
 
     fn exploit_protection(&self) -> bool {
@@ -691,6 +784,18 @@ impl Findings {
             Some(Err(e)) => out.push(format!(
                 "Image File Execution Options for {GAME_EXE}: not readable ({e})"
             )),
+            None => {}
+        }
+        match &self.prefer_from {
+            Some(Ok(found)) if found.is_empty() => out.push(format!(
+                "prefer System32 DLLs: not turned on in the Exploit protection program or system settings or by an \
+                 Exploit protection policy for {GAME_EXE}"
+            )),
+            Some(Ok(found)) => out.push(format!(
+                "prefer System32 DLLs: turned on by {}",
+                found.iter().map(PreferSource::name).collect::<Vec<_>>().join(" and ")
+            )),
+            Some(Err(e)) => out.push(format!("prefer System32 DLLs: settings not readable ({e})")),
             None => {}
         }
         match &self.layers {
@@ -919,6 +1024,10 @@ mod platform {
     const EXEC_OPTIONS: &str =
         r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\F1_25.exe";
     const CI_POLICY: &str = r"SYSTEM\CurrentControlSet\Control\CI\Policy";
+    const EXPLOIT_POLICIES: &[&str] = &[
+        r"SOFTWARE\Policies\Microsoft\Windows Defender ExploitGuard\Exploit Protection",
+        r"SOFTWARE\Microsoft\PolicyManager\current\device\ExploitGuard",
+    ];
     const ANTIVIRUS: &str = r"SOFTWARE\Microsoft\Security Center\Provider\Av";
 
     pub fn fill(f: &mut Findings, game: &Path, running: &[GameProcess], since: SystemTime) {
@@ -934,6 +1043,7 @@ mod platform {
                 .collect();
             f.search = Some(search());
             f.exec_options = Some(exec_options());
+            f.prefer_from = Some(prefer_from(&game.join(GAME_EXE)));
             f.layers = Some(Ok(crate::compat::layers(&game.join(GAME_EXE))
                 .into_iter()
                 .map(|l| format!("{} ({})", l.layers.trim(), l.scope()))
@@ -1027,6 +1137,44 @@ mod platform {
             }
         }
         Ok(names)
+    }
+
+    fn prefer_from(exe: &Path) -> Probe<Vec<PreferSource>> {
+        let on = |k: &registry::Key| k.bytes("MitigationOptions").is_some_and(|b| prefers_system32(&b));
+        let mut found = Vec::new();
+        if let Some(key) = registry::Key::open(EXEC_OPTIONS).map_err(error)? {
+            for sub in key.subkeys() {
+                let Ok(Some(k)) = registry::Key::open(&format!(r"{EXEC_OPTIONS}\{sub}")) else {
+                    continue;
+                };
+                if let Some(path) = k.text("FilterFullPath").filter(|p| same_file(p, exe))
+                    && on(&k)
+                {
+                    found.push(PreferSource::Path { path: tidy(&path) });
+                }
+            }
+            if on(&key) {
+                found.push(PreferSource::Program);
+            }
+        }
+        for policy in EXPLOIT_POLICIES {
+            if let Ok(Some(k)) = registry::Key::open(policy)
+                && let Some(source) = k
+                    .text("ExploitProtectionSettings")
+                    .and_then(|t| policy_source(&t))
+            {
+                found.push(source);
+            }
+        }
+        let kernel = registry::Key::open(&format!(r"{SESSION_MANAGER}\kernel")).map_err(error)?;
+        if kernel.is_some_and(|k| on(&k)) {
+            found.push(PreferSource::System);
+        }
+        Ok(found)
+    }
+
+    fn same_file(path: &str, exe: &Path) -> bool {
+        norm(path) == norm(&exe.to_string_lossy())
     }
 
     fn smart_app_control() -> Probe<Option<u32>> {
@@ -1238,7 +1386,9 @@ mod platform {
         const ERROR_FILE_NOT_FOUND: i32 = 2;
         const REG_SZ: u32 = 1;
         const REG_EXPAND_SZ: u32 = 2;
+        const REG_BINARY: u32 = 3;
         const REG_DWORD: u32 = 4;
+        const REG_QWORD: u32 = 11;
 
         #[link(name = "advapi32")]
         unsafe extern "system" {
@@ -1275,6 +1425,7 @@ mod platform {
         pub enum Value {
             Text(String),
             Dword(u32),
+            Bytes(Vec<u8>),
             Other,
         }
 
@@ -1341,6 +1492,7 @@ mod platform {
                         REG_DWORD if bytes.len() >= 4 => {
                             Value::Dword(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
                         }
+                        REG_BINARY | REG_QWORD => Value::Bytes(bytes.to_vec()),
                         _ => Value::Other,
                     };
                     out.push((String::from_utf16_lossy(&name[..name_len as usize]), value));
@@ -1378,6 +1530,13 @@ mod platform {
             pub fn dword(&self, name: &str) -> Option<u32> {
                 self.values().into_iter().find_map(|(n, v)| match v {
                     Value::Dword(d) if n.eq_ignore_ascii_case(name) => Some(d),
+                    _ => None,
+                })
+            }
+
+            pub fn bytes(&self, name: &str) -> Option<Vec<u8>> {
+                self.values().into_iter().find_map(|(n, v)| match v {
+                    Value::Bytes(b) if n.eq_ignore_ascii_case(name) => Some(b),
                     _ => None,
                 })
             }
@@ -1661,7 +1820,7 @@ mod tests {
         );
         let loaded = running(&[&format!(r"{GAME}\version.dll"), SYSTEM], Mitigation::default());
         let f = found([audit, core].concat(), vec![loaded]);
-        assert_eq!(f.cause(&game()), None);
+        assert_eq!(f.cause(&game()), Some(Cause::LoadedSilently));
     }
 
     #[test]
@@ -1695,7 +1854,154 @@ mod tests {
             f.cause(&game()),
             Some(Cause::OtherCopy {
                 path: SYSTEM.into(),
-                prefer_system32: true
+                prefer_system32: true,
+                from: None,
+            })
+        );
+    }
+
+    #[test]
+    fn names_what_turns_on_prefer_system32() {
+        let prefer = Mitigation {
+            prefer_system32: true,
+            ..Mitigation::default()
+        };
+        let from = |f: &Findings| match f.cause(&game()) {
+            Some(Cause::OtherCopy {
+                path,
+                prefer_system32: true,
+                from,
+            }) if path == SYSTEM => from,
+            other => panic!("{other:?}"),
+        };
+        let mut f = found(Vec::new(), vec![running(&[SYSTEM], prefer)]);
+        f.exec_options = Some(Ok(vec!["MaxLoaderThreads".into(), "UseFilter".into()]));
+        f.prefer_from = Some(Ok(Vec::new()));
+        assert_eq!(from(&f), None);
+        f.prefer_from = None;
+        assert_eq!(from(&f), None);
+        f.prefer_from = Some(Err("access denied".into()));
+        assert_eq!(from(&f), None);
+        let lines = f.lines(&game());
+        assert!(
+            lines.contains(
+                &"Image File Execution Options for F1_25.exe: MaxLoaderThreads, UseFilter".to_owned()
+            ) && lines.contains(&"prefer System32 DLLs: settings not readable (access denied)".to_owned()),
+            "{lines:#?}"
+        );
+        f.prefer_from = Some(Ok(Vec::new()));
+        assert!(
+            f.lines(&game()).contains(
+                &"prefer System32 DLLs: not turned on in the Exploit protection program or system settings or by an \
+                  Exploit protection policy for F1_25.exe"
+                    .to_owned()
+            )
+        );
+        f.exec_options = Some(Ok(vec![
+            "MaxLoaderThreads".into(),
+            "UseFilter".into(),
+            r"{f05071b2-1d0e-4f5a-9b3c-000000000000}\FilterFullPath".into(),
+            r"{f05071b2-1d0e-4f5a-9b3c-000000000000}\MitigationOptions".into(),
+        ]));
+        let exe = format!(r"{GAME}\F1_25.exe");
+        f.prefer_from = Some(Ok(vec![
+            PreferSource::Path { path: exe.clone() },
+            PreferSource::System,
+        ]));
+        assert_eq!(from(&f), Some(PreferSource::Path { path: exe.clone() }));
+        assert!(
+            f.lines(&game()).contains(&format!(
+                "prefer System32 DLLs: turned on by the Exploit protection program settings for {exe} and Exploit \
+                 protection's system settings"
+            ))
+        );
+        f.prefer_from = None;
+        assert_eq!(from(&f), Some(PreferSource::Program));
+        f.prefer_from = Some(Ok(vec![PreferSource::System]));
+        assert_eq!(from(&f), Some(PreferSource::System));
+        f.prefer_from = Some(Ok(vec![PreferSource::Policy { from: None }]));
+        assert_eq!(from(&f), Some(PreferSource::Policy { from: None }));
+    }
+
+    #[test]
+    fn reads_prefer_system32_from_mitigation_options() {
+        let mut options = [0u8; 24];
+        assert!(!prefers_system32(&options));
+        options[7] = 0x10;
+        assert!(prefers_system32(&options));
+        options[7] = 0x20;
+        assert!(!prefers_system32(&options), "always off");
+        options[7] = 0x11;
+        options[1] = 0x01;
+        assert!(prefers_system32(&options));
+        assert!(prefers_system32(&((1u64 << 60) | 0x100).to_le_bytes()));
+        assert!(!prefers_system32(&((1u64 << 56) | (1u64 << 52)).to_le_bytes()));
+        assert!(!prefers_system32(&[0, 0, 0, 0x10]));
+        assert!(!prefers_system32(&[]));
+    }
+
+    const POLICY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MitigationPolicy>
+  <SystemConfig>
+    <DEP Enable="true" EmulateAtlThunks="false" />
+  </SystemConfig>
+  <AppConfig Executable="chrome.exe">
+    <ImageLoad PreferSystem32="true" />
+  </AppConfig>
+  <AppConfig Executable="E:\SteamLibrary\steamapps\common\F1 25\F1_25.exe">
+    <ImageLoad BlockRemoteImageLoads="true" PreferSystem32="true" />
+  </AppConfig>
+</MitigationPolicy>"#;
+
+    #[test]
+    fn reads_prefer_system32_from_an_exploit_protection_policy() {
+        assert!(policy_prefers(POLICY));
+        let others = POLICY.replace(
+            r#" PreferSystem32="true" />
+  </AppConfig>
+</MitigationPolicy>"#,
+            " />\n  </AppConfig>\n</MitigationPolicy>",
+        );
+        assert!(!policy_prefers(&others), "{others}");
+        assert!(!policy_prefers(&others.replace("F1_25.exe", "F1_24.exe")));
+        assert!(policy_prefers(
+            &others.replace("<DEP ", "<ImageLoad PreferSystem32='true' /><DEP ")
+        ));
+        assert!(policy_prefers(&POLICY.replace("F1_25.exe\">", "f1_25.EXE\">")));
+        assert_eq!(policy_source(""), None);
+        assert_eq!(policy_source(POLICY), Some(PreferSource::Policy { from: None }));
+        assert_eq!(policy_source(&others), None);
+        let url = "https://contoso.example/exploit-protection.xml";
+        assert_eq!(
+            policy_source(url),
+            Some(PreferSource::Policy {
+                from: Some(url.into())
+            })
+        );
+        let dir = std::env::temp_dir().join(format!("swofty-policy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.xml");
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(POLICY.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(xml_text(&utf16), POLICY);
+        std::fs::write(&file, &utf16).unwrap();
+        let at = file.to_string_lossy().into_owned();
+        assert_eq!(
+            policy_source(&at),
+            Some(PreferSource::Policy {
+                from: Some(tidy(&at))
+            })
+        );
+        std::fs::write(&file, &others).unwrap();
+        assert_eq!(policy_source(&at), None);
+        std::fs::remove_dir_all(&dir).ok();
+        let missing = dir.join("gone.xml").to_string_lossy().into_owned();
+        assert_eq!(
+            policy_source(&missing),
+            Some(PreferSource::Policy {
+                from: Some(tidy(&missing))
             })
         );
     }
@@ -1720,6 +2026,28 @@ mod tests {
         f.smart_app_control = Some(Ok(Some(1)));
         assert_eq!(f.cause(&game()), Some(Cause::SmartAppControl { seen: false }));
         assert_eq!(found(Vec::new(), Vec::new()).cause(&game()), None);
+    }
+
+    #[test]
+    fn a_game_gone_before_the_look_is_unknown_and_a_loaded_loader_is_not_blocked() {
+        let mut f = found(Vec::new(), Vec::new());
+        f.created = Some(28016);
+        assert_eq!(
+            f.cause(&game()),
+            Some(Cause::GameEnded {
+                antivirus: Vec::new()
+            })
+        );
+        f.antivirus = Some(Ok(vec!["Bitdefender Antivirus (on)".into()]));
+        assert_eq!(
+            f.cause(&game()),
+            Some(Cause::GameEnded {
+                antivirus: vec!["Bitdefender Antivirus".into()]
+            })
+        );
+        let ours = format!(r"{GAME}\version.dll");
+        let f = found(Vec::new(), vec![running(&[ours.as_str()], Mitigation::default())]);
+        assert_eq!(f.cause(&game()), Some(Cause::LoadedSilently));
     }
 
     fn system_copy() -> Findings {
@@ -1924,11 +2252,11 @@ mod tests {
     fn smart_app_control_on_is_the_cause_only_when_nothing_else_is() {
         let ours = format!(r"{GAME}\version.dll");
         let mut f = found(Vec::new(), vec![running(&[&ours, SYSTEM], Mitigation::default())]);
-        assert_eq!(f.cause(&game()), None);
+        assert_eq!(f.cause(&game()), Some(Cause::LoadedSilently));
         f.smart_app_control = Some(Ok(Some(1)));
         assert_eq!(f.cause(&game()), Some(Cause::SmartAppControl { seen: false }));
         f.smart_app_control = Some(Ok(Some(2)));
-        assert_eq!(f.cause(&game()), None);
+        assert_eq!(f.cause(&game()), Some(Cause::LoadedSilently));
         f.games = vec![running(&[SYSTEM], Mitigation::default())];
         f.smart_app_control = Some(Ok(Some(1)));
         assert!(matches!(f.cause(&game()), Some(Cause::Unexplained { .. })));
@@ -1952,6 +2280,7 @@ mod tests {
             games: vec![g],
             search: Some(Ok(Search::default())),
             exec_options: Some(Ok(Vec::new())),
+            prefer_from: Some(Ok(Vec::new())),
             smart_app_control: Some(Ok(None)),
             logs: vec![
                 EventLog {
@@ -1983,6 +2312,9 @@ mod tests {
                 "pid 27488: DLL load policies: none".to_owned(),
                 "DLL search: version.dll is not a KnownDLL, SafeDllSearchMode default (on)".to_owned(),
                 "Image File Execution Options for F1_25.exe: none".to_owned(),
+                "prefer System32 DLLs: not turned on in the Exploit protection program or system settings or by an \
+                 Exploit protection policy for F1_25.exe"
+                    .to_owned(),
                 "Smart App Control: not set".to_owned(),
                 "Code Integrity log: 1 event(s) about version.dll or F1_25.exe since the game started".to_owned(),
                 format!(

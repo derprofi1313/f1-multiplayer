@@ -6,6 +6,7 @@
 #include <memory>
 #include <regex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../json.hpp"
@@ -20,6 +21,7 @@ namespace testagent {
 
 constexpr int PROTOCOL = 1;
 constexpr uint64_t DEFAULT_WAIT_MS = 30000;
+constexpr uint64_t DEFAULT_SETTLE_MS = 1200;
 constexpr uint64_t MAX_WAIT_MS = 30 * 60 * 1000;
 constexpr size_t MAX_LINE = 64 * 1024;
 
@@ -245,6 +247,135 @@ inline bool parse_car_path(const std::string &p, CarPath &out, std::string &why)
     return true;
 }
 
+constexpr const char *FLOW_LOAD_SESSION = "StateLoadSession";
+
+// `session.start {mode, box, track, team, driver, session, weather, laps, ai_difficulty}`: start a Time Trial
+// or Grand Prix session from the main menu (docs/design/std-2/test-suite.md "The dev session").
+struct SessionPlan {
+    std::string mode, box, track, team, driver, session, session_name, weather;
+    int session_id = 0;
+    int laps = 0;
+    int ai_difficulty = -1;
+};
+
+// The game's session id names (k_Sess_SessionTypeNames, ids 0 to 18), which DevSessionDataContract.Game.session_id
+// takes.
+constexpr const char *SESSION_NAMES[19] = {"not_set",         "practice_1",       "practice_2",       "practice_3",
+                                           "practice_s",      "qualifying_1",     "qualifying_2",     "qualifying_3",
+                                           "qualifying_s",    "qualifying_o",     "sprint_shootout_1", "sprint_shootout_2",
+                                           "sprint_shootout_3", "sprint_shootout_s", "sprint_shootout_o", "race",
+                                           "race_2",          "race_3",           "time_trial"};
+constexpr int SESSION_TIME_TRIAL = 18;
+
+inline int session_id_of(const std::string &name)
+{
+    static const struct {
+        const char *alias;
+        int id;
+    } aliases[] = {{"practice1", 1}, {"practice2", 2}, {"practice3", 3}, {"qualifying", 5}, {"sprint_shootout", 10}};
+    for (int i = 1; i < 19; i++)
+        if (name == SESSION_NAMES[i])
+            return i;
+    for (auto &a : aliases)
+        if (name == a.alias)
+            return a.id;
+    return -1;
+}
+
+inline bool weather_known(const std::string &w)
+{
+    return w == "clear" || w == "wet" || w == "rain";
+}
+
+// "" when the arguments make a session, else why not.
+inline std::string parse_session(const json::Value &a, SessionPlan &out)
+{
+    SessionPlan p;
+    p.mode = a["mode"].str();
+    if (p.mode != "time_trial" && p.mode != "grand_prix")
+        return "session.start needs {\"mode\": \"time_trial\" or \"grand_prix\"}";
+    p.box = a["box"].str();
+    p.track = a["track"].str();
+    p.team = a["team"].str();
+    p.driver = a["driver"].str();
+    p.weather = a["weather"].str();
+    if (!p.weather.empty() && !weather_known(p.weather))
+        return "weather is clear, wet or rain, not '" + p.weather + "'";
+    std::string s = a["session"].str();
+    if (s.empty())
+        s = p.mode == "time_trial" ? "time_trial" : "race";
+    p.session_id = session_id_of(s);
+    if (p.session_id < 0)
+        return "session '" + s + "' is not a session name (practice1 to practice3, qualifying, race, race_2, sprint_shootout, "
+               "time_trial, or the game's own: practice_1, qualifying_o and so on)";
+    p.session_name = SESSION_NAMES[p.session_id];
+    p.session = s;
+    if (p.mode == "time_trial" && p.session_id != SESSION_TIME_TRIAL)
+        return "a Time Trial has the session time_trial, not '" + s + "'";
+    if (p.mode == "grand_prix" && p.session_id == SESSION_TIME_TRIAL)
+        return "a Grand Prix has no time_trial session";
+    if (a["laps"].type != json::Value::Null) {
+        long long l = a["laps"].num(-1);
+        if (l < 1 || l > 100)
+            return "laps is 1 to 100";
+        if (p.mode == "time_trial")
+            return "a Time Trial has no laps setting";
+        p.laps = int(l);
+    }
+    if (a["ai_difficulty"].type != json::Value::Null) {
+        long long d = a["ai_difficulty"].num(-1);
+        if (d < 0 || d > 110)
+            return "ai_difficulty is 0 to 110";
+        p.ai_difficulty = int(d);
+    }
+    out = p;
+    return {};
+}
+
+// What the box names for the screens' selections: the game setup mode, the entrant setup mode and the entrant list
+// (labels of their rows).
+struct SessionBox {
+    std::string setup_mode, entrant_setup_mode, entrant_list;
+};
+
+using Fill = std::vector<std::pair<std::string, std::string>>;
+
+// The dev session's settings (Sess_DevSession_Apply reads them with Ne_Config_GetString), in the order it reads them.
+inline Fill session_fill(const SessionPlan &p, const SessionBox &b)
+{
+    const std::string D = "DevSessionDataContract.";
+    Fill f;
+    if (!b.setup_mode.empty())
+        f.push_back({D + "Game.setup_mode", b.setup_mode});
+    if (!b.entrant_setup_mode.empty())
+        f.push_back({D + "Game.entrant_setup_mode", b.entrant_setup_mode});
+    if (!b.entrant_list.empty())
+        f.push_back({D + "Entrants.entrant_list", b.entrant_list});
+    if (!p.track.empty())
+        f.push_back({D + "Track.name", p.track});
+    f.push_back({D + "Game.session_id", p.session_name});
+    if (p.laps)
+        f.push_back({D + "Game.laps", std::to_string(p.laps)});
+    return f;
+}
+
+// What a plan asks for that the dev session has no setting for.
+inline std::string session_unfilled(const SessionPlan &p)
+{
+    std::string s;
+    auto add = [&](const char *what) { s += (s.empty() ? "" : ", ") + std::string(what); };
+    if (!p.weather.empty())
+        add("weather");
+    if (p.ai_difficulty >= 0)
+        add("ai_difficulty");
+    if (!p.team.empty())
+        add("team");
+    if (!p.driver.empty())
+        add("driver");
+    return s;
+}
+
+
 // What the agent asks of the game. Each returns unavailable, with the reason, when its bindings
 // didn't resolve; pending from a *_poll means "not yet".
 struct Game {
@@ -283,10 +414,17 @@ struct Game {
     virtual Outcome resume_press(const std::string &slot) = 0;
     // From the weekend hub to the track.
     virtual Outcome session_start() = 0;
+    // From the main menu: start the Time Trial or Grand Prix session the plan names (the core's dev session).
+    // ok once the load has been asked for; unavailable names the rows or the call it still needs; error is a
+    // refusal of the plan itself (a track the box can't run, a box that is not installed).
+    virtual Outcome session_begin(const SessionPlan &plan) = 0;
     // The home screen's view model is live (the main menu has been built).
     virtual bool home_ready() = 0;
     // How many tile screens have been built since arming: a route's screen is up once it moves.
     virtual uint64_t tile_screens() = 0;
+    // How many times the current screen's name has changed since arming (render_* overlays don't
+    // count). A screen is input-ready once this has held still for a settle time.
+    virtual uint64_t screen_changes() { return 0; }
     // On the current tile screen: run the tile's action as the screen's select does (a route
     // action fires its route). unavailable while there is no tile screen yet.
     virtual Outcome tile_select(const std::string &id) = 0;
@@ -443,6 +581,7 @@ class Runner {
     // to append to results.jsonl go to out.
     void tick(uint64_t now, std::vector<std::string> &out)
     {
+        watch(now);
         if (active_) {
             Outcome o = poll(now);
             if (o.status == Status::pending)
@@ -481,6 +620,9 @@ class Runner {
     CareerTimes ctimes_;
     CareerPlan plan_;
     CareerStep cstep_ = CareerStep::done;
+    SessionPlan session_plan_;
+    bool session_sent_ = false;
+    std::string session_value_;
     uint64_t cstep_at_ = 0, tried_at_ = 0, mark_ = 0, title_from_ = 0, pad_next_ = 0, pad_up_ = 0;
     bool tried_ = false, pad_down_ = false, title_bound_ = true;
     int title_presses_ = 0, notice_presses_ = 0;
@@ -491,6 +633,31 @@ class Runner {
     // next route fires from the screen it opened.
     uint64_t fired_at_ = 0, screens_at_ = 0;
     std::string fired_value_;
+    uint64_t seen_ = 0, screen_at_ = 0, settle_ms_ = 0, retry_after_ = 3000, pressed_seq_ = 0, pressed_at_ = 0;
+    int retries_ = 0, tries_ = 0;
+
+    void watch(uint64_t now)
+    {
+        uint64_t c = g_.screen_changes();
+        if (c != seen_) {
+            seen_ = c;
+            screen_at_ = now;
+        }
+    }
+
+    bool settled(uint64_t now) const { return seen_ == 0 || now - screen_at_ >= settle_ms_; }
+
+    Outcome pad_press(uint64_t now)
+    {
+        Outcome o = g_.pad(first_);
+        if (o.status != Status::ok)
+            return o;
+        pressed_seq_ = seen_;
+        pressed_at_ = now;
+        stage_ = 1;
+        stage_at_ = now;
+        return Outcome::pending();
+    }
 
     static constexpr const char *SANDBOX_ONLY =
         " runs only in the save sandbox (a career environment, or f1mp test shell --fixture): the game would save "
@@ -740,6 +907,39 @@ class Runner {
         return Outcome::pending();
     }
 
+    Outcome session_poll(uint64_t now)
+    {
+        if (!session_sent_) {
+            if (!title_passed()) {
+                title_tick(now);
+                cwhy_ = "the title: " + cwhy_;
+            } else if (!home_tick(now))
+                cwhy_ = "no home view model: " + home_why();
+            else if (due(now)) {
+                Outcome o = g_.session_begin(session_plan_);
+                if (o.status == Status::ok) {
+                    session_sent_ = true;
+                    session_value_ = o.value;
+                    cwhy_.clear();
+                } else if (o.status != Status::pending)
+                    return o;
+            }
+        } else if (fires_.seen("flow:" + std::string(FLOW_LOAD_SESSION)) > mark_) {
+            g_.note("[test] session.start " + session_plan_.mode + " " + session_plan_.track);
+            return Outcome::ok("{\"event\":\"session.start\",\"mode\":" + esc(session_plan_.mode) + ",\"track\":" +
+                               esc(session_plan_.track) + ",\"session\":" + esc(session_plan_.session_name) +
+                               ",\"set\":" + (session_value_.empty() ? "null" : session_value_) + "}");
+        } else
+            cwhy_ = "the flow is at " + g_.phase();
+        if (now >= deadline_) {
+            pad_release();
+            return {Status::timeout, "null",
+                    std::string("session.start: ") + (session_sent_ ? "the load did not start" : "the main menu was not reached") +
+                        " within " + std::to_string((deadline_ - started_) / 1000) + " s (" + cwhy_ + ")"};
+        }
+        return Outcome::pending();
+    }
+
     Outcome route_fired(const Outcome &o, uint64_t now)
     {
         pad_release();
@@ -846,6 +1046,20 @@ class Runner {
             title_begin(now);
             return poll(now);
         }
+        if (c == "session.start") {
+            SessionPlan plan;
+            std::string why = parse_session(a, plan);
+            if (!why.empty())
+                return Outcome::fail(why);
+            title_begin(now);
+            notice_presses_ = 0;
+            transition_at_ = 0;
+            session_plan_ = plan;
+            session_sent_ = false;
+            mark_ = fires_.seen("flow:" + std::string(FLOW_LOAD_SESSION));
+            deadline_ = now + limit(10 * 60 * 1000);
+            return poll(now);
+        }
         if (c == "ai_drives_player") {
             if (a["on"].type != json::Value::Bool)
                 return Outcome::fail("ai_drives_player needs {\"on\": true|false}");
@@ -885,6 +1099,8 @@ class Runner {
             want_ = a["phase"].str();
             if (want_.empty())
                 return Outcome::fail("at needs {\"phase\": <screen or flow state>}");
+            long long settle = a["settle_ms"].num(0);
+            settle_ms_ = uint64_t(settle < 0 ? 0 : settle > 60000 ? 60000 : settle);
             deadline_ = now + limit(DEFAULT_WAIT_MS);
             return poll(now);
         }
@@ -919,12 +1135,18 @@ class Runner {
             }
             long long ms = a["ms"].num(120);
             hold_ms_ = uint64_t(ms < 16 ? 16 : ms > 10000 ? 10000 : ms);
-            Outcome o = g_.pad(first_);
-            if (o.status != Status::ok)
-                return o;
-            stage_ = 1;
-            stage_at_ = now;
-            return Outcome::pending();
+            long long settle = a["settle_ms"].num(DEFAULT_SETTLE_MS), retry = a["retry"].num(0),
+                      after = a["retry_after_ms"].num(3000);
+            settle_ms_ = uint64_t(settle < 0 ? 0 : settle > 60000 ? 60000 : settle);
+            retries_ = int(retry < 0 ? 0 : retry > 20 ? 20 : retry);
+            retry_after_ = uint64_t(after < 200 ? 200 : after > 60000 ? 60000 : after);
+            tries_ = 0;
+            deadline_ = now + limit(settle_ms_ + 30000);
+            if (!settled(now)) {
+                stage_ = 5;
+                return Outcome::pending();
+            }
+            return pad_press(now);
         }
         if (c == "save") {
             std::string what = a["what"].str("now");
@@ -958,6 +1180,8 @@ class Runner {
         const std::string &c = cur_.cmd;
         if (c == "career")
             return career_poll(now);
+        if (c == "session.start")
+            return session_poll(now);
         if (c == "title") {
             if (title_tick(now)) {
                 g_.note(title_presses_ ? "[test] title passed after " + std::to_string(title_presses_) +
@@ -1009,8 +1233,9 @@ class Runner {
                 return Outcome::ok("{\"event\":" + esc(want_) + ",\"fires\":" + std::to_string(fires_.count[want_]) + "}");
         } else if (c == "at") {
             std::string p = g_.phase();
-            if (p == want_ || p == "fe_" + want_ || p.find("|" + want_ + "|") != std::string::npos ||
-                p.find("|fe_" + want_ + "|") != std::string::npos)
+            if ((p == want_ || p == "fe_" + want_ || p.find("|" + want_ + "|") != std::string::npos ||
+                 p.find("|fe_" + want_ + "|") != std::string::npos) &&
+                settled(now))
                 return Outcome::ok("{\"phase\":" + esc(want_) + "}");
         } else if (c == "log") {
             std::vector<std::string> lines;
@@ -1035,6 +1260,23 @@ class Runner {
             if (o.status != Status::pending)
                 return o;
         } else if (c == "pad") {
+            if (stage_ == 5) {
+                if (!settled(now) && now < deadline_)
+                    return Outcome::pending();
+                return pad_press(now);
+            }
+            if (stage_ == 6) {
+                if (seen_ != pressed_seq_)
+                    return Outcome::ok("{\"presses\":" + std::to_string(tries_ + 1) + ",\"screen_changed\":true}");
+                if (now - pressed_at_ < retry_after_)
+                    return Outcome::pending();
+                if (tries_ >= retries_)
+                    return Outcome::fail("pad: the screen did not change after " + std::to_string(tries_ + 1) +
+                                         " press(es); it is still " + g_.phase());
+                ++tries_;
+                stage_ = 5;
+                return Outcome::pending();
+            }
             if (now - stage_at_ < hold_ms_)
                 return Outcome::pending();
             if (stage_ == 1) {
@@ -1053,6 +1295,10 @@ class Runner {
                 g_.pad(PadState{});
                 stage_ = 4;
                 stage_at_ = now;
+                return Outcome::pending();
+            }
+            if (retries_ > 0) {
+                stage_ = 6;
                 return Outcome::pending();
             }
             return Outcome::ok();

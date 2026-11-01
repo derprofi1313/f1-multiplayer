@@ -174,7 +174,7 @@ impl Shell {
                 .spawn(async move {
                     let installed = managed::installed(&store);
                     let current = update::current_version();
-                    // No releases of F1 Multiplayer exist yet; Swofty's would replace this app.
+                    // Only F1 Multiplayer's own published releases (drafts are never offered); never Swofty's.
                     if launcher_due && update::SELF_UPDATE {
                         updater::check(Part::Launcher, &mut launcher, Some(&current), can_install, now);
                     }

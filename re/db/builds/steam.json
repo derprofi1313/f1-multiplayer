@@ -1,0 +1,17 @@
+{
+ "schema": 1,
+ "build": {
+  "exe": "F1_25.exe",
+  "sha256": "d873a1c8d2044cef2fd76c99c9d5a97649c5b815d055540995105f46619865ae",
+  "size": 408063872,
+  "pe_timestamp": 1789118616,
+  "image_base": "0x140000000",
+  "distribution": "Steam",
+  "packed": false
+ },
+ "note": "The KB build: its patterns and match hints are the signatures in re/db/signatures.json.",
+ "sections": {},
+ "overrides": {},
+ "hints": {},
+ "unresolvable": {}
+}

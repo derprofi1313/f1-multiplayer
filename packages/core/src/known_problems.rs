@@ -6,7 +6,7 @@
 //! An addon whose changes don't apply to an F1 25 older than the newest
 //! update is recognised from the build's error, for the launch's failure.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -155,6 +155,8 @@ pub struct Evidence {
     pub conflicts: Vec<Pair>,
     /// Per addon id, the game's entrant lists it renamed or removed that the last build kept.
     pub kept_lists: BTreeMap<String, Vec<String>>,
+    /// The installed addons that are built in or managed by the launcher, which a profile can't turn off.
+    pub builtin: BTreeSet<String>,
     /// The game's exit code, or the crash code the session recorded.
     pub code: Option<u32>,
     /// The game exe's version, when it can be read.
@@ -162,7 +164,12 @@ pub struct Evidence {
 }
 
 impl Evidence {
-    pub fn read(session: &SessionRecord, game: Option<&Path>, names: BTreeMap<String, String>) -> Self {
+    pub fn read(
+        session: &SessionRecord,
+        game: Option<&Path>,
+        names: BTreeMap<String, String>,
+        data: Option<&Path>,
+    ) -> Self {
         let loader = ["loader.log", "game-logs/loader.log"]
             .iter()
             .map(|rel| session.dir.join(rel))
@@ -174,6 +181,9 @@ impl Evidence {
             let mut dirs = vec![session.dir.clone(), session.dir.join("game-logs")];
             if let Some(game) = game {
                 dirs.insert(0, game.join(LOADER_DIR));
+            }
+            if let Some(data) = data {
+                dirs.push(crate::crash_report::fallback_dir(data));
             }
             dirs.iter()
                 .map(|d| d.join(&name))
@@ -207,6 +217,11 @@ impl Evidence {
 
     /// The profile's addons from its last build in `store`.
     pub fn with_profile(mut self, store: &Store, addons: &BTreeMap<String, AddonManifest>) -> Self {
+        self.builtin = addons
+            .keys()
+            .filter(|id| store.is_builtin(id) || crate::order::is_pinned(id))
+            .cloned()
+            .collect();
         let profile = store.active_profile();
         if let Ok(p) = store.profile(&profile) {
             self.off = p
@@ -258,7 +273,7 @@ fn evidence(session: &SessionRecord, game: Option<&Path>, store: &Store) -> Evid
         .iter()
         .map(|(id, m)| (id.clone(), m.name.clone()))
         .collect();
-    Evidence::read(session, game, names).with_profile(store, &addons)
+    Evidence::read(session, game, names, Some(&store.root)).with_profile(store, &addons)
 }
 
 fn read_perf(dir: &Path) -> Option<String> {
@@ -277,14 +292,8 @@ fn read_capped(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The crash report's file name from the loader's `crash report swofty\crash-….txt:` line.
 fn report_name(loader: &str) -> Option<String> {
-    loader.lines().rev().find_map(|line| {
-        let rest = &line[line.find("[crash] crash report ")? + "[crash] crash report ".len()..];
-        let path = rest.split(':').next()?;
-        let name = path.rsplit(['\\', '/']).next()?;
-        (name.starts_with("crash-") && name.ends_with(".txt")).then(|| name.to_owned())
-    })
+    crate::crash_report::logged_name(loader)
 }
 
 /// The fatal exception as the loader log and the crash report describe it.
@@ -483,6 +492,7 @@ fn painters(e: &Evidence, overlay: &SessionOverlay) -> Vec<String> {
     overlay
         .painters
         .iter()
+        .filter(|id| !e.builtin.contains(*id))
         .map(|id| e.names.get(id).cloned().unwrap_or_else(|| id.clone()))
         .collect()
 }
@@ -762,6 +772,8 @@ const START_SCREEN: &str = "splash_transition";
 /// How long a session that ended on that screen had been on it to count as stuck.
 const BOOT_STALL_SECS: f64 = 45.0;
 
+const SEND_LOGS: &str = "Press Send Logs in the launcher so this reaches the developers.";
+
 fn name(e: &Evidence, id: &str) -> String {
     e.names.get(id).cloned().unwrap_or_else(|| id.to_owned())
 }
@@ -816,6 +828,15 @@ fn classic_years(e: &Evidence) -> usize {
         .count()
 }
 
+const CAREER_ADDONS: [&str; 2] = ["swofty.progressive", "career.classic-career"];
+
+fn needs_all_years(e: &Evidence) -> bool {
+    e.enabled.iter().any(|id| CAREER_ADDONS.contains(&id.as_str()))
+}
+
+const KEEP_YEARS: &str = "Keep every Classic Seasons year on (Progressive needs them for the next seasons); turn off \
+     imported tracks that aren't in your calendar and other content addons you don't need.";
+
 fn years(n: usize) -> String {
     format!("{n} Classic Seasons year{}", if n == 1 { "" } else { "s" })
 }
@@ -853,13 +874,17 @@ fn raw_crash_lines(loader: &str) -> Vec<&str> {
 /// The addon that kept a game thread busy while the game froze: one whose
 /// consecutive lines on a thread are far apart across the stall, or the one
 /// that logged the most in it.
-fn busy_addon(e: &Evidence, f: &Fatal) -> Option<String> {
+fn busy_addon(e: &Evidence, f: &Fatal, built_in: bool) -> Option<String> {
     let end = stamp(raw_crash_lines(&e.loader).get(f.at?)?)?;
     let ids: Vec<&String> = if e.enabled.is_empty() {
         e.names.keys().collect()
     } else {
         e.enabled.iter().collect()
     };
+    let ids: Vec<&String> = ids
+        .into_iter()
+        .filter(|id| e.builtin.contains(*id) == built_in)
+        .collect();
     let addon_of = |rest: &str| -> Option<&String> {
         let tag = rest.strip_prefix('[')?.split(']').next()?;
         if let Some((_, api)) = rest.split_once("] api: ") {
@@ -1015,6 +1040,7 @@ fn game_heap(e: &Evidence) -> Diagnosis {
     let tracks: Vec<String> = tracks.iter().map(|id| name(e, id)).collect();
     let mut heavy = tracks.clone();
     let years_on = classic_years(e);
+    let all_years = needs_all_years(e);
     if years_on > 0 {
         heavy.push(years(years_on));
     }
@@ -1040,12 +1066,18 @@ fn game_heap(e: &Evidence) -> Diagnosis {
             false => (list(&tracks), "one of them".to_owned()),
         };
         steps.push(format!(
-            "Turn off {which} in your profile, or make a lighter profile without it for the sessions it crashes in. \
-             If your career's next round is at {at}, change that round with the Career Mode Editor first: the career \
-             won't load while that track is off."
+            "Turn off {which} in your profile, or make a lighter profile without it for the sessions it crashes in."
         ));
+        if !all_years {
+            steps[0].push_str(&format!(
+                " In a My Team career whose next round is at {at}, change that round with the Career Mode Editor \
+                 first: the career won't load while that track is off."
+            ));
+        }
     }
-    steps.push(if years_on > 0 {
+    steps.push(if all_years {
+        KEEP_YEARS.to_owned()
+    } else if years_on > 0 {
         "Turn on fewer imported tracks and only the Classic Seasons years you race.".to_owned()
     } else {
         "Play with fewer imported tracks and season addons on at once.".to_owned()
@@ -1060,7 +1092,9 @@ fn game_heap(e: &Evidence) -> Diagnosis {
 
 fn windows_memory(e: &Evidence) -> Diagnosis {
     let years_on = classic_years(e);
-    let fewer = if years_on > 0 {
+    let fewer = if needs_all_years(e) {
+        KEEP_YEARS.to_owned()
+    } else if years_on > 0 {
         format!(
             "Turn on only the Classic Seasons years you race; your profile has {} on.",
             years(years_on)
@@ -1091,10 +1125,16 @@ fn hang(e: &Evidence, f: &Fatal, mods: &[(&'static str, Vec<String>)]) -> Diagno
                     crashed."
             .to_owned();
     let mut steps = Vec::new();
-    if let Some(addon) = busy_addon(e, f) {
+    if let Some(addon) = busy_addon(e, f, false) {
         let addon = name(e, &addon);
         what.push_str(&format!(" {addon} kept the game busy while it froze."));
         steps.push(format!("Turn off {addon} in your profile, then play again."));
+    } else if let Some(addon) = busy_addon(e, f, true) {
+        let addon = name(e, &addon);
+        what.push_str(&format!(
+            " The freeze happened inside the launcher's own code ({addon}, which is built in and can't be turned off)."
+        ));
+        steps.push(SEND_LOGS.to_owned());
     } else if let Some((addon, _)) = boot_stall(e) {
         what.push_str(&format!(
             " It never got past Loading... after Press any button, which {addon} is known to cause."
@@ -1218,7 +1258,9 @@ fn boot_stall(e: &Evidence) -> Option<(String, f64)> {
         true => e.names.contains_key(id),
         false => e.enabled.iter().any(|on| on == id),
     };
-    let id = BOOT_STALLS.iter().find(|id| on(id))?;
+    let id = BOOT_STALLS
+        .iter()
+        .find(|id| on(id) && !e.builtin.contains(**id))?;
     Some((name(e, id), secs))
 }
 
@@ -1426,6 +1468,7 @@ fn missing_entrant_list(e: &Evidence) -> Diagnosis {
     let addon = e
         .kept_lists
         .iter()
+        .filter(|(id, _)| !e.builtin.contains(*id))
         .find(|(_, lists)| list.as_ref().is_none_or(|l| lists.contains(l)))
         .map(|(id, _)| name(e, id));
     let which = list
@@ -1453,11 +1496,30 @@ fn missing_entrant_list(e: &Evidence) -> Diagnosis {
     }
 }
 
+/// The track stat id the core logged as having no tracks row or track record at the session load.
+fn missing_track_stat(loader: &str) -> Option<i64> {
+    loader.lines().rev().find_map(|l| {
+        let rest = l.split("track stat id ").nth(1)?;
+        let (id, tail) = rest.split_once(' ')?;
+        tail.starts_with("has no tracks row or track record")
+            .then(|| id.parse().ok())
+            .flatten()
+    })
+}
+
 fn career_content_off(e: &Evidence) -> Diagnosis {
     let off: Vec<String> = e.off.iter().map(|id| name(e, id)).collect();
     let what =
         "F1 25 crashed setting up the track for your career's next session, just after the career loaded.";
+    let missing = missing_track_stat(&e.loader);
     let (title, what) = match off.as_slice() {
+        [] => (
+            "Your career uses a track that is not in this profile".to_owned(),
+            format!(
+                "{what} A race in your career uses a track (track stat id {}) that no addon in this profile provides.",
+                missing.unwrap_or_default()
+            ),
+        ),
         [one] => (
             format!("Your career uses {one}, which is off"),
             format!("{what} A race in your career uses {one}, which is off in this profile."),
@@ -1475,11 +1537,61 @@ fn career_content_off(e: &Evidence) -> Diagnosis {
         title,
         what,
         steps: vec![
-            format!(
-                "Turn {} back on, or change that round with the Career Mode Editor.",
-                list(&off)
-            ),
+            match off.is_empty() {
+                true => "Turn back on the track addon your career's calendar uses. In a My Team career you can also change that round with the Career Mode Editor."
+                    .to_owned(),
+                false => format!(
+                    "Turn {} back on. In a My Team career you can also change that round with the Career Mode Editor.",
+                    list(&off)
+                ),
+            },
             "Press Play again.".to_owned(),
+        ],
+    }
+}
+
+/// The core's `[hwsettings]` line about the player's hardware_settings_config.xml, from the loader.log.
+fn hardware_settings_line(loader: &str) -> Option<&str> {
+    loader
+        .lines()
+        .find_map(|l| l.find("[hwsettings] ").map(|at| &l[at..]))
+}
+
+/// Whether the game aborted in its startup sequence, right after reading its hardware settings file, before
+/// any window, with the core's line saying that file is a OneDrive file or cloud-only.
+fn hardware_settings_crash(e: &Evidence, f: &Fatal) -> bool {
+    let at_abort = f
+        .frames
+        .iter()
+        .any(|l| l.contains("Game_Startup_InitSequence+0x291"));
+    let line = hardware_settings_line(&e.loader);
+    at_abort
+        && e.loader.contains("before the game's window")
+        && line.is_some_and(|l| l.contains("cloud-only=yes") || l.contains("onedrive=yes"))
+}
+
+fn hardware_settings(e: &Evidence) -> Diagnosis {
+    let cloud = hardware_settings_line(&e.loader).is_some_and(|l| l.contains("cloud-only=yes"));
+    let what = if cloud {
+        "F1 25 closed while it started up because it could not read its graphics settings file, \
+         hardware_settings_config.xml in Documents\\My Games\\F1 25\\hardwaresettings. OneDrive has that file in \
+         the cloud only, not on your PC, and the game can't download it."
+    } else {
+        "F1 25 closed while it started up because it could not read its graphics settings file, \
+         hardware_settings_config.xml in Documents\\My Games\\F1 25\\hardwaresettings. Your Documents folder \
+         is in OneDrive, which can leave that file unreadable while it syncs or after it is moved to the cloud."
+    };
+    Diagnosis {
+        id: "hardware_settings_unreadable",
+        title: "F1 25 couldn't read its graphics settings file".to_owned(),
+        what: what.to_owned(),
+        steps: vec![
+            "In File Explorer, right-click Documents\\My Games\\F1 25\\hardwaresettings, choose \"Always keep on this device\", and wait for OneDrive to finish syncing, then press Play again."
+                .to_owned(),
+            "If it still closes, quit OneDrive, rename hardware_settings_config.xml in that folder to hardware_settings_config.xml.bak (F1 25 makes a new one, with its graphics settings back at their defaults), and press Play again."
+                .to_owned(),
+            "If it still closes, move your Documents folder out of OneDrive: OneDrive settings, Sync and backup, Manage backup, turn Documents off."
+                .to_owned(),
         ],
     }
 }
@@ -1602,15 +1714,18 @@ fn matched(e: &Evidence) -> Option<Diagnosis> {
     if pitlane_crash(e, &f) {
         return Some(pitlane(e));
     }
+    if hardware_settings_crash(e, &f) {
+        return Some(hardware_settings(e));
+    }
     if entrant_list_crash(e, &f) {
         return Some(missing_entrant_list(e));
     }
-    if !e.off.is_empty() && career_track_crash(e, &f) {
+    if (!e.off.is_empty() || missing_track_stat(&e.loader).is_some()) && career_track_crash(e, &f) {
         return Some(career_content_off(e));
     }
     if windows && gpu_removed(e) {
         let overlay = SessionOverlay::scan(&e.loader).unwrap_or_default();
-        if overlay.removed.is_some() && overlay.drew && !overlay.painters.is_empty() {
+        if overlay.removed.is_some() && overlay.drew && !painters(e, &overlay).is_empty() {
             let addons = painters(e, &overlay);
             let mut steps = vec![format!(
                 "Turn off {} in your profile, then play again.",
@@ -1668,9 +1783,13 @@ fn matched(e: &Evidence) -> Option<Diagnosis> {
         steps.extend([
             "Lower Texture Quality, and the resolution if it's above your screen's, in F1 25's graphics settings."
                 .to_owned(),
-            "Play with fewer car, livery and track addons on at once, for example only the Classic Seasons years \
-             you race."
-                .to_owned(),
+            if needs_all_years(e) {
+                KEEP_YEARS.to_owned()
+            } else {
+                "Play with fewer car, livery and track addons on at once, for example only the Classic Seasons years \
+                 you race."
+                    .to_owned()
+            },
             "Close other programs, especially web browsers, while you play.".to_owned(),
             "On a laptop with integrated graphics, give the graphics more memory if its settings allow it (often \
              called UMA frame buffer size)."
@@ -1738,7 +1857,7 @@ fn matched(e: &Evidence) -> Option<Diagnosis> {
             "Turn off {what} in F1 25's graphics settings, then play again."
         )];
         let mut also = String::new();
-        if overlay.drew && !overlay.painters.is_empty() {
+        if overlay.drew && !painters(e, &overlay).is_empty() {
             let addons = list(&painters(e, &overlay));
             also = format!(
                 " F1 Multiplayer's in-game overlay was drawing for {addons} at the time, and it is experimental."
@@ -1790,12 +1909,74 @@ mod tests {
         }
     }
 
+    const INIT_ABORT: &str = "\
+2026-11-01 15:30:27.529 [21084] [crash] #1 first-chance (the game may still handle it) ACCESS_VIOLATION (0xc0000005) on thread 21084, 5 s after load, at F1_25.exe+0x39182a4 .xtls Ne_FatalAbort+0x4
+2026-11-01 15:30:27.529 [21084] [crash]   writing 0x1
+2026-11-01 15:30:27.529 [21084] [crash]   stack:
+2026-11-01 15:30:27.529 [21084] [crash]   #0  F1_25.exe+0x39182a4 .xtls Ne_FatalAbort+0x4
+2026-11-01 15:30:27.529 [21084] [crash]   #1  F1_25.exe+0x43c07f1 .xtls Game_Startup_InitSequence+0x291
+2026-11-01 15:30:27.529 [21084] [crash]   #2  F1_25.exe+0x43e0af1 .xtls fn base+0x43e0ad0+0x21
+2026-11-01 15:30:27.958 [21084] [crash] unhandled ACCESS_VIOLATION (0xc0000005) at F1_25.exe+0x39182a4 .xtls Ne_FatalAbort+0x4 reached the top-level filter; passing it to the game's filter
+2026-11-01 15:30:29.407 [21084] [crash] TerminateProcess(4294967295) on thread 21084, 6 s after load, before the game's window; caller stack:
+";
+
+    fn init_abort(line: &str) -> Evidence {
+        ev(
+            &format!("2026-11-01 15:30:22.500 [21084] {line}\n{INIT_ABORT}"),
+            &[],
+        )
+    }
+
+    #[test]
+    fn a_startup_abort_on_a_cloud_only_settings_file_is_named() {
+        let d = diagnose(&init_abort(
+            "[hwsettings] C:\\Users\\m\\OneDrive\\Dokumente\\My Games\\F1 25\\hardwaresettings\\hardware_settings_config.xml: onedrive=yes exists=yes size=5120 attributes=0x00400020 cloud-only=yes (recall_on_data_access) read test: skipped",
+        ))
+        .expect("a diagnosis");
+        assert_eq!(d.id, "hardware_settings_unreadable");
+        assert!(d.what.contains("in the cloud only"));
+        assert_eq!(d.steps.len(), 3);
+    }
+
+    #[test]
+    fn a_startup_abort_with_documents_in_onedrive_is_named_softly() {
+        let d = diagnose(&init_abort(
+            "[hwsettings] C:\\Users\\m\\OneDrive\\Documents\\x.xml: onedrive=yes exists=yes size=5120 attributes=0x00000020 cloud-only=no read test: ok (4096 bytes)",
+        ))
+        .expect("a diagnosis");
+        assert_eq!(d.id, "hardware_settings_unreadable");
+        assert!(d.what.contains("is in OneDrive"));
+    }
+
+    #[test]
+    fn a_startup_abort_with_local_documents_is_not_this_rule() {
+        let d = diagnose(&init_abort(
+            "[hwsettings] C:\\Users\\v\\Documents\\x.xml: onedrive=no exists=yes size=5120 attributes=0x00000020 cloud-only=no read test: ok (4096 bytes)",
+        ));
+        assert!(d.is_none_or(|d| d.id != "hardware_settings_unreadable"));
+        let silent = ev(INIT_ABORT, &[]);
+        assert!(diagnose(&silent).is_none_or(|d| d.id != "hardware_settings_unreadable"));
+    }
+
+    #[test]
+    fn another_abort_with_a_cloud_file_is_not_this_rule() {
+        let other = init_abort("[hwsettings] p: onedrive=yes exists=yes size=1 attributes=0x00400020 cloud-only=yes (recall_on_data_access)")
+            .loader
+            .replace("InitSequence+0x291", "InitSequence+0x148");
+        assert!(diagnose(&ev(&other, &[])).is_none_or(|d| d.id != "hardware_settings_unreadable"));
+    }
+
     #[test]
     fn reads_the_fatal_exception_and_its_stack() {
         let f = fatal(&ev(GPU, &[]));
         assert_eq!(f.module.as_deref(), Some("f1_25.exe"));
         assert_eq!(f.stack, ["f1_25.exe", "f1_25.exe"]);
         assert_eq!(report_name(GPU).as_deref(), Some("crash-20261024-025226.txt"));
+        let fallback = "2026-11-01 12:53:50.100 [5] [crash] crash report C:\\Users\\id\\AppData\\Local\\Swofty\\state\\crash-20261101-125350.txt: boom\n";
+        assert_eq!(
+            report_name(fallback).as_deref(),
+            Some("crash-20261101-125350.txt")
+        );
     }
 
     #[test]
@@ -1973,6 +2154,48 @@ mod tests {
         assert!(d.steps[0].starts_with("Press Play again"), "{:?}", d.steps);
         let other = WATCHDOG.replace("r15=0000000000007530", "r15=0000000000000000");
         assert_eq!(diagnose(&ev(&other, &["F1_25.exe"])), None);
+    }
+
+    fn busy_log(tag: &str) -> String {
+        let mut log = String::new();
+        for s in 0..8 {
+            log.push_str(&format!(
+                "2026-10-27 14:59:{:02}.807 [21888] [{tag}] working on item {s}\n",
+                45 + s
+            ));
+        }
+        log.push_str(WATCHDOG);
+        log
+    }
+
+    #[test]
+    fn a_freeze_inside_the_core_offers_no_turn_off_step() {
+        let mut e = with_names(
+            ev(&busy_log("core"), &["F1_25.exe"]),
+            &[("swofty.core", "Swofty Core")],
+        );
+        e.builtin = BTreeSet::from(["swofty.core".to_owned()]);
+        let d = diagnose(&e).unwrap();
+        assert!(!d.text().contains("Turn off"), "{}", d.text());
+        assert!(d.steps.iter().any(|s| s.contains("Send Logs")), "{:?}", d.steps);
+    }
+
+    #[test]
+    fn a_non_builtin_suspect_keeps_its_turn_off_step() {
+        let e = with_names(
+            ev(&busy_log("helmet-exchange"), &["F1_25.exe"]),
+            &[
+                ("giggles.helmet-exchange", "Helmet Exchange"),
+                ("swofty.core", "Swofty Core"),
+            ],
+        );
+        let mut e = e;
+        e.builtin = BTreeSet::from(["swofty.core".to_owned()]);
+        let d = diagnose(&e).unwrap();
+        assert_eq!(
+            d.steps[0],
+            "Turn off Helmet Exchange in your profile, then play again."
+        );
     }
 
     #[test]
@@ -2232,7 +2455,7 @@ mod tests {
         );
         assert!(
             d.steps[0].ends_with(
-                "If your career's next round is at Sepang, change that round with the Career Mode Editor first: \
+                "In a My Team career whose next round is at Sepang, change that round with the Career Mode Editor first: \
                  the career won't load while that track is off."
             ),
             "{}",
@@ -2249,6 +2472,27 @@ mod tests {
         let d = diagnose(&ev(GAME_HEAP, &[])).unwrap();
         assert_eq!(d.id, "game_heap");
         assert_eq!(d.steps.len(), 1);
+    }
+
+    #[test]
+    fn a_full_game_heap_in_progressive_keeps_every_year_and_never_moves_a_round() {
+        let mut e = with_names(
+            ev(GAME_HEAP, &[]),
+            &[
+                ("mod.bahrain24", "Sepang"),
+                ("swofty.progressive", "Progressive Career"),
+                ("swofty.classic-seasons-2016", "Classic Seasons 2016"),
+            ],
+        );
+        e.tracks = vec!["mod.bahrain24".into()];
+        let d = diagnose(&e).unwrap();
+        let all = d.steps.join(" ");
+        assert!(
+            !all.contains("Career Mode Editor") && !all.contains("you race"),
+            "{all}"
+        );
+        assert!(all.contains("Keep every Classic Seasons year on"), "{all}");
+        assert!(d.steps[0].starts_with("Turn off Sepang in your profile"), "{all}");
     }
 
     const COMMIT: &str = "\
@@ -2565,7 +2809,7 @@ mod tests {
         );
         assert_eq!(
             d.steps[0],
-            "Turn Sepang back on, or change that round with the Career Mode Editor."
+            "Turn Sepang back on. In a My Team career you can also change that round with the Career Mode Editor."
         );
 
         let d = diagnose(&career_off(
@@ -2583,7 +2827,7 @@ mod tests {
         assert!(!d.what.contains("uses Sepang"), "{}", d.what);
         assert_eq!(
             d.steps[0],
-            "Turn Sepang and F1 2018 GP/TT Addon back on, or change that round with the Career Mode Editor."
+            "Turn Sepang and F1 2018 GP/TT Addon back on. In a My Team career you can also change that round with the Career Mode Editor."
         );
     }
 
@@ -2620,6 +2864,22 @@ mod tests {
             None,
             "no career"
         );
+    }
+
+    #[test]
+    fn a_track_stat_id_with_no_row_is_a_missing_track_even_with_nothing_off() {
+        let line =
+            "2026-10-28 20:58:47.900 [5060] [moments] track stat id 48 has no tracks row or track record\n";
+        let loader = CAREER_TRACK.replace(
+            "2026-10-28 20:58:47.933",
+            &format!("{line}2026-10-28 20:58:47.933"),
+        );
+        assert_eq!(missing_track_stat(&loader), Some(48));
+        let d = diagnose(&career_off(&loader, &[])).unwrap();
+        assert_eq!(d.id, "career_content_off");
+        assert_eq!(d.title, "Your career uses a track that is not in this profile");
+        assert!(d.what.contains("track stat id 48"), "{}", d.what);
+        assert_eq!(missing_track_stat(CAREER_TRACK), None);
     }
 
     #[test]
@@ -2765,7 +3025,7 @@ mod tests {
                     || loader.contains(LOW_DISK);
                 let report = report_name(&loader).and_then(|n| read_capped(&logs.join("crash").join(n)));
                 let game_files = report.as_deref().map(game_folder_modules).unwrap_or_default();
-                let mut e = Evidence::read(&record, None, BTreeMap::new());
+                let mut e = Evidence::read(&record, None, BTreeMap::new(), None);
                 let game_version = read_capped(&logs.join("summary.txt")).and_then(|t| {
                     t.lines()
                         .find_map(|l| l.strip_prefix("F1 25 "))

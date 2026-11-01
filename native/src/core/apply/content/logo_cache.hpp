@@ -1,22 +1,28 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
-// The key the team logo archives are cached under. An install copies its archives into the game folder again before
-// every session, and a rollback copies the stock ones back, so a write time changes while the bytes stay the same.
-// Each archive counts by a hash of its bytes. The stamps file next to the cached archives keeps each hash under the
-// size and write time it was taken at, and only an archive whose size or write time differs is read again.
+// The key the team logo archives are cached under. The logos are built from the bytes of a few archives: databases.erp
+// and the archives that carry a wanted texture array (the inputs). An install copies its archives into the game folder
+// again before every session, and a rollback copies the stock ones back, so a write time changes while the bytes stay
+// the same. Each input counts by a hash of its bytes. The stamps file next to the cached archives names the inputs of
+// the last build and keeps each hash under the size and write time it was taken at; only an input whose size or write
+// time differs is read again. Every other archive counts by its path and size and is never read: the build only looks
+// in it for a wanted array, and an archive that gains one grows.
 
 namespace swofty_core::apply::content::logo_cache {
 
-inline constexpr const char *STAMPS = "archives.stamps";
+inline constexpr const char *STAMPS = "inputs.stamps";
+inline constexpr const char *OLD_STAMPS = "archives.stamps";
 
 inline uint64_t stamp(uint64_t h, const std::string &s)
 {
@@ -136,6 +142,51 @@ inline std::string text(const Stamps &stamps)
     return out;
 }
 
+inline constexpr const char *CACHE_FORMAT = "|logo-cache-3";
+inline constexpr const char *BUILT_LINE = "#built";
+
+using Routes = std::vector<std::pair<std::string, std::string>>;
+
+inline std::string manifest_text(int built, const Routes &routes)
+{
+    std::string out = std::string(BUILT_LINE) + "\t" + std::to_string(built) + "\n";
+    for (auto &[rel, file] : routes)
+        out += rel + "\t" + file + "\n";
+    return out;
+}
+
+inline bool manifest_parse(const std::string &text, const std::function<bool(const std::string &file)> &exists, int &built, Routes &routes)
+{
+    built = -1;
+    routes.clear();
+    size_t at = 0;
+    while (at < text.size()) {
+        size_t end = text.find('\n', at);
+        if (end == std::string::npos)
+            end = text.size();
+        std::string line = text.substr(at, end - at);
+        at = end + 1;
+        size_t tab = line.find('\t');
+        if (tab == std::string::npos)
+            continue;
+        if (line.compare(0, tab, BUILT_LINE) == 0)
+            built = std::atoi(line.c_str() + tab + 1);
+        else
+            routes.emplace_back(line.substr(0, tab), line.substr(tab + 1));
+    }
+    bool whole = built >= 0 && !routes.empty();
+    for (auto &r : routes)
+        whole = whole && exists(r.second);
+    if (!whole)
+        routes.clear();
+    return whole;
+}
+
+inline bool cacheable(size_t routes, size_t changes, int refused)
+{
+    return routes && routes == changes && refused == 0;
+}
+
 struct Env {
     std::function<bool(const std::string &rel, uint64_t &size, uint64_t &time)> stat;
     std::function<bool(const std::string &rel, uint64_t &hash)> hash;
@@ -148,13 +199,29 @@ struct Keyed {
     uint64_t hashed_bytes = 0;
 };
 
-inline Keyed key_archives(uint64_t key, const std::vector<std::string> &files, const Env &env, const Stamps &before)
+inline std::set<std::string> inputs_of(const Stamps &stamps)
+{
+    std::set<std::string> out;
+    for (auto &[rel, s] : stamps)
+        out.insert(rel);
+    return out;
+}
+
+inline Keyed key_archives(uint64_t key, const std::vector<std::string> &files, const std::set<std::string> &inputs, const Env &env,
+                          const Stamps &before)
 {
     Keyed out;
-    for (auto &rel : files) {
+    std::vector<std::string> ordered = files;
+    std::sort(ordered.begin(), ordered.end());
+    ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
+    for (auto &rel : ordered) {
         Seen now;
         if (!env.stat(rel, now.size, now.time))
             continue;
+        if (!inputs.count(rel)) {
+            key = stamp(key, rel + "|" + std::to_string(now.size) + "|s");
+            continue;
+        }
         auto was = before.find(rel);
         if (was != before.end() && was->second.hashed && was->second.size == now.size && was->second.time == now.time) {
             now = was->second;

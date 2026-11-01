@@ -98,7 +98,7 @@
           "game/safety_car"
         ]
       },
-      "scope": "global",
+      "scope": "automatic",
       "edit": true,
       "result": {
         "package": null,

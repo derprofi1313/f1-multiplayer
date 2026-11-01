@@ -11,6 +11,7 @@ pub mod lock;
 pub mod plan;
 pub mod report;
 pub mod sandbox;
+pub mod session;
 pub mod suite;
 
 #[cfg(test)]

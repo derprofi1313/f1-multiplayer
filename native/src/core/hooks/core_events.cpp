@@ -45,14 +45,22 @@ static_assert(declared<ce::Unloaded>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<ce::SeasonEnd>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<ce::SeasonBreak>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<ce::Saving>(SWOFTY_POINT_MODIFY));
+static_assert(declared<ce::Saved>(SWOFTY_POINT_NOTIFY));
+static_assert(declared<ce::Missing>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<ca::UpgradesFit>(SWOFTY_POINT_MODIFY));
 static_assert(declared<ca::VtfRead>(SWOFTY_POINT_MODIFY));
 static_assert(declared<ca::Built>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<ca::Reset>(SWOFTY_POINT_NOTIFY));
+static_assert(declared<ca::UpgradesReplayed>(SWOFTY_POINT_NOTIFY));
+static_assert(declared<ca::SetupApplied>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<ca::PartsRegister>(SWOFTY_POINT_NOTIFY));
+static_assert(declared<ca::Damage>(SWOFTY_POINT_NOTIFY));
+static_assert(declared<swofty::sessions::events::Pit>(SWOFTY_POINT_NOTIFY));
+static_assert(declared<swofty::sessions::events::PitStop>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<ca::ControllersRebuilt>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<swofty::ai::events::ControllerUpdate>(SWOFTY_POINT_CANCEL));
 static_assert(declared<swofty::sessions::events::PlayerControl>(SWOFTY_POINT_CANCEL));
+static_assert(declared<swofty::sessions::events::Lap>(SWOFTY_POINT_NOTIFY));
 static_assert(declared<swofty::spectator::events::HudVisible>(SWOFTY_POINT_MODIFY));
 static_assert(declared<so::BundleResolve>(SWOFTY_POINT_MODIFY));
 static_assert(sizeof(ce::Loaded) == sizeof(Shell) && sizeof(ce::Created) == sizeof(Shell));
@@ -71,6 +79,8 @@ bool career_created() { return shell<ce::Created>(); }
 bool career_season_end() { return shell<ce::SeasonEnd>(); }
 bool career_season_break() { return shell<ce::SeasonBreak>(); }
 bool career_saving() { return shell<ce::Saving>(); }
+bool career_saved() { return shell<ce::Saved>(); }
+bool career_missing() { return shell<ce::Missing>(); }
 
 bool career_season_start(int year, int season_index)
 {
@@ -86,6 +96,8 @@ bool car_upgrades_fit(ca::UpgradesFit &payload) { return fire(payload); }
 bool car_vtf_read(ca::VtfRead &payload) { return fire(payload); }
 bool car_built(ca::Built &payload) { return fire(payload); }
 bool car_reset(ca::Reset &payload) { return fire(payload); }
+bool car_upgrades_replayed(ca::UpgradesReplayed &payload) { return fire(payload); }
+bool car_setup_applied(ca::SetupApplied &payload) { return fire(payload); }
 bool car_parts_register(ca::PartsRegister &payload) { return fire(payload); }
 bool audio_bundle_resolve(so::BundleResolve &payload) { return fire(payload); }
 
@@ -103,6 +115,11 @@ bool car_vtf_read(const swofty::cars::live::Car &car, const char *section, const
 
 bool car_built(const swofty::cars::live::Car &car) { return payloads::built(fire_core, car); }
 bool car_reset(const swofty::cars::live::Car &car, bool upgrade) { return payloads::reset(fire_core, car, upgrade); }
+bool car_upgrades_replayed(const swofty::cars::live::Car &car, float progress)
+{
+    return payloads::upgrades_replayed(fire_core, car, progress);
+}
+bool car_setup_applied(const swofty::cars::live::Car &car) { return payloads::setup_applied(fire_core, car); }
 
 bool car_parts_register(int32_t car, const char *vehicle, void *front_wing, const payloads::PartSink &add)
 {
@@ -112,6 +129,25 @@ bool car_parts_register(int32_t car, const char *vehicle, void *front_wing, cons
 bool audio_bundle_resolve(int32_t car, const char *vehicle, const char *switch_name, std::string &engine_sound)
 {
     return payloads::bundle_resolve(fire_core, car, vehicle, switch_name, engine_sound);
+}
+
+bool car_damage(const swofty::cars::live::Car &car, uint32_t part, float amount)
+{
+    return payloads::damage(fire_core, car, part, amount);
+}
+
+bool session_pit(uint32_t car, uint32_t previous, uint32_t status)
+{
+    return payloads::pit(fire_core, car, previous, status);
+}
+
+bool session_pit_stop(uint32_t car, uint32_t stops) { return payloads::pit_stop(fire_core, car, stops); }
+
+bool session_lap(uint32_t car)
+{
+    swofty::sessions::events::Lap e{};
+    e.car = swofty::cars::live::Car(car);
+    return fire(e);
 }
 
 }

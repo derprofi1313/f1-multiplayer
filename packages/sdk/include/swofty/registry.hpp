@@ -298,7 +298,7 @@ public:
             t->protect(name_.c_str(), std::string(own_record.id()).c_str(), ptrs.data(), ptrs.size()));
     }
 
-    LayerHandle<T> layer(Ref<T> target, Edit<T> edit, Scope scope = Scope::global)
+    LayerHandle<T> layer(Ref<T> target, Edit<T> edit, Scope scope = Scope::automatic)
     {
         SwoftyLayerDesc d = desc(scope);
         std::string id(target.id());
@@ -306,7 +306,7 @@ public:
         return submit(d, std::move(edit));
     }
 
-    LayerHandle<T> layer(Select<T> which, Edit<T> edit, Scope scope = Scope::global)
+    LayerHandle<T> layer(Select<T> which, Edit<T> edit, Scope scope = Scope::automatic)
     {
         SwoftyLayerDesc d = desc(scope);
         std::vector<const char *> except;
@@ -323,7 +323,7 @@ public:
         return submit(d, std::move(edit));
     }
 
-    Result clear_layer(Ref<T> target, Scope scope = Scope::global)
+    Result clear_layer(Ref<T> target, Scope scope = Scope::automatic)
     {
         auto t = table();
         if (!t || !t->clear_layer)

@@ -2255,7 +2255,7 @@ void validate_select(const swofty::json::Value &entries, std::string_view regist
         report.problems.push_back({at_pointer(path), "$select is a non-empty list of selector entries"});
         return;
     }
-    static const std::set<std::string_view> select_keys{"ids", "where", "tag", "in", "when", "except", "patch"};
+    static const std::set<std::string_view> select_keys{"ids", "where", "tag", "in", "when", "except", "scope", "patch"};
     for (std::size_t i = 0; i < list->size(); ++i) {
         path.push_back(std::to_string(i));
         auto &entry = (*list)[i];

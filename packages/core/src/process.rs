@@ -198,13 +198,26 @@ pub(crate) fn named(name: &str) -> Vec<GameProcess> {
         .filter_map(|e| {
             let pid = e.file_name().to_str()?.parse().ok()?;
             let comm = std::fs::read_to_string(e.path().join("comm")).ok()?;
-            (comm.trim_end() == name).then(|| GameProcess {
+            (comm.trim_end() == name && !is_dead(&e.path())).then(|| GameProcess {
                 pid,
                 started: started(pid),
                 origin: Origin::default(),
             })
         })
         .collect()
+}
+
+/// A process that has exited and is only waiting for its parent to reap it (`Z`), or is gone (`X`).
+#[cfg(target_os = "linux")]
+fn is_dead(proc_dir: &Path) -> bool {
+    std::fs::read_to_string(proc_dir.join("stat")).is_ok_and(|s| state_is_dead(&s))
+}
+
+#[cfg(target_os = "linux")]
+fn state_is_dead(stat: &str) -> bool {
+    stat.rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .is_some_and(|state| matches!(state, "Z" | "X" | "x"))
 }
 
 #[cfg(target_os = "linux")]
@@ -305,12 +318,38 @@ mod win32 {
         exe_file: [u16; MAX_PATH],
     }
 
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
     #[link(name = "kernel32")]
     unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn QueryFullProcessImageNameW(
+            process: *mut c_void,
+            flags: u32,
+            name: *mut u16,
+            size: *mut u32,
+        ) -> i32;
         fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut c_void;
         fn Process32FirstW(snapshot: *mut c_void, entry: *mut ProcessEntry32W) -> i32;
         fn Process32NextW(snapshot: *mut c_void, entry: *mut ProcessEntry32W) -> i32;
         fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    /// The full path of the exe the process `pid` runs, or None when it cannot be opened.
+    pub fn image_path(pid: u32) -> Option<std::path::PathBuf> {
+        // SAFETY: the handle is checked before use and closed once; the buffer is `size` u16s long and
+        // QueryFullProcessImageNameW sets `size` to the length it wrote.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut buf = vec![0u16; 32_768];
+            let mut size = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) != 0;
+            CloseHandle(handle);
+            ok.then(|| std::path::PathBuf::from(String::from_utf16_lossy(&buf[..size as usize])))
+        }
     }
 
     /// The pids of the processes whose exe file name is `name` in any case,
@@ -330,7 +369,9 @@ mod win32 {
             let mut more = Process32FirstW(snapshot, &mut entry) != 0;
             while more {
                 let len = entry.exe_file.iter().position(|&c| c == 0).unwrap_or(MAX_PATH);
-                if String::from_utf16_lossy(&entry.exe_file[..len]).eq_ignore_ascii_case(name) {
+                if entry.threads > 0
+                    && String::from_utf16_lossy(&entry.exe_file[..len]).eq_ignore_ascii_case(name)
+                {
                     out.push(entry.process_id);
                 }
                 more = Process32NextW(snapshot, &mut entry) != 0;
@@ -339,6 +380,15 @@ mod win32 {
             Some(out)
         }
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn named_paths(name: &str) -> Vec<PathBuf> {
+    win32::process_ids(name)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(win32::image_path)
+        .collect()
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -431,6 +481,147 @@ fn image_path(pid: u32) -> Option<String> {
         ok
     };
     (ok != 0).then(|| String::from_utf16_lossy(&name[..len as usize]))
+}
+
+#[cfg(windows)]
+pub(crate) fn started(pid: u32) -> Option<SystemTime> {
+    use std::ffi::c_void;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetProcessTimes(
+            process: *mut c_void,
+            creation: *mut u64,
+            exit: *mut u64,
+            kernel: *mut u64,
+            user: *mut u64,
+        ) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+    let [mut creation, mut exit, mut kernel, mut user] = [0u64; 4];
+    // SAFETY: the handle is checked before use and closed once, and each
+    // FILETIME the call fills is a u64, the same size with a wider alignment.
+    let ok = unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let ok = GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user);
+        CloseHandle(process);
+        ok
+    };
+    (ok != 0).then(|| filetime(creation)).flatten()
+}
+
+pub fn own_elevation() -> Option<bool> {
+    elevation(std::process::id())
+}
+
+pub struct ExitProbe(#[cfg(windows)] *mut std::ffi::c_void);
+
+#[cfg(windows)]
+mod token {
+    use std::ffi::c_void;
+    pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    pub const TOKEN_QUERY: u32 = 0x8;
+    pub const TOKEN_ELEVATION: u32 = 20;
+    pub const STILL_ACTIVE: u32 = 259;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        pub fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
+        pub fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        pub fn OpenProcessToken(process: *mut c_void, access: u32, token: *mut *mut c_void) -> i32;
+        pub fn GetTokenInformation(
+            token: *mut c_void,
+            class: u32,
+            info: *mut c_void,
+            len: u32,
+            returned: *mut u32,
+        ) -> i32;
+    }
+}
+
+#[cfg(windows)]
+pub fn elevation(pid: u32) -> Option<bool> {
+    use std::ffi::c_void;
+    use token::*;
+    // SAFETY: each handle is checked before use and closed once, and the
+    // elevation flag is a u32 whose size is passed to the call.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut handle: *mut c_void = std::ptr::null_mut();
+        let opened = OpenProcessToken(process, TOKEN_QUERY, &mut handle) != 0;
+        CloseHandle(process);
+        if !opened {
+            return None;
+        }
+        let (mut flag, mut returned) = (0u32, 0u32);
+        let ok = GetTokenInformation(
+            handle,
+            TOKEN_ELEVATION,
+            (&mut flag as *mut u32).cast(),
+            4,
+            &mut returned,
+        );
+        CloseHandle(handle);
+        (ok != 0).then_some(flag != 0)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn elevation(_: u32) -> Option<bool> {
+    None
+}
+
+#[cfg(windows)]
+impl ExitProbe {
+    pub fn open(pid: u32) -> Option<Self> {
+        // SAFETY: the handle is checked before it is kept; Drop closes it once.
+        let handle = unsafe { token::OpenProcess(token::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        (!handle.is_null()).then_some(Self(handle))
+    }
+
+    pub fn exit_code(&self) -> Option<u32> {
+        let mut code = 0u32;
+        // SAFETY: the handle is open until Drop and `code` is a u32.
+        let ok = unsafe { token::GetExitCodeProcess(self.0, &mut code) };
+        (ok != 0 && code != token::STILL_ACTIVE).then_some(code)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ExitProbe {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from OpenProcess and is closed only here.
+        unsafe { token::CloseHandle(self.0) };
+    }
+}
+
+#[cfg(not(windows))]
+impl ExitProbe {
+    pub fn open(_: u32) -> Option<Self> {
+        None
+    }
+
+    pub fn exit_code(&self) -> Option<u32> {
+        None
+    }
+}
+
+/// A FILETIME: 100 ns ticks since 1601-01-01 UTC.
+#[cfg(any(windows, test))]
+fn filetime(ticks: u64) -> Option<SystemTime> {
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let since = ticks.checked_sub(UNIX_EPOCH_TICKS)?;
+    UNIX_EPOCH.checked_add(std::time::Duration::from_micros(since / 10))
 }
 
 pub fn stop_process(pid: u32) -> std::io::Result<()> {
@@ -683,6 +874,30 @@ mod windows_tests {
         assert!(shouted.iter().any(|g| g.pid == me), "{shouted:?}");
         assert!(super::named("no-such-process-swofty.exe").is_empty());
     }
+
+    #[test]
+    fn reads_own_start_time() {
+        let age = super::started(std::process::id())
+            .unwrap()
+            .elapsed()
+            .unwrap_or_default();
+        assert!(age.as_secs() < 3600, "{age:?}");
+    }
+}
+
+#[cfg(test)]
+mod filetime_tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn counts_filetime_from_1601() {
+        assert_eq!(super::filetime(116_444_736_000_000_000), Some(UNIX_EPOCH));
+        assert_eq!(
+            super::filetime(134_062_272_000_000_000),
+            Some(UNIX_EPOCH + Duration::from_secs(1_761_753_600))
+        );
+        assert_eq!(super::filetime(0), None);
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -703,5 +918,24 @@ mod tests {
             .elapsed()
             .unwrap_or_default();
         assert!(age.as_secs() < 3600, "{age:?}");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod zombie_tests {
+    use super::*;
+
+    #[test]
+    fn a_zombie_or_dead_process_is_not_a_running_game() {
+        assert!(state_is_dead("4242 (F1_25.exe) Z 1 4242 4242 0 -1 4228620 0"));
+        assert!(state_is_dead("4242 (F1_25.exe) X 1 4242"));
+        assert!(!state_is_dead("4242 (F1_25.exe) S 1 4242 4242 0 -1"));
+        assert!(!state_is_dead("4242 (F1 (25).exe) R 1 4242"));
+        assert!(state_is_dead("4242 (F1 (25).exe) Z 1 4242"));
+    }
+
+    #[test]
+    fn this_test_process_is_alive() {
+        assert!(!is_dead(Path::new("/proc/self")));
     }
 }

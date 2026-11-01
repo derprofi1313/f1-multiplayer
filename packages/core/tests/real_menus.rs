@@ -932,6 +932,324 @@ fn addon_settings_scrolls_sideways_and_shows_details_on_the_focused_tile() {
 }
 
 #[test]
+fn a_long_addon_page_scrolls_to_keep_the_focused_row_on_screen() {
+    use swofty_core::ui::node::{CHILDREN, NodeExt};
+    let Some(game) = std::env::var_os("F1_25_DIR").map(PathBuf::from) else {
+        eprintln!("F1_25_DIR is not set; skipping");
+        return;
+    };
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/menu_session.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+    let id = v["addons"][1]["id"].as_str().unwrap().to_owned();
+    let template = v["addons"][1]["options"][1].clone();
+    let options: Vec<serde_json::Value> = (0..30)
+        .map(|i| {
+            let mut o = template.clone();
+            o["id"] = format!("opt_{i}").into();
+            o["label"] = format!("Option {i}").into();
+            for (s, state) in o["states"].as_array_mut().unwrap().iter_mut().enumerate() {
+                state["command"] = format!("swofty_set:{id}:opt_{i}:{s}").into();
+            }
+            o
+        })
+        .collect();
+    v["addons"][1]["options"] = options.into();
+    let settings: SessionSettings = serde_json::from_value(v).unwrap();
+    let out = std::env::temp_dir().join(format!("swofty-page-scroll-{}", std::process::id()));
+    std::fs::remove_dir_all(&out).ok();
+    let built = swofty_core::ui::build(&settings, &|rel| game.join(rel), &|_, _| None, &out, false).unwrap();
+    let pages: Vec<_> = built
+        .screens
+        .iter()
+        .filter(|(rel, _)| rel.contains("/swofty_addon_"))
+        .map(|(_, path)| swofty_formats::pkg::Pkg::parse(&std::fs::read(path).unwrap()).unwrap())
+        .collect();
+    let rows_of = |p: &swofty_formats::pkg::Pkg| -> Option<(String, Vec<String>)> {
+        let mut found = None;
+        let mut stack = vec![&p.root];
+        while let Some(n) = stack.pop() {
+            if n.is_node() && n.name().starts_with("swofty_addon_") {
+                let rows = n
+                    .slot(CHILDREN)
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c.is_node() && c.name().starts_with("row_"))
+                    .map(|c| c.name().to_owned())
+                    .collect();
+                found = Some((n.name().to_owned(), rows));
+                break;
+            }
+            match n {
+                swofty_formats::pkg::Node::Arr(a) => stack.extend(a.items.iter()),
+                swofty_formats::pkg::Node::Obj(o) => stack.extend(o.items.iter().map(|(_, c)| c)),
+                _ => {}
+            }
+        }
+        found
+    };
+    let (long, short): (Vec<_>, Vec<_>) = pages
+        .iter()
+        .filter_map(|p| rows_of(p).map(|r| (p, r)))
+        .partition(|(_, (_, rows))| rows.len() == 30);
+    let (pkg, (sname, rows)) = long.first().expect("the 30-option page");
+    let path = |i: usize| format!("{sname}.{}", rows[i]);
+    for (i, name) in rows.iter().enumerate() {
+        let row = named(&pkg.root, name).unwrap();
+        let down = event_signals(row, "navDown");
+        if i + 1 < rows.len() {
+            assert_eq!(down[0], (path(i + 1), "focus".into()), "{name}: {down:?}");
+        }
+        let hides: Vec<_> = down.iter().filter(|(_, pin)| pin == "hide").collect();
+        if i + 1 < rows.len() && i + 1 >= 18 {
+            assert_eq!(hides, [&(path(i + 1 - 18), "hide".to_owned())], "{name}");
+        } else {
+            assert!(hides.is_empty(), "{name}: {down:?}");
+        }
+        let up = event_signals(row, "navUp");
+        if i > 0 {
+            assert_eq!(
+                up,
+                [(path(i - 1), "focus".into()), (path(i - 1), "show".into())],
+                "{name}"
+            );
+        } else {
+            assert!(up.is_empty(), "{name}: {up:?}");
+        }
+    }
+    for (p, (_, rows)) in &short {
+        for name in rows {
+            let row = named(&p.root, name).unwrap();
+            let pins: Vec<_> = ["navDown", "navUp"]
+                .iter()
+                .flat_map(|e| event_signals(row, e))
+                .filter(|(_, pin)| pin == "hide" || pin == "show")
+                .collect();
+            assert!(pins.is_empty(), "{name}: {pins:?}");
+        }
+    }
+    std::fs::remove_dir_all(&out).ok();
+}
+
+fn node_count(n: &swofty_formats::pkg::Node) -> usize {
+    use swofty_core::ui::node::{CHILDREN, NodeExt};
+    1 + n
+        .slot(CHILDREN)
+        .map(|k| k.iter().filter(|c| c.is_node()).map(node_count).sum())
+        .unwrap_or(0)
+}
+
+fn route_key(e: &swofty_formats::pkg::Obj) -> Vec<String> {
+    use swofty_core::ui::node::{NodeExt, ObjExt};
+    e.at("signals")
+        .unwrap()
+        .a()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.o().unwrap().at("attributes").ok())
+        .filter_map(|a| a.o().unwrap().at("key").ok())
+        .map(|k| k.o().unwrap().str_at("value").unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn addon_settings_pages_its_home_so_each_home_screen_stays_small() {
+    use swofty_core::ui::node::{CHILDREN, EVENTS, NodeExt, ObjExt};
+    use swofty_core::ui::pages::{HOME_PAGE_TILES, NEXT_PAGE, PREV_PAGE};
+    let Some(game) = std::env::var_os("F1_25_DIR").map(PathBuf::from) else {
+        eprintln!("F1_25_DIR is not set; skipping");
+        return;
+    };
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/menu_session.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+    let extra = v["addons"][1].clone();
+    for i in 0..70 {
+        let mut a = extra.clone();
+        a["id"] = format!("test.addon_{i}").into();
+        a["name"] = format!("Addon {i}").into();
+        a["description"] =
+            "An addon with a description long enough to wrap over a few lines of its tile.".into();
+        v["addons"].as_array_mut().unwrap().push(a);
+    }
+    let settings: SessionSettings = serde_json::from_value(v).unwrap();
+    let tiles =
+        settings.addons.iter().filter(|a| a.enabled).count() + settings.maps.len() + settings.mods.len();
+    assert!(tiles >= 72, "{tiles} tiles");
+    let out = std::env::temp_dir().join(format!("swofty-home-pages-{}", std::process::id()));
+    std::fs::remove_dir_all(&out).ok();
+    let built = swofty_core::ui::build(&settings, &|rel| game.join(rel), &|_, _| None, &out, false).unwrap();
+    let homes: Vec<String> = (0..tiles.div_ceil(HOME_PAGE_TILES))
+        .map(swofty_core::ui::pages::home_screen)
+        .collect();
+    assert_eq!(homes[..2], ["swofty_settings", "swofty_settings_2"]);
+    let read = |name: &str| {
+        let rel = format!("swofty/ui/{name}.ui");
+        let data = std::fs::read(&built.screens[&rel]).unwrap();
+        let pkg = swofty_formats::pkg::Pkg::parse(&data).unwrap();
+        (data.len(), pkg)
+    };
+    for (p, home) in homes.iter().enumerate() {
+        let s = built.session.iter().find(|s| &s.name == home).unwrap();
+        assert_eq!((s.flow.as_str(), s.view_model), ("flow_options", false));
+        let (size, pkg) = read(home);
+        let scr = named(&pkg.root, home).unwrap();
+        let nodes = node_count(scr);
+        let restore = scr.child("restore_focus").unwrap();
+        let restore_signals: usize = restore
+            .slot(EVENTS)
+            .unwrap()
+            .iter()
+            .map(|e| e.o().unwrap().at("signals").unwrap().a().unwrap().len())
+            .sum();
+        eprintln!("{home}: {size} bytes, {nodes} nodes, {restore_signals} restore signals");
+        assert!(size <= 360_000, "{home} is {size} bytes");
+        assert!(nodes <= 520, "{home} has {nodes} nodes");
+        assert!(
+            restore_signals <= 270,
+            "{home} has {restore_signals} restore signals"
+        );
+        let cols: Vec<_> = scr
+            .slot(CHILDREN)
+            .unwrap()
+            .iter()
+            .filter(|c| c.is_node() && c.name().starts_with("col_"))
+            .collect();
+        let names: Vec<String> = cols
+            .iter()
+            .flat_map(|c| c.slot(CHILDREN).unwrap().iter().filter(|t| t.is_node()))
+            .map(|t| t.name().to_owned())
+            .collect();
+        let first = p * HOME_PAGE_TILES;
+        let want: Vec<String> = (first..tiles.min(first + HOME_PAGE_TILES))
+            .map(|i| format!("t{i}"))
+            .chain((p + 1 < homes.len()).then(|| NEXT_PAGE.to_owned()))
+            .chain((p > 0).then(|| PREV_PAGE.to_owned()))
+            .collect();
+        assert_eq!(names, want, "{home}");
+        let title = format!("{:?}", named(scr, "screen_title").unwrap());
+        assert!(
+            title.contains(&format!("PAGE {}/{}", p + 1, homes.len())),
+            "{home}"
+        );
+        let nav = cols.last().unwrap();
+        let back = scr.child("back_listener").unwrap();
+        let back_sigs = event_signals(back, "pressed");
+        let remember_prev = (format!("{home}.remember_{PREV_PAGE}"), "trigger".to_owned());
+        assert_eq!(back_sigs.contains(&remember_prev), p > 0, "{home}: {back_sigs:?}");
+        assert_eq!(
+            restore
+                .slot(EVENTS)
+                .unwrap()
+                .iter()
+                .any(|e| e.o().unwrap().str_at("eventName").unwrap() == "page_first"),
+            p > 0
+        );
+        if p + 1 < homes.len() {
+            let next = nav.child(NEXT_PAGE).unwrap();
+            let pressed = event(next, EVENTS, "eventName", "pressed");
+            assert_eq!(route_key(pressed), [NEXT_PAGE]);
+            assert!(signals(pressed).contains(&(format!("{home}.remember_{NEXT_PAGE}"), "trigger".into())));
+            let back_here = event_signals(restore, NEXT_PAGE);
+            assert_eq!(
+                back_here.last().unwrap(),
+                &(format!("{home}.{}.{NEXT_PAGE}", nav.name()), "focus".into())
+            );
+        }
+        if p > 0 {
+            let arrived = event_signals(restore, "page_first");
+            assert_eq!(
+                arrived.last().unwrap(),
+                &(format!("{home}.col_0.t{first}"), "focus".into())
+            );
+            assert!(arrived.iter().all(|(_, pin)| pin != "hide"), "{arrived:?}");
+            let prev = nav.child(PREV_PAGE).unwrap();
+            assert_eq!(
+                route_key(event(prev, EVENTS, "eventName", "pressed")),
+                [PREV_PAGE]
+            );
+            let remember = scr.child(&format!("remember_{PREV_PAGE}")).unwrap();
+            let source = remember
+                .props()
+                .unwrap()
+                .at("source")
+                .unwrap()
+                .o()
+                .unwrap()
+                .str_at("value")
+                .unwrap()
+                .to_owned();
+            assert_eq!(source, NEXT_PAGE);
+        }
+        let t = cols[0]
+            .slot(CHILDREN)
+            .unwrap()
+            .iter()
+            .find(|t| t.is_node())
+            .unwrap();
+        let key = route_key(event(t, EVENTS, "eventName", "pressed"));
+        let addons = settings.addons.iter().filter(|a| a.enabled).count();
+        let want = match first.checked_sub(addons) {
+            None => format!("open_addon_{first}"),
+            Some(m) => format!("open_map_{m}"),
+        };
+        assert_eq!(key, [want], "{home}");
+    }
+    let options = game.join("2025_asset_groups/ui_package/flow_options.erp");
+    let stock_ui = swofty_core::ui::check::ArchiveUi::read("flow_options.erp", &options).unwrap();
+    let mut edited = swofty_core::ui::check::ArchiveUi::read("flow_options.erp", &options).unwrap();
+    for home in &homes {
+        let data = std::fs::read(&built.screens[&format!("swofty/ui/{home}.ui")]).unwrap();
+        edited.resources.insert(
+            format!("eaid://ui_package/screens/{home}.ui"),
+            ("UIDF".to_owned(), vec![data]),
+        );
+    }
+    let report = swofty_core::ui::check::archives(
+        &[edited],
+        &[stock_ui],
+        swofty_core::ui::catalog::stock(),
+        swofty_core::ui::catalog::engine(),
+    )
+    .unwrap();
+    let hard: Vec<String> = report.hard.iter().map(ToString::to_string).collect();
+    assert!(hard.is_empty(), "{hard:?}");
+    let routes = fragment(
+        &built.erps["2025_asset_groups/ui_package/persistent.erp"],
+        "eaid://ui_package/routes/routes_frontend_general.uir",
+        0,
+    );
+    let routes = swofty_formats::pkg::Pkg::parse(&routes).unwrap();
+    let group = |id: &str| -> Vec<String> {
+        routes
+            .root
+            .o()
+            .unwrap()
+            .at("RouteGroupings")
+            .unwrap()
+            .a()
+            .unwrap()
+            .iter()
+            .find(|g| g.o().unwrap().str_at("Id").ok() == Some(id))
+            .unwrap_or_else(|| panic!("no route group {id}"))
+            .o()
+            .unwrap()
+            .at("Routes")
+            .unwrap()
+            .a()
+            .unwrap()
+            .iter()
+            .map(|r| r.o().unwrap().str_at("Id").unwrap().to_owned())
+            .collect()
+    };
+    let second = group("swofty_settings_2");
+    for want in ["back", NEXT_PAGE, PREV_PAGE, "open_addon_30"] {
+        assert!(second.contains(&want.to_owned()), "{want}: {second:?}");
+    }
+    assert!(!group("swofty_settings").contains(&"open_addon_30".to_owned()));
+    assert!(group("swofty_addon_30").contains(&"back".to_owned()));
+    std::fs::remove_dir_all(&out).ok();
+}
+
+#[test]
 fn the_mfd_page_and_a_map_patch_share_flow_race_and_persistent() {
     use swofty_core::activation::place::track_group;
     use swofty_core::activation::ui::{MapUi, build_ui};

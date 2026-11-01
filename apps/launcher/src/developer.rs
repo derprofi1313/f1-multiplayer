@@ -41,6 +41,7 @@ impl Shell {
             crate::app_log::action("save settings").failed(&e);
             window.push_notification(Notification::error(e.to_string()), cx);
         }
+        self.developer_mode = config.developer;
         cx.notify();
     }
 
@@ -109,7 +110,7 @@ impl Shell {
     }
 
     pub(crate) fn developer_section(&mut self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.store.config().developer {
+        if !self.developer_mode {
             return None;
         }
         let running = self.developer.running;

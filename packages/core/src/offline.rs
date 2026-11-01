@@ -49,29 +49,29 @@ can work. Everything is undone when the game exits.
 We may collect anonymised usage data from your use of the launcher.";
 
 /// The extension release this manager pins.
-pub const EXTENSION_VERSION: &str = "0.3.12";
+pub const EXTENSION_VERSION: &str = "0.3.13";
 /// Where the artifacts are hosted (binaries; source lives in the repository).
 pub const DEFAULT_BASE_URL: &str = "https://swofty-developments.github.io/F1-OfflinePlay";
 pub const SOURCE_URL: &str = "https://github.com/Swofty-Developments/F1-OfflinePlay";
 
-/// Pinned digests for release v0.3.12. Every artifact is checked against its
+/// Pinned digests for release v0.3.13. Every artifact is checked against its
 /// pin at install time and again at use time.
 pub const PINS: &[(&str, &str)] = &[
     (
         "f1op_hook.dll",
-        "ab6a4fb60189340895e835b0771e628b4f9e6df9980c1164c2184e2db3b45f12",
+        "290fec68d2728280a9dc1009ca90b030efeb1c5d418cb8a5578a7b92dc8fb619",
     ),
     (
         "f1op_stub.exe",
-        "ea2e272c536d697f0507a5692bba16bd07d166fdfe38120b0de3ee5b053a5f13",
+        "272092e4492b327bcb814695ebaa85f056f7ac31143d9b54ff8fc16dd6c25d97",
     ),
     (
         "f1op-prelaunch.exe",
-        "9255ec4afc44a9e5ef151773d5418aabc0911c89c4529957a61cb9bc33f45608",
+        "a3c0e01c7c044b07b343f6c161de343f30dfb958431ac72026330317993510d3",
     ),
     (
         "f1op-probe.exe",
-        "feeb3c756ec19ae2ef0ba573526a0661be2f4309ca9a8568710a0c3bd5a4f501",
+        "7d958cfe25303f6be47b2e3c76c9e31b1a8dc12b051f397fedb912ebe827e9da",
     ),
     (
         "f1op-prelaunch-linux-x86_64",
@@ -350,6 +350,16 @@ fn av_error(e: Error) -> Error {
         }
         e => e,
     }
+}
+
+pub fn stub_blocked(game: &Path, proxy_logs: &[String], since: i64) -> Option<Block> {
+    let logged = proxy_logs
+        .iter()
+        .any(|log| crate::ea_diag::proxy_virus_block(log, EAC_EXE, since));
+    logged.then(|| Block {
+        program: game.join(EAC_EXE),
+        code: crate::quarantine::ERROR_VIRUS_INFECTED,
+    })
 }
 
 fn virus_code(code: i32) -> bool {
@@ -2167,6 +2177,35 @@ mod tests {
         restore(&journal, false).unwrap();
         assert_eq!(std::fs::read_to_string(&launcher).unwrap(), "original");
         assert!(!parked.exists());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_stub_missing_beside_its_backup_is_not_an_antivirus_block_without_the_log_line() {
+        let d = temp("stub-missing");
+        let game = d.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join(EAC_BAK), "real").unwrap();
+        assert_eq!(stub_blocked(&game, &[], 0), None);
+        let other = "20\t[2026-11-01T01:57:04.895Z]\tINFO\tcreateProcess ok".to_owned();
+        assert_eq!(stub_blocked(&game, &[other], 0), None);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn the_proxy_log_names_the_blocked_stub_even_while_it_is_present() {
+        let d = temp("stub-logged");
+        let game = d.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join(EAC_BAK), "real").unwrap();
+        let log = format!(
+            "20\t[2026-11-01T01:57:04.895Z]\tERROR   \t(eax::services::process::ProcessWin::createProcess)\t[PROCESS] \
+             Create Process: Operation did not complete successfully because the file contains a virus or \
+             potentially unwanted software. | exe=[{}] | OS ErrorCode:  0xe1\n",
+            game.join(EAC_EXE).display()
+        );
+        let block = stub_blocked(&game, &[log], 0).unwrap();
+        assert_eq!(block.code, 225);
         std::fs::remove_dir_all(&d).ok();
     }
 }

@@ -207,6 +207,7 @@ const INCOMING: &str = ".incoming";
 const OUTGOING: &str = ".outgoing";
 const SAVING: &str = ".saving";
 const SAVED_OLD: &str = ".saved-old";
+const UNLABELLED: &str = ".saved-unlabelled";
 const FOLLOW: &str = ".follow.json";
 const CREATED: &str = ".created.json";
 /// `.current` when the storage holds nothing of any profile's: its profile was deleted.
@@ -286,14 +287,18 @@ fn swap(
     label: &str,
     done: &dyn Fn(&str) -> Result<()>,
 ) -> Result<()> {
-    let mark = ready(staging);
-    std::fs::write(&mark, label).map_err(io_err(&mark))?;
-    finish(staging, target, aside, done)
+    write_text(&ready(staging), label)?;
+    finish(staging, target, aside, label, done)
 }
 
-fn finish(staging: &Path, target: &Path, aside: &Path, done: &dyn Fn(&str) -> Result<()>) -> Result<()> {
+fn finish(
+    staging: &Path,
+    target: &Path,
+    aside: &Path,
+    label: &str,
+    done: &dyn Fn(&str) -> Result<()>,
+) -> Result<()> {
     let mark = ready(staging);
-    let label = std::fs::read_to_string(&mark).map_err(io_err(&mark))?;
     if staging.exists() {
         if target.exists() {
             if aside.exists() {
@@ -310,15 +315,15 @@ fn finish(staging: &Path, target: &Path, aside: &Path, done: &dyn Fn(&str) -> Re
         }
         rename(staging, target)?;
     }
-    done(label.trim())?;
+    done(label)?;
     remove_file(&mark)?;
     remove_tree(aside)
 }
 
 /// Finish a swap that was marked ready, or drop a staging copy that wasn't.
 fn heal(staging: &Path, target: &Path, aside: &Path, done: &dyn Fn(&str) -> Result<()>) -> Result<()> {
-    if ready(staging).is_file() {
-        return finish(staging, target, aside, done);
+    if let Some(label) = marker(&ready(staging)) {
+        return finish(staging, target, aside, &label, done);
     }
     remove_tree(staging)?;
     if !target.exists() && aside.exists() {
@@ -327,11 +332,30 @@ fn heal(staging: &Path, target: &Path, aside: &Path, done: &dyn Fn(&str) -> Resu
     remove_tree(aside)
 }
 
-fn read_text(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path)
+fn sound_label(label: &str) -> bool {
+    !label.is_empty()
+        && label != "."
+        && label != ".."
+        && !label.contains(['/', '\\'])
+        && !label.chars().any(char::is_control)
+}
+
+/// The profile label a marker file holds. A marker that is empty, zero-filled or not a plain
+/// profile name is removed and reads as absent.
+fn marker(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let label = String::from_utf8(bytes)
         .ok()
         .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
+        .filter(|s| sound_label(s));
+    if label.is_none() {
+        eprintln!(
+            "addon storage: {} holds no profile name; dropping it",
+            path.display()
+        );
+        std::fs::remove_file(path).ok();
+    }
+    label
 }
 
 fn write_text(path: &Path, text: &str) -> Result<()> {
@@ -340,11 +364,14 @@ fn write_text(path: &Path, text: &str) -> Result<()> {
     }
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, text).map_err(io_err(&tmp))?;
-    rename(&tmp, path)
+    crate::sync_file(&tmp)?;
+    rename(&tmp, path)?;
+    crate::sync_dir(path.parent());
+    Ok(())
 }
 
 fn current(data: &Path, id: &str) -> Option<String> {
-    read_text(&copies_dir(data, id).join(CURRENT))
+    marker(&copies_dir(data, id).join(CURRENT))
 }
 
 fn set_current(data: &Path, id: &str, profile: &str) -> Result<()> {
@@ -386,11 +413,32 @@ fn recover(data: &Path, id: &str) -> Result<()> {
         &|p| set_current(data, id, p),
     )?;
     let (saving, old) = (copies.join(SAVING), copies.join(SAVED_OLD));
-    match read_text(&ready(&saving)) {
-        Some(label) => finish(&saving, &profile_dir(data, id, &label), &old, &|_| Ok(())),
+    let mark = ready(&saving);
+    let listed = mark.is_file();
+    match marker(&mark) {
+        Some(label) => finish(&saving, &profile_dir(data, id, &label), &old, &label, &|_| Ok(())),
+        None if listed => {
+            remove_tree(&saving)?;
+            if old.exists() {
+                let kept = copies.join(UNLABELLED);
+                remove_tree(&kept)?;
+                rename(&old, &kept)?;
+            }
+            Ok(())
+        }
         None => {
             remove_tree(&saving)?;
             remove_tree(&old)
+        }
+    }
+}
+
+fn recovered(data: &Path, id: &str) -> bool {
+    match recover(data, id) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("addon storage: {id}: recovery failed, skipping its profile copies: {e}");
+            false
         }
     }
 }
@@ -451,7 +499,9 @@ fn holder(data: &Path, id: &str, profile: &str, now: Option<&str>) -> Holder {
 /// After a session: what the storage holds now becomes the copy of the profile it belongs to, and
 /// of any profile duplicated or renamed from it while the session ran.
 pub fn save_current(data: &Path, id: &str) -> Result<()> {
-    recover(data, id)?;
+    if !recovered(data, id) {
+        return Ok(());
+    }
     let Some(now) = current(data, id).filter(|p| p != NOBODY) else {
         return Ok(());
     };
@@ -474,7 +524,9 @@ pub fn save_current(data: &Path, id: &str) -> Result<()> {
 /// Before a session of `profile`: the addon's storage holds that profile's files. The files it
 /// held are saved first as their profile's copy, or as `.legacy` when they are the 1.5 storage.
 pub fn load_profile(data: &Path, id: &str, profile: &str) -> Result<bool> {
-    recover(data, id)?;
+    if !recovered(data, id) {
+        return Ok(false);
+    }
     let now = current(data, id);
     if now.as_deref() == Some(profile) {
         return Ok(false);
@@ -533,7 +585,9 @@ pub fn profile_created(data: &Path, name: &str, from: Option<&str>) -> Result<()
     }
     let running = from.is_some_and(|f| session_of(data, f));
     for id in stored(data) {
-        recover(data, &id)?;
+        if !recovered(data, &id) {
+            continue;
+        }
         remove_tree(&profile_dir(data, &id, name))?;
         let Some(from) = from else {
             continue;
@@ -566,7 +620,9 @@ pub fn profile_renamed(data: &Path, from: &str, to: &str) -> Result<()> {
 /// was renamed to while its session ran, or to nobody.
 pub fn profile_deleted(data: &Path, name: &str) -> Result<()> {
     for id in stored(data) {
-        recover(data, &id)?;
+        if !recovered(data, &id) {
+            continue;
+        }
         remove_tree(&profile_dir(data, &id, name))?;
         let mut f = follows(data, &id);
         let heir = f.iter().find(|(_, of)| *of == name).map(|(k, _)| k.clone());

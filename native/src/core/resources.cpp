@@ -1,5 +1,7 @@
 #include "runtime.hpp"
 
+#include "erp_zstd.hpp"
+
 #include <safetyhook.hpp>
 #include <swofty/mixin.hpp>
 #include <zstd.h>
@@ -418,11 +420,8 @@ void pack(Frag &f, std::string &&data)
 {
     f.size = data.size();
     if (data.size() >= MIN_PACK) {
-        size_t cap = ZSTD_compressBound(data.size());
-        std::string out(cap, '\0');
-        size_t z = ZSTD_compress(out.data(), cap, data.data(), data.size(), ZSTD_LEVEL);
-        if (!ZSTD_isError(z) && z < data.size()) {
-            out.resize(z);
+        std::string out;
+        if (swofty_core::erp_zstd::compress(data.data(), data.size(), ZSTD_LEVEL, out) && out.size() < data.size()) {
             out.shrink_to_fit();
             f.packed = std::move(out);
             f.comp = ZSTD;

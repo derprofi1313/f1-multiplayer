@@ -17,8 +17,8 @@ use swofty_core::conflicts::{self, Pair, Report};
 use swofty_core::folders::{self, Entry, Key, Spot};
 use swofty_core::import::{self, Route};
 use swofty_core::manifest::{Category, Kind, MANIFEST_FILE};
+use swofty_core::order;
 use swofty_core::profile::VANILLA;
-use swofty_core::save_backup;
 
 use crate::i18n::tr;
 use crate::library::{AddonItem, Changes, Source, plural};
@@ -28,8 +28,8 @@ use crate::theme::{Palette, SCROLLBAR_GAP, ScrollArea, palette};
 
 const FADE: Duration = Duration::from_secs(4);
 pub(crate) const FILTERS_W: f32 = 226.;
-const DETAIL_W: f32 = 380.;
-const SPLIT_AT: f32 = 1000.;
+pub(crate) const DETAIL_W: f32 = 380.;
+pub(crate) const SPLIT_AT: f32 = 1000.;
 const ITEMS_SHOWN: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -246,6 +246,7 @@ enum AddonListItem {
         position: Option<usize>,
         at: usize,
         nested: Option<(Key, usize)>,
+        flagged: usize,
     },
     Detail(String),
     End,
@@ -280,6 +281,10 @@ pub(crate) struct AddonsPage {
     /// update, and whether the last build report still matches the load order.
     update_ids: HashSet<String>,
     report_current: bool,
+    problems: Vec<order::Problem>,
+    problems_key: Option<(Instant, u64)>,
+    careers: Vec<swofty_core::stdlib::careers::Career>,
+    cycle: Option<String>,
     _search: Subscription,
 }
 
@@ -318,6 +323,10 @@ impl AddonsPage {
             registry_conflicts: Vec::new(),
             update_ids: HashSet::new(),
             report_current: false,
+            problems: Vec::new(),
+            problems_key: None,
+            careers: Vec::new(),
+            cycle: None,
             _search: changed,
         }
     }
@@ -483,8 +492,19 @@ pub(crate) fn facet_row(
     count: usize,
     p: Palette,
 ) -> Stateful<Div> {
+    facet_row_with(id, on, text, count.to_string(), count == 0, p)
+}
+
+pub(crate) fn facet_row_with(
+    id: impl Into<SharedString>,
+    on: bool,
+    text: impl Into<SharedString>,
+    count: String,
+    empty: bool,
+    p: Palette,
+) -> Stateful<Div> {
     let id: SharedString = id.into();
-    let dim = count == 0 && !on;
+    let dim = empty && !on;
     h_flex()
         .id(id)
         .h(px(26.))
@@ -507,7 +527,7 @@ pub(crate) fn facet_row(
             div()
                 .text_size(px(12.))
                 .text_color(if on { p.text_muted } else { p.text_placeholder })
-                .child(count.to_string()),
+                .child(count),
         )
 }
 
@@ -646,7 +666,6 @@ impl Shell {
             .filter_map(|r| {
                 let need = |kind| Need {
                     id: r.id.clone(),
-                    name: self.addon_name(&r.id),
                     kind,
                 };
                 let Some(dep) = self.library.addons.iter().find(|a| a.manifest.id == r.id) else {
@@ -657,7 +676,6 @@ impl Shell {
                 }
                 if !r.version.matches(&dep.manifest.version) {
                     return Some(need(NeedKind::Version {
-                        wanted: r.version.to_string(),
                         found: dep.manifest.version.to_string(),
                     }));
                 }
@@ -1260,6 +1278,8 @@ impl Shell {
             .report
             .as_ref()
             .is_some_and(|r| r.is_current(&self.library.profile));
+        self.refresh_problems();
+        let flagged = self.problem_banner(p, cx);
         let mut query = self.addons.search.read(cx).value().trim().to_lowercase();
         let highlight = self.sync_highlight(&mut query, cx);
         let installed = plural(
@@ -1308,7 +1328,7 @@ impl Shell {
                     self.library.profile.name
                 ))
         });
-        let saves = self.save_notice(p, cx);
+        let saves = self.saves_banner(false, p, cx);
         let hidden = self.library.addons.len() - self.library.listed().count();
         let tracks = self.library.tracks_page.filter(|_| hidden > 0).map(|i| {
             h_flex()
@@ -1351,6 +1371,7 @@ impl Shell {
             .child(self.header(Page::Addons.label(), subtitle, div().children(actions), p))
             .children(saves)
             .children(pending)
+            .children(flagged)
             .children(tracks)
             .child(self.install_cards(p, cx))
             .child(
@@ -1368,135 +1389,57 @@ impl Shell {
             .into_any_element()
     }
 
-    fn save_notice(&self, p: Palette, cx: &mut Context<Self>) -> Option<Div> {
-        let notice = save_backup::read_notice(&self.store.root)?;
-        let name = notice.backup.clone();
-        Some(
-            h_flex()
-                .px(px(GUTTER))
-                .pb(px(12.))
-                .gap(px(8.))
-                .flex_shrink_0()
-                .items_center()
-                .text_size(px(13.))
-                .text_color(p.text_muted)
-                .child(
-                    Icon::new(IconName::CircleAlert)
-                        .size(px(14.))
-                        .text_color(p.warning),
-                )
-                .child(div().flex_1().min_w_0().child(format!(
-                    "The profile save shrank from {} to {} bytes in a session without {}; their careers may be \
-                     gone. Backup {} holds the save from before that session. Exit Steam completely before you restore.",
-                    notice.before,
-                    notice.after,
-                    notice.absent.join(", "),
-                    notice.backup
-                )))
-                .child(
-                    Button::new("restore-save")
-                        .outline()
-                        .small()
-                        .label(tr("Restore"))
-                        .on_click(cx.listener(move |this, _, window, cx| this.restore_save(&name, window, cx))),
-                )
-                .child(
-                    Button::new("dismiss-save-notice")
-                        .ghost()
-                        .small()
-                        .label(tr("Dismiss"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            save_backup::clear_notice(&this.store.root);
-                            cx.notify();
-                        })),
-                ),
-        )
-    }
-
-    fn restore_save(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(why) = save_backup::restore_blocker() {
-            window.push_notification(Notification::warning(why), cx);
-            return;
-        }
-        let root = self.store.root.clone();
-        let restored = save_backup::find(&root, name).and_then(|b| {
-            let dir = match b.manifest.save_dir.is_dir() {
-                true => Some(b.manifest.save_dir.clone()),
-                false => swofty_core::steam::find_save_dir(),
-            }
-            .ok_or_else(|| swofty_core::Error::Other("no Steam save folder found to restore into".into()))?;
-            save_backup::restore(&root, name, &dir, &save_backup::now_stamp())
-        });
-        let note = match restored {
-            Ok(Some(before)) => Notification::success(format!(
-                "Restored the profile save from {name}. The save it replaced is backup {}.",
-                before.name
-            )),
-            Ok(None) => Notification::success(format!("Restored the profile save from {name}.")),
-            Err(e) => {
-                crate::app_log::action("restore a save").failed(&e);
-                Notification::error(format!("The save was not restored: {e}"))
-            }
-        };
-        window.push_notification(note, cx);
-        cx.notify();
-    }
-
     fn install_cards(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let roomy = self.content_width >= 900. && !self.short;
         let short = self.short;
-        let wide = self.content_width >= 900.;
         let card =
             |id: &'static str, icon: IconName, color: Hsla, title: &'static str, body: &'static str| {
-                let title = div()
-                    .flex_shrink_0()
-                    .text_size(px(if short { 13. } else { 14. }))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(p.text)
-                    .child(title);
-                let body = div()
-                    .min_w_0()
-                    .text_size(px(13.))
-                    .line_height(px(18.))
-                    .text_color(p.text_muted)
-                    .when(short, |d| d.truncate())
-                    .child(body);
-                let text = if short {
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(8.))
-                        .child(Icon::new(icon).size(px(15.)).text_color(color))
-                        .child(title)
-                        .when(wide, |d| d.child(body))
-                } else {
-                    v_flex().flex_1().min_w_0().gap(px(2.)).child(title).child(body)
-                };
-                h_flex()
-                    .id(id)
+                let text = v_flex()
                     .flex_1()
                     .min_w_0()
-                    .min_h(px(if short { 40. } else { 78. }))
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(if short { 13. } else { 14. }))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text)
+                            .child(title),
+                    )
+                    .when(!short, |d| {
+                        d.child(
+                            div()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(p.text_muted)
+                                .child(body),
+                        )
+                    });
+                v_flex()
+                    .id(id)
+                    .flex_1()
+                    .flex_basis(px(280.))
+                    .min_w_0()
+                    .items_start()
                     .px(px(if short { 12. } else { 16. }))
-                    .py(px(if short { 6. } else { 12. }))
-                    .gap(px(if short { 10. } else { 14. }))
+                    .py(px(if short { 10. } else { 12. }))
+                    .gap(px(if short { 8. } else { 12. }))
                     .rounded(px(8.))
                     .border_1()
                     .bg(p.surface)
-                    .when(roomy, |d| {
-                        d.child(
-                            div()
-                                .size(px(40.))
-                                .flex_shrink_0()
-                                .rounded(px(8.))
-                                .bg(color.opacity(0.14))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(Icon::new(icon).size(px(19.)).text_color(color)),
-                        )
-                    })
-                    .child(text)
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .w_full()
+                            .items_start()
+                            .gap(px(10.))
+                            .child(
+                                Icon::new(icon)
+                                    .size(px(if short { 15. } else { 19. }))
+                                    .flex_shrink_0()
+                                    .text_color(color),
+                            )
+                            .child(text),
+                    )
             };
         let folder = div()
             .id("install-folder")
@@ -1570,6 +1513,8 @@ impl Shell {
                 .on_click(cx.listener(|this, _, _, cx| this.open_page(Page::Browser, cx))),
         );
         h_flex()
+            .flex_wrap()
+            .items_stretch()
             .px(px(GUTTER))
             .pb(px(if short { 12. } else { 18. }))
             .gap(px(if short { 10. } else { 14. }))
@@ -1729,6 +1674,7 @@ impl Shell {
                     position: positions.get(id).copied(),
                     at,
                     nested,
+                    flagged: self.problems_for(id).len(),
                 });
                 if !split && self.open_addon.as_deref() == Some(id) {
                     children.push(AddonListItem::Detail(id.to_owned()));
@@ -2214,7 +2160,6 @@ impl Shell {
         let lost = pairs.iter().filter(|pr| pr.loser == id).count();
         let won = pairs.len() - lost;
         let kept = self.stock_removals(m);
-        let needs = self.needs(m);
         let trailing = if m.locked {
             h_flex()
                 .gap(px(5.))
@@ -2433,37 +2378,6 @@ impl Shell {
                                 }),
                         )
                     })
-                    .when(!needs.is_empty(), |d| {
-                        let blocking: Vec<&Need> = needs.iter().filter(|n| n.blocks()).collect();
-                        let (icon, text, color, tip) = match blocking.as_slice() {
-                            [] => (
-                                IconName::Layers,
-                                match needs.as_slice() {
-                                    [one] => format!("Loads after {}", one.name),
-                                    many => format!("Loads after {}", plural(many.len(), "addon", "addons")),
-                                },
-                                p.text_muted,
-                                needs.iter().map(Need::line).collect::<Vec<_>>().join("\n"),
-                            ),
-                            shown => (
-                                IconName::TriangleAlert,
-                                match shown {
-                                    [one] => format!("Needs {}", one.name),
-                                    many => format!("Needs {}", plural(many.len(), "addon", "addons")),
-                                },
-                                p.warning,
-                                format!(
-                                    "{}\nPlay stops until every addon this one requires is on.",
-                                    shown.iter().map(|n| n.line()).collect::<Vec<_>>().join("\n")
-                                ),
-                            ),
-                        };
-                        d.child(
-                            pill(icon, text, color)
-                                .id(SharedString::from(format!("needs-{id}")))
-                                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
-                        )
-                    })
                     .when(!m.left_out.is_empty(), |d| {
                         let why = m.left_out.join("\n");
                         d.child(
@@ -2539,7 +2453,10 @@ impl Shell {
             }
             false => row,
         };
-        row.into_any_element()
+        match self.problem_box(&id, if nested { NESTED } else { 0. }, "row", p, cx) {
+            Some(flag) => v_flex().child(row).child(flag).into_any_element(),
+            None => row.into_any_element(),
+        }
     }
 
     fn changes_of(&mut self, id: &str) -> Changes {
@@ -2549,7 +2466,7 @@ impl Shell {
         let Some(item) = self.library.addons.iter().find(|a| a.manifest.id == id) else {
             return Changes::default();
         };
-        let c = Changes::read(&self.store, item);
+        let c = Changes::read(&self.store, &self.library.profile, item);
         self.addons.changes.insert(id.to_owned(), c.clone());
         c
     }
@@ -2832,9 +2749,11 @@ impl Shell {
             Some(self.settings(man, p, cx).into_any_element())
         };
         let conflicts = self.conflicts_block(id, p, cx).into_any_element();
+        let flag = self.problem_box(id, 0., "detail", p, cx);
         let body = v_flex()
             .gap(px(18.))
             .when(!inline, |d| d.child(head))
+            .children(flag)
             .when_some(man.description.clone(), |d, text| {
                 d.child(
                     div()
@@ -3178,34 +3097,362 @@ impl Shell {
     }
 }
 
+impl Shell {
+    fn installed_manifests(
+        &self,
+    ) -> std::collections::BTreeMap<String, swofty_core::manifest::AddonManifest> {
+        self.library
+            .addons
+            .iter()
+            .map(|a| (a.manifest.id.clone(), a.manifest.clone()))
+            .collect()
+    }
+
+    fn refresh_problems(&mut self) {
+        let built = self.addons.report.as_ref().map_or(0, |r| r.built_at.to_bits());
+        let key = (self.library.loaded, built);
+        if self.addons.problems_key == Some(key) {
+            return;
+        }
+        self.addons.problems_key = Some(key);
+        if self.vanilla() {
+            self.addons.problems.clear();
+            self.addons.cycle = None;
+            return;
+        }
+        let installed = self.installed_manifests();
+        let profile = &self.library.profile;
+        self.addons.careers =
+            swofty_core::stdlib::careers::read(&swofty_core::stdlib::careers::data_path(&self.store.root));
+        let tracks: HashSet<&str> = self
+            .library
+            .addons
+            .iter()
+            .filter(|a| a.track)
+            .map(|a| a.manifest.id.as_str())
+            .collect();
+        let store = &self.store;
+        let pinned = |id: &str| store.is_builtin(id) || order::is_pinned(id);
+        let mut found = order::problems(profile, &installed, &pinned);
+        if let Some(r) = &self.addons.report {
+            found.extend(order::from_report(profile, r, &pinned));
+        }
+        found.extend(order::careers(profile, &installed, &self.addons.careers));
+        found.extend(order::clashes(profile, &installed, &|id| tracks.contains(id)));
+        let mut trial = profile.clone();
+        self.addons.cycle = order::fix(&mut trial, &installed, &found, &pinned)
+            .err()
+            .map(|e| e.to_string());
+        self.addons.problems = found;
+    }
+
+    fn problems_for(&self, id: &str) -> Vec<&order::Problem> {
+        self.addons.problems.iter().filter(|p| p.addon == id).collect()
+    }
+
+    fn can_order(&self) -> bool {
+        self.addons.problems.iter().any(order::Problem::is_order)
+    }
+
+    fn problem_color(p: Palette, severity: order::Severity) -> Hsla {
+        match severity {
+            order::Severity::Red => p.error,
+            order::Severity::Amber => p.warning,
+        }
+    }
+
+    fn order_for_me(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let installed = self.installed_manifests();
+        let learned = self.addons.problems.clone();
+        let store = self.store.clone();
+        self.update_profile(window, cx, move |profile| {
+            let pinned = |id: &str| store.is_builtin(id) || order::is_pinned(id);
+            order::fix(profile, &installed, &learned, &pinned).map(|_| ())
+        });
+    }
+
+    fn move_dependency_above(&mut self, dep: &str, addon: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let (dep, addon) = (dep.to_owned(), addon.to_owned());
+        self.update_profile(window, cx, move |profile| {
+            order::move_above(profile, &dep, &addon)
+        });
+    }
+
+    fn install_missing(&mut self, id: &str, cx: &mut Context<Self>) {
+        match self.browser.has(id) {
+            true => self.install_from_catalog(id, cx),
+            false => self.open_page(Page::Browser, cx),
+        }
+    }
+
+    fn problem_actions(&self, scope: &str, pr: &order::Problem, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let name = |id: &str| self.addon_name(id);
+        let key = |what: &str| SharedString::from(format!("fix-{scope}-{what}-{}-{}", pr.addon, pr.other));
+        let (addon, other) = (pr.addon.clone(), pr.other.clone());
+        let button = |id: SharedString, label: String| Button::new(id).small().outline().label(label);
+        let mut out: Vec<AnyElement> = Vec::new();
+        match &pr.kind {
+            order::Kind::Missing => {
+                let id = other.clone();
+                out.push(
+                    button(key("install"), format!("Install {}", name(&other)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.install_missing(&id, cx)))
+                        .into_any_element(),
+                );
+            }
+            order::Kind::Off => {
+                let id = other.clone();
+                out.push(
+                    button(key("on"), format!("Turn {} on", name(&other)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_addon_enabled(&id, true, window, cx)
+                        }))
+                        .into_any_element(),
+                );
+            }
+            order::Kind::Below | order::Kind::Waits | order::Kind::Loses { .. } => {
+                let (dep, at) = (other.clone(), addon.clone());
+                out.push(
+                    button(key("above"), format!("Move {} above", name(&other)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.move_dependency_above(&dep, &at, window, cx)
+                        }))
+                        .into_any_element(),
+                );
+            }
+            order::Kind::Version { .. } => {
+                out.push(
+                    button(key("update"), "Open Addon Browser".to_owned())
+                        .on_click(cx.listener(|this, _, _, cx| this.open_page(Page::Browser, cx)))
+                        .into_any_element(),
+                );
+            }
+            order::Kind::Conflict | order::Kind::Clash { .. } => {
+                let id = other.clone();
+                out.push(
+                    button(key("off"), format!("Turn {} off", name(&other)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_addon_enabled(&id, false, window, cx)
+                        }))
+                        .into_any_element(),
+                );
+            }
+            order::Kind::Career { why, .. } => {
+                let id = addon.clone();
+                match &**why {
+                    order::Kind::Missing => out.push(
+                        button(key("install"), format!("Install {}", name(&addon)))
+                            .on_click(cx.listener(move |this, _, _, cx| this.install_missing(&id, cx)))
+                            .into_any_element(),
+                    ),
+                    order::Kind::Off => out.push(
+                        button(key("on"), format!("Turn {} on", name(&addon)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_addon_enabled(&id, true, window, cx)
+                            }))
+                            .into_any_element(),
+                    ),
+                    _ => out.push(
+                        button(key("update"), "Open Addon Browser".to_owned())
+                            .on_click(cx.listener(|this, _, _, cx| this.open_page(Page::Browser, cx)))
+                            .into_any_element(),
+                    ),
+                }
+            }
+        }
+        out
+    }
+
+    fn problem_box(
+        &self,
+        id: &str,
+        indent: f32,
+        scope: &'static str,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let found = self.problems_for(id);
+        if found.is_empty() {
+            return None;
+        }
+        let worst = match found.iter().any(|f| f.severity() == order::Severity::Red) {
+            true => order::Severity::Red,
+            false => order::Severity::Amber,
+        };
+        let color = Self::problem_color(p, worst);
+        let name = |id: &str| self.addon_name(id);
+        let ordering = found
+            .iter()
+            .any(|f| matches!(f.kind, order::Kind::Below | order::Kind::Waits));
+        let lines: Vec<AnyElement> = found
+            .iter()
+            .map(|f| {
+                let line_color = Self::problem_color(p, f.severity());
+                h_flex()
+                    .gap(px(8.))
+                    .items_start()
+                    .flex_wrap()
+                    .child(
+                        Icon::new(IconName::TriangleAlert)
+                            .size(px(14.))
+                            .mt(px(2.))
+                            .text_color(line_color),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .text_size(px(13.))
+                            .text_color(p.text)
+                            .child(f.line(&name)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(px(6.))
+                            .flex_wrap()
+                            .children(self.problem_actions(scope, f, cx)),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let order_button = (ordering && self.addons.cycle.is_none()).then(|| {
+            Button::new(SharedString::from(format!("order-{scope}-{id}")))
+                .small()
+                .outline()
+                .icon(IconName::ArrowUpDown)
+                .label("Order for me")
+                .tooltip("Reorders the whole profile so every addon loads below what it needs")
+                .on_click(cx.listener(|this, _, window, cx| this.order_for_me(window, cx)))
+        });
+        let cycle = ordering.then(|| self.addons.cycle.clone()).flatten();
+        Some(
+            v_flex()
+                .id(SharedString::from(format!("problems-{scope}-{id}")))
+                .ml(px(indent + 6.))
+                .mr(px(12.))
+                .mb(px(8.))
+                .px(px(10.))
+                .py(px(8.))
+                .gap(px(6.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(color.opacity(0.7))
+                .bg(color.opacity(0.12))
+                .children(lines)
+                .children(cycle.map(|c| div().text_size(px(12.)).text_color(p.text_muted).child(c)))
+                .children(order_button)
+                .into_any_element(),
+        )
+    }
+
+    fn problem_banner(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.vanilla() || self.addons.problems.is_empty() {
+            return None;
+        }
+        let all = &self.addons.problems;
+        let red = all
+            .iter()
+            .filter(|f| f.severity() == order::Severity::Red)
+            .count();
+        let amber = all.len() - red;
+        let color = Self::problem_color(
+            p,
+            if red > 0 {
+                order::Severity::Red
+            } else {
+                order::Severity::Amber
+            },
+        );
+        let text = match (red, amber) {
+            (r, 0) => format!(
+                "{} to fix before these addons work together",
+                plural(r, "problem", "problems")
+            ),
+            (0, a) => format!("{} worth a look", plural(a, "warning", "warnings")),
+            (r, a) => format!(
+                "{} to fix, and {}",
+                plural(r, "problem", "problems"),
+                plural(a, "warning", "warnings")
+            ),
+        };
+        let first = all
+            .iter()
+            .find(|f| f.severity() == order::Severity::Red)
+            .or_else(|| all.first())
+            .map(|f| {
+                let name = |id: &str| self.addon_name(id);
+                format!("{}: {}", self.addon_name(&f.addon), f.line(&name))
+            })
+            .unwrap_or_default();
+        let order_button = (self.can_order() && self.addons.cycle.is_none()).then(|| {
+            Button::new("order-banner")
+                .small()
+                .outline()
+                .icon(IconName::ArrowUpDown)
+                .label("Order for me")
+                .on_click(cx.listener(|this, _, window, cx| this.order_for_me(window, cx)))
+        });
+        Some(
+            h_flex()
+                .mx(px(GUTTER))
+                .mb(px(12.))
+                .px(px(12.))
+                .py(px(8.))
+                .gap(px(10.))
+                .flex_shrink_0()
+                .items_center()
+                .flex_wrap()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(color.opacity(0.7))
+                .bg(color.opacity(0.12))
+                .child(Icon::new(IconName::TriangleAlert).size(px(16.)).text_color(color))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(200.))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.text)
+                                .child(text),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(p.text_muted)
+                                .truncate()
+                                .child(first),
+                        )
+                        .children(
+                            self.addons
+                                .cycle
+                                .clone()
+                                .map(|c| div().text_size(px(12.)).text_color(p.text_muted).child(c)),
+                        ),
+                )
+                .children(order_button)
+                .into_any_element(),
+        )
+    }
+}
+
 /// One of an addon's requirements that stops Play, or that the build loads before it though listed below it.
 struct Need {
     id: String,
-    name: String,
     kind: NeedKind,
 }
 
 enum NeedKind {
     Missing,
     Off,
-    Version { wanted: String, found: String },
+    Version { found: String },
     Below,
 }
 
 impl Need {
     fn blocks(&self) -> bool {
         !matches!(self.kind, NeedKind::Below)
-    }
-
-    fn line(&self) -> String {
-        let name = &self.name;
-        match &self.kind {
-            NeedKind::Missing => format!("{name} isn't installed."),
-            NeedKind::Off => format!("{name} is off."),
-            NeedKind::Version { wanted, found } => format!("Needs {name} {wanted}; {found} is installed."),
-            NeedKind::Below => format!(
-                "{name} loads before this addon, which requires it, whatever their places in the list."
-            ),
-        }
     }
 }

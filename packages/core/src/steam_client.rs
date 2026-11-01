@@ -3,12 +3,15 @@
 //!
 //! Windows publishes the client in `HKCU\Software\Valve\Steam\ActiveProcess`:
 //! `pid` is the running steam.exe (0 once it exits) and `ActiveUser` the
-//! signed-in account (0 at the sign-in screen). On Linux the client writes
-//! its pid to `~/.steam/steam.pid` and `registry.vdf`; current clients keep
-//! `ActiveProcess` out of `registry.vdf`, so a sign-in shows as
-//! `config/loginusers.vdf` being written after the client started. Flatpak
-//! Steam keeps the same files under `~/.var/app/com.valvesoftware.Steam`,
-//! with pids from its own namespace.
+//! signed-in account (0 at the sign-in screen). Some signed-in clients keep
+//! `ActiveUser` at 0, so a sign-in that `config/loginusers.vdf` dates after
+//! the client started counts once `ActiveUser` has had time to follow it.
+//! On Linux the client writes its pid to `~/.steam/steam.pid` and
+//! `registry.vdf`; current clients keep `ActiveProcess` out of
+//! `registry.vdf`, so a sign-in shows as `config/loginusers.vdf` being
+//! written after the client started. Flatpak Steam keeps the same files
+//! under `~/.var/app/com.valvesoftware.Steam`, with pids from its own
+//! namespace.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -27,6 +30,8 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub const STAGE_FILE: &str = "state/launch-stage.txt";
 
 const LOGIN_SLACK: Duration = Duration::from_secs(5);
+/// How long `ActiveUser` gets to follow a sign-in `loginusers.vdf` records.
+const ACTIVE_USER_LAG: Duration = Duration::from_secs(20);
 const EXIT_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +62,9 @@ pub enum Signal {
     LoginFile,
     /// `loginusers.vdf` predates the client.
     NoLogin,
+    /// `ActiveUser` stays 0, but `loginusers.vdf` records a sign-in since the
+    /// client started.
+    LoginOverActiveUser,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +106,9 @@ impl Status {
             (_, Signal::ActiveUser(user)) => Some(format!("ActiveUser {user}")),
             (_, Signal::LoginFile) => Some("loginusers.vdf written since it started".to_owned()),
             (_, Signal::NoLogin) => Some("no sign-in in loginusers.vdf since it started".to_owned()),
+            (_, Signal::LoginOverActiveUser) => {
+                Some("ActiveUser 0, but loginusers.vdf records a sign-in since it started".to_owned())
+            }
             (_, Signal::Unknown) => Some("no sign-in signal".to_owned()),
         };
         self.pid
@@ -142,10 +153,20 @@ impl Registry for RegExe {
     }
 }
 
-pub fn windows_status(reg: &dyn Registry, steam_pids: &[u32]) -> Status {
+/// Steam on Windows. `started` dates a steam.exe, and `roots` are Steam
+/// folders to look for `loginusers.vdf` in besides the registered one.
+pub fn windows_status(
+    reg: &dyn Registry,
+    steam_pids: &[u32],
+    started: &dyn Fn(u32) -> Option<SystemTime>,
+    roots: &[PathBuf],
+) -> Status {
     let active = reg.query(ACTIVE_PROCESS_KEY).unwrap_or_default();
     match reg_dword(&active, "pid").filter(|p| *p != 0) {
         Some(pid) if steam_pids.contains(&pid) => match reg_dword(&active, "ActiveUser") {
+            Some(0) if signed_in_since(windows_login(reg, roots), started(pid), SystemTime::now()) => {
+                Status::new(State::Ready, pid, Signal::LoginOverActiveUser)
+            }
             Some(0) => Status::new(State::SigningIn, pid, Signal::ActiveUser(0)),
             Some(user) => Status::new(State::Ready, pid, Signal::ActiveUser(user)),
             None => Status::new(State::Unconfirmed, pid, Signal::Unknown),
@@ -155,6 +176,51 @@ pub fn windows_status(reg: &dyn Registry, steam_pids: &[u32]) -> Status {
             None => Status::STOPPED,
         },
     }
+}
+
+/// Whether `login` came after the client `started` and long enough ago for
+/// `ActiveUser` to have followed it.
+fn signed_in_since(login: Option<SystemTime>, started: Option<SystemTime>, now: SystemTime) -> bool {
+    let (Some(login), Some(started)) = (login, started) else {
+        return false;
+    };
+    login + LOGIN_SLACK >= started && now.duration_since(login).is_ok_and(|d| d >= ACTIVE_USER_LAG)
+}
+
+/// The newest sign-in `loginusers.vdf` records under the registered Steam
+/// folder or `roots`.
+fn windows_login(reg: &dyn Registry, roots: &[PathBuf]) -> Option<SystemTime> {
+    let registered = steam_key_values(reg);
+    registered
+        .path("SteamPath")
+        .into_iter()
+        .chain(
+            registered
+                .path("SteamExe")
+                .and_then(|e| Some(e.parent()?.to_path_buf())),
+        )
+        .chain(roots.iter().cloned())
+        .filter_map(|r| login_stamp(&r))
+        .max()
+}
+
+struct RegValues(Vec<(String, String)>);
+
+impl RegValues {
+    fn path(&self, name: &str) -> Option<PathBuf> {
+        self.0
+            .iter()
+            .find(|(n, d)| n.eq_ignore_ascii_case(name) && !d.trim().is_empty())
+            .map(|(_, d)| PathBuf::from(d.trim()))
+    }
+}
+
+fn steam_key_values(reg: &dyn Registry) -> RegValues {
+    RegValues(
+        reg.query(STEAM_KEY)
+            .map(|l| parse_reg_query(&l))
+            .unwrap_or_default(),
+    )
 }
 
 struct Install {
@@ -191,19 +257,24 @@ fn read_pid(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-/// When an account last signed in to the client under `root`.
-fn last_login(root: &Path) -> Option<SystemTime> {
-    let path = root.join("config/loginusers.vdf");
-    let written = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    let stamp = read_vdf(&path)
+/// The newest `Timestamp` in the `loginusers.vdf` under `root`.
+fn login_stamp(root: &Path) -> Option<SystemTime> {
+    read_vdf(&root.join("config/loginusers.vdf"))
         .and_then(|v| {
             v.get("users")?
                 .entries()
                 .filter_map(|(_, u)| u.get("Timestamp")?.str()?.trim().parse::<u64>().ok())
                 .max()
         })
-        .map(|s| UNIX_EPOCH + Duration::from_secs(s));
-    written.max(stamp)
+        .map(|s| UNIX_EPOCH + Duration::from_secs(s))
+}
+
+/// When an account last signed in to the client under `root`.
+fn last_login(root: &Path) -> Option<SystemTime> {
+    let written = std::fs::metadata(root.join("config/loginusers.vdf"))
+        .and_then(|m| m.modified())
+        .ok();
+    written.max(login_stamp(root))
 }
 
 fn login_state(
@@ -341,7 +412,12 @@ pub fn processes() -> Vec<Proc> {
 #[cfg(windows)]
 pub fn status() -> Status {
     let pids: Vec<u32> = crate::process::named("steam.exe").iter().map(|p| p.pid).collect();
-    windows_status(&RegExe, &pids)
+    windows_status(
+        &RegExe,
+        &pids,
+        &crate::process::started,
+        &crate::steam::steam_roots(),
+    )
 }
 
 #[cfg(not(windows))]
@@ -455,18 +531,10 @@ pub fn linux_starter(path: Option<&OsStr>, home: &Path, install: &[&Path]) -> Op
 /// steam.exe from `SteamExe` or `SteamPath`, else a Steam root's, else the
 /// `steam://` handler.
 pub fn windows_starter(reg: &dyn Registry, roots: &[PathBuf]) -> Starter {
-    let values = reg
-        .query(STEAM_KEY)
-        .map(|l| parse_reg_query(&l))
-        .unwrap_or_default();
-    let value = |name: &str| {
-        values
-            .iter()
-            .find(|(n, d)| n.eq_ignore_ascii_case(name) && !d.trim().is_empty())
-            .map(|(_, d)| PathBuf::from(d.trim()))
-    };
-    value("SteamExe")
-        .or_else(|| value("SteamPath").map(|p| p.join("steam.exe")))
+    let values = steam_key_values(reg);
+    values
+        .path("SteamExe")
+        .or_else(|| values.path("SteamPath").map(|p| p.join("steam.exe")))
         .or_else(|| roots.iter().map(|r| r.join("steam.exe")).find(|e| e.is_file()))
         .map_or(Starter::Url, Starter::Exe)
 }
@@ -806,30 +874,128 @@ mod tests {
         )
     }
 
+    fn win(reg: &FakeRegistry, steam_pids: &[u32]) -> Status {
+        windows_status(reg, steam_pids, &|_| None, &[])
+    }
+
     #[test]
     fn windows_matches_active_process_to_a_running_steam_exe() {
         let none = FakeRegistry(BTreeMap::new());
-        assert_eq!(windows_status(&none, &[]), Status::STOPPED);
-        assert_eq!(windows_status(&none, &[880]).state, State::Starting);
+        assert_eq!(win(&none, &[]), Status::STOPPED);
+        assert_eq!(win(&none, &[880]).state, State::Starting);
         let reg = |pid, user| FakeRegistry([(ACTIVE_PROCESS_KEY, active_process(pid, user))].into());
-        assert_eq!(windows_status(&reg(0, 0), &[]), Status::STOPPED);
-        assert_eq!(windows_status(&reg(0, 0), &[880]).state, State::Starting);
+        assert_eq!(win(&reg(0, 0), &[]), Status::STOPPED);
+        assert_eq!(win(&reg(0, 0), &[880]).state, State::Starting);
         assert_eq!(
-            windows_status(&reg(0x1a2b, 0), &[0x1a2b]),
+            win(&reg(0x1a2b, 0), &[0x1a2b]),
             Status::new(State::SigningIn, 0x1a2b, Signal::ActiveUser(0))
         );
+        assert_eq!(win(&reg(0x1a2b, 98_765), &[0x1a2b]).state, State::Ready);
         assert_eq!(
-            windows_status(&reg(0x1a2b, 98_765), &[0x1a2b]).state,
-            State::Ready
-        );
-        assert_eq!(
-            windows_status(&reg(0x1a2b, 98_765), &[]).state,
+            win(&reg(0x1a2b, 98_765), &[]).state,
             State::Stopped,
             "a crashed client leaves its pid behind"
         );
         let unnamed =
             FakeRegistry([(ACTIVE_PROCESS_KEY, "    pid    REG_DWORD    0x10\r\n".to_owned())].into());
-        assert_eq!(windows_status(&unnamed, &[16]).state, State::Unconfirmed);
+        assert_eq!(win(&unnamed, &[16]).state, State::Unconfirmed);
+    }
+
+    #[test]
+    fn windows_takes_a_sign_in_loginusers_records_over_active_user_0() {
+        let root = Home::new("winlogin");
+        let now = SystemTime::now();
+        let secs = |t: SystemTime| t.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let login = |t: SystemTime| {
+            root.write(
+                "config/loginusers.vdf",
+                &format!(
+                    r#""users" {{ "76561198000000001" {{ "MostRecent" "1" "Timestamp" "{}" }}
+                                 "76561198000000002" {{ "MostRecent" "0" "Timestamp" "1000" }} }}"#,
+                    secs(t)
+                ),
+            )
+        };
+        let registered = |name: &str, path: PathBuf| {
+            FakeRegistry(
+                [
+                    (ACTIVE_PROCESS_KEY, active_process(0x1a2b, 0)),
+                    (
+                        STEAM_KEY,
+                        format!("    {name}    REG_SZ    {}\r\n", path.display()),
+                    ),
+                ]
+                .into(),
+            )
+        };
+        let reg = registered("SteamPath", root.0.clone());
+        let at = |ago: u64| move |_: u32| Some(now - Duration::from_secs(ago));
+        let pids = [0x1a2b];
+
+        assert_eq!(
+            windows_status(&reg, &pids, &at(120), &[]),
+            Status::new(State::SigningIn, 0x1a2b, Signal::ActiveUser(0)),
+            "no loginusers.vdf"
+        );
+        login(now - Duration::from_secs(60));
+        assert_eq!(
+            windows_status(&reg, &pids, &at(120), &[]),
+            Status::new(State::Ready, 0x1a2b, Signal::LoginOverActiveUser)
+        );
+        assert_eq!(
+            windows_status(&reg, &pids, &at(30), &[]).state,
+            State::SigningIn,
+            "a sign-in before this steam.exe started"
+        );
+        assert_eq!(
+            windows_status(&reg, &pids, &|_| None, &[]).state,
+            State::SigningIn,
+            "a steam.exe it cannot date"
+        );
+        let other = registered("SteamPath", root.0.join("elsewhere"));
+        assert_eq!(
+            windows_status(&other, &pids, &at(120), &[]).state,
+            State::SigningIn
+        );
+        assert_eq!(
+            windows_status(&other, &pids, &at(120), std::slice::from_ref(&root.0)).state,
+            State::Ready
+        );
+        let exe = registered("SteamExe", root.0.join("steam.exe"));
+        assert_eq!(windows_status(&exe, &pids, &at(120), &[]).state, State::Ready);
+
+        login(now - Duration::from_secs(5));
+        assert_eq!(
+            windows_status(&reg, &pids, &at(120), &[]).state,
+            State::SigningIn,
+            "ActiveUser gets time to follow a fresh sign-in"
+        );
+        root.write("config/loginusers.vdf", r#""users" { "1" { "MostRecent" "1" } }"#);
+        assert_eq!(
+            windows_status(&reg, &pids, &at(120), &[]).state,
+            State::SigningIn,
+            "the file changing is no sign-in"
+        );
+        login(now - Duration::from_secs(60));
+        assert_eq!(
+            windows_status(&reg, &[], &at(120), &[]),
+            Status::STOPPED,
+            "a crashed client leaves its pid behind"
+        );
+        let signed_in = FakeRegistry(
+            [
+                (ACTIVE_PROCESS_KEY, active_process(0x1a2b, 98_765)),
+                (
+                    STEAM_KEY,
+                    format!("    SteamPath    REG_SZ    {}\r\n", root.0.display()),
+                ),
+            ]
+            .into(),
+        );
+        assert_eq!(
+            windows_status(&signed_in, &pids, &at(120), &[]).signal,
+            Signal::ActiveUser(98_765)
+        );
     }
 
     #[test]
@@ -956,6 +1122,10 @@ mod tests {
         assert_eq!(
             Status::new(State::Ready, 4242, Signal::LoginFile).to_string(),
             "ready (pid 4242, loginusers.vdf written since it started)"
+        );
+        assert_eq!(
+            Status::new(State::Ready, 4242, Signal::LoginOverActiveUser).to_string(),
+            "ready (pid 4242, ActiveUser 0, but loginusers.vdf records a sign-in since it started)"
         );
     }
 

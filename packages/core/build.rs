@@ -38,6 +38,7 @@ const UNRELATED: &[&str] = &[
     "update.rs",
     "updater.rs",
     "usage.rs",
+    "vault",
 ];
 
 /// Files outside the source trees that the build embeds.

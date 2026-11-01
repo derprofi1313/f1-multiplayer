@@ -280,9 +280,11 @@ void ready()
     telemetry_setup();
     net_trace_setup();
     ea_guard_setup();
+    udp_ids_setup();
     netplay_setup();
     netplay_drive_setup();
     testagent_setup();
+    direct_start_setup();
     perf::start();
 }
 

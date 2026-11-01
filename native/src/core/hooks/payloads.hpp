@@ -50,6 +50,21 @@ bool vtf_read(Fire &&fire, const swofty::cars::live::Car &car, const char *secti
     return ok;
 }
 
+template <class Fire> bool upgrades_replayed(Fire &&fire, const swofty::cars::live::Car &car, float progress)
+{
+    swofty::cars::events::UpgradesReplayed e{};
+    e.car = car;
+    e.progress = progress;
+    return fire(e);
+}
+
+template <class Fire> bool setup_applied(Fire &&fire, const swofty::cars::live::Car &car)
+{
+    swofty::cars::events::SetupApplied e{};
+    e.car = car;
+    return fire(e);
+}
+
 template <class Fire> bool built(Fire &&fire, const swofty::cars::live::Car &car)
 {
     swofty::cars::events::Built e{};
@@ -79,6 +94,32 @@ bool parts_register(Fire &&fire, int32_t car, const char *vehicle, void *front_w
         return s ? s(node, detach_at, debris) : SWOFTY_ASSET_UNAVAILABLE;
     };
     e.user = const_cast<PartSink *>(&sink);
+    return fire(e);
+}
+
+template <class Fire> bool damage(Fire &&fire, const swofty::cars::live::Car &car, uint32_t part, float amount)
+{
+    swofty::cars::events::Damage e{};
+    e.car = car;
+    e.part = part;
+    e.amount = amount;
+    return fire(e);
+}
+
+template <class Fire> bool pit(Fire &&fire, uint32_t car, uint32_t previous, uint32_t status)
+{
+    swofty::sessions::events::Pit e{};
+    e.car = car;
+    e.previous = previous;
+    e.status = status;
+    return fire(e);
+}
+
+template <class Fire> bool pit_stop(Fire &&fire, uint32_t car, uint32_t stops)
+{
+    swofty::sessions::events::PitStop e{};
+    e.car = car;
+    e.stops = stops;
     return fire(e);
 }
 

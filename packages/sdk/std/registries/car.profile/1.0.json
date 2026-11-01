@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "car.profile 1.0",
+  "x-registry": "car.profile",
+  "x-version": "1.0",
+  "x-applies": "read",
+  "x-snapshot": true,
+  "x-snapshot-budget": 65536,
+  "description": "cars::Profile: values layered on the cars a scope matches (session types, selectors, ai or player cars), applied by the core at car.built, car.reset, the upgrade replay and when the session changes. Experimental. Every key the record does not name is a live field path.",
+  "type": "object",
+  "properties": {
+    "within": {
+      "description": "Selector array (content, data_group, setup_mode, vehicle_package, ...): the profile applies where every selector matches.",
+      "type": [
+        "array",
+        "object",
+        "null"
+      ]
+    },
+    "when": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "practice",
+          "qualifying",
+          "race",
+          "sprint",
+          "time_trial"
+        ]
+      },
+      "description": "Session types the profile applies in; empty: every session."
+    },
+    "cars": {
+      "type": "object",
+      "properties": {
+        "indices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "vehicle_package": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "vehicle": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "team": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ai_only": {
+      "type": "boolean"
+    },
+    "player_only": {
+      "type": "boolean"
+    },
+    "priority": {
+      "type": "integer",
+      "description": "Layer priority; lower applies first."
+    },
+    "power_scale": {
+      "type": "number",
+      "description": "engine.power_scale: multiplies the engine drive torque."
+    },
+    "limiter_offset_rpm": {
+      "type": "number",
+      "description": "engine.limiter_offset_rpm: negative cuts the torque that many rpm under the limiter."
+    },
+    "lift_scale": {
+      "type": "number"
+    },
+    "drag_scale": {
+      "type": "number"
+    },
+    "grip_scale": {
+      "type": "number"
+    },
+    "ai_grip_scale": {
+      "type": "number",
+      "description": "ai.grip_scale: the AI's table grip input in the dry."
+    },
+    "fuel_modes": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

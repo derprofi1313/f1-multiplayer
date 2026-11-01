@@ -41,6 +41,16 @@ pub fn store_name(source: Source) -> &'static str {
     }
 }
 
+/// Where the player moves a copy out of Program Files, by the store it came
+/// from.
+pub fn move_hint(source: Source) -> &'static str {
+    match source {
+        Source::EaApp => " with EA app > F1 25 > Manage > Move, not File Explorer",
+        Source::Steam => " in Steam (Properties > Installed Files > Move install folder)",
+        Source::Unknown => "",
+    }
+}
+
 pub fn same_dir(a: &Path, b: &Path) -> bool {
     a == b
         || match (a.canonicalize(), b.canonicalize()) {

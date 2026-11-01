@@ -32,6 +32,10 @@ pub struct Profile {
     pub applied: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub state: BTreeMap<String, serde_json::Value>,
+    /// "Use launcher saves": sessions of this profile play on the profile's own save store; off plays
+    /// on Steam's saves.
+    #[serde(default = "enabled", skip_serializing_if = "is_true")]
+    pub launcher_saves: bool,
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, serde_json::Value>,
 }
@@ -49,6 +53,10 @@ fn enabled() -> bool {
     true
 }
 
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
 impl Profile {
     pub fn new(name: &str) -> Self {
         let mut p = Self {
@@ -59,6 +67,7 @@ impl Profile {
             options: BTreeMap::new(),
             applied: BTreeMap::new(),
             state: BTreeMap::new(),
+            launcher_saves: true,
             unknown: BTreeMap::new(),
         };
         p.normalise();
@@ -74,6 +83,7 @@ impl Profile {
             options: BTreeMap::new(),
             applied: BTreeMap::new(),
             state: BTreeMap::new(),
+            launcher_saves: true,
             unknown: BTreeMap::new(),
         }
     }

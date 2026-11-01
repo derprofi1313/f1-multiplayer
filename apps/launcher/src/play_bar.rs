@@ -319,12 +319,6 @@ impl Shell {
                 };
                 row.child(dot(p.warning))
                     .child(div().min_w_0().truncate().child(text))
-                    .when(!self.cancelling, |d| {
-                        d.child(
-                            link("cancel-build", "Cancel", p)
-                                .on_click(cx.listener(|this, _, window, cx| this.cancel_build(window, cx))),
-                        )
-                    })
                     .when_some(self.wrapper_log(), |d, log| {
                         d.child(
                             link("launch-log", "Log", p).on_click(move |_, _, cx| cx.open_with_system(&log)),
@@ -432,9 +426,47 @@ impl Shell {
                         )),
                     );
                 }
+                if let Some(refused) = self.saves_refused() {
+                    let dir = refused.dir.clone();
+                    return row
+                        .child(dot(p.warning))
+                        .child(
+                            div().min_w_0().truncate().child(
+                                "Launcher saves could not be used, so F1 25 closed before loading a save",
+                            ),
+                        )
+                        .child(link("steam-once", "Play once with your Steam saves", p).on_click(
+                            cx.listener(|this, _, window, cx| this.play_with_steam_saves(window, cx)),
+                        ))
+                        .child(
+                            link("saves-log", "Open logs", p)
+                                .on_click(move |_, _, cx| cx.open_with_system(&dir)),
+                        )
+                        .child(link("saves-dismiss", "Dismiss", p).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.dismissed = this.session.as_ref().map(|s| s.dir.clone());
+                                cx.notify();
+                            },
+                        )));
+                }
+                if self.saves_await_import() {
+                    return row.text_color(p.text_muted).child(dot(p.warning)).child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(crate::career_saves::EMPTY_SAVE_SHORT),
+                    );
+                }
                 row
             }
         }
+    }
+
+    fn saves_await_import(&self) -> bool {
+        self.saves
+            .view
+            .as_ref()
+            .is_some_and(|v| v.awaiting_import_for(&self.library.profile.name))
     }
 
     fn wrapper_log(&self) -> Option<std::path::PathBuf> {
@@ -516,7 +548,6 @@ impl Shell {
         let shell = cx.entity().downgrade();
         let vr = self.launch_mode().is_vr();
         let start_store = self.start_store;
-        let dev_mode = self.store.config().developer;
         let start_label = match self.install.as_ref().map(|i| i.source) {
             Some(Source::EaApp) => "Start the EA app automatically",
             _ => "Start Steam automatically",
@@ -528,7 +559,10 @@ impl Shell {
             .rounded_r(px(9.))
             .primary()
             .child(Icon::new(IconName::ChevronDown).size(px(16.)))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+                let dev_mode = shell
+                    .upgrade()
+                    .is_some_and(|s| s.read(cx).store.config().developer);
                 let mode = |label: &'static str, icon: IconName, mode: LaunchMode| {
                     let shell = shell.clone();
                     PopupMenuItem::new(label)
@@ -544,10 +578,25 @@ impl Shell {
                         })
                 };
                 let (console, steam, developer) = (shell.clone(), shell.clone(), shell.clone());
+                let (saves, once, play_vanilla) = (shell.clone(), shell.clone(), shell.clone());
+                let profile = shell.upgrade().map(|s| {
+                    let p = &s.read(cx).library.profile;
+                    (p.is_vanilla(), p.launcher_saves)
+                });
+                let (vanilla, saves_on) = profile.unwrap_or((true, false));
                 menu.min_w(px(220.))
                     .check_side(Side::Right)
                     .item(mode(tr("Play"), IconName::Play, LaunchMode::Normal))
                     .item(mode(tr("Play in VR"), IconName::RectangleGoggles, LaunchMode::Vr))
+                    .item(
+                        PopupMenuItem::new(tr("Play vanilla (no addons)"))
+                            .icon(IconName::Play)
+                            .on_click(move |_, window, cx| {
+                                play_vanilla
+                                    .update(cx, |s, cx| s.play_vanilla(window, cx))
+                                    .ok();
+                            }),
+                    )
                     .separator()
                     .item(
                         PopupMenuItem::new(tr("Play with console"))
@@ -561,6 +610,28 @@ impl Shell {
                                     .ok();
                             }),
                     )
+                    .separator()
+                    .when(!vanilla, |menu| {
+                        menu.item(
+                            PopupMenuItem::new(tr("Use launcher saves"))
+                                .icon(IconName::Save)
+                                .checked(saves_on)
+                                .on_click(move |_, window, cx| {
+                                    saves
+                                        .update(cx, |s, cx| s.set_launcher_saves(!saves_on, window, cx))
+                                        .ok();
+                                }),
+                        )
+                        .when(saves_on, |menu| {
+                            menu.item(
+                                PopupMenuItem::new(tr("Play once with your Steam saves"))
+                                    .icon(IconName::Play)
+                                    .on_click(move |_, window, cx| {
+                                        once.update(cx, |s, cx| s.play_with_steam_saves(window, cx)).ok();
+                                    }),
+                            )
+                        })
+                    })
                     .separator()
                     .item(
                         PopupMenuItem::new(start_label)
@@ -610,7 +681,10 @@ impl Shell {
             PlayState::Ready | PlayState::Crashed(_) => (IconName::Play, tr("Play"), p.accent, p.on_accent, true),
             PlayState::Launching => (IconName::LoaderCircle, "Launching…", p.elevated, p.accent, false),
             PlayState::Restoring => (IconName::LoaderCircle, "Restoring…", p.elevated, p.accent, false),
-            PlayState::Building => (IconName::LoaderCircle, "Building…", p.elevated, p.accent, false),
+            PlayState::Building if self.cancelling => {
+                (IconName::LoaderCircle, "Cancelling…", p.elevated, p.accent, false)
+            }
+            PlayState::Building => (IconName::LoaderCircle, "Building…", p.elevated, p.accent, true),
             PlayState::Running => (IconName::Square, "Stop", p.elevated, p.error, true),
             PlayState::NotInstalled => (IconName::FolderSearch, "Locate game", p.elevated, p.text, true),
             PlayState::Detecting | PlayState::Checking => {
@@ -621,6 +695,7 @@ impl Shell {
         let ready = matches!(state, PlayState::Ready | PlayState::Crashed(_));
         let missing = matches!(state, PlayState::NotInstalled);
         let running = matches!(state, PlayState::Running);
+        let building = matches!(state, PlayState::Building);
         let button = div()
             .id("play")
             .h(px(52.))
@@ -638,6 +713,7 @@ impl Shell {
             .when(ready, |d| d.hover(move |s| s.bg(p.accent_hover)))
             .when(missing, |d| d.hover(move |s| s.bg(p.selected)))
             .when(enabled, |d| d.cursor_pointer())
+            .when(building && enabled, |d| d.hover(move |s| s.bg(p.selected)))
             .map(|d| match icon {
                 IconName::LoaderCircle => d.child(Spinner::new().icon(icon).with_size(px(18.))),
                 _ => d.child(Icon::new(icon).size(px(18.))),
@@ -652,6 +728,8 @@ impl Shell {
                 d.on_click(cx.listener(move |this, _, window, cx| {
                     if running {
                         this.confirm_stop(window, cx);
+                    } else if building {
+                        this.cancel_build(window, cx);
                     } else if missing {
                         this.locate_game(window, cx);
                     } else {
@@ -664,6 +742,43 @@ impl Shell {
             .child(button)
             .when(ready, |d| d.child(self.play_caret(cx)))
             .into_any_element()
+    }
+
+    fn room_button(&self, state: &PlayState, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let ready = matches!(
+            state,
+            PlayState::Ready | PlayState::Running | PlayState::Crashed(_)
+        );
+        if !ready || !self.mp_can_play_room() {
+            return None;
+        }
+        let host = self.mp_viewed_room()?.host.name.clone();
+        Some(
+            div()
+                .id("play-room")
+                .h(px(52.))
+                .px(px(18.))
+                .flex_shrink_0()
+                .rounded(px(9.))
+                .border_1()
+                .border_color(p.accent)
+                .text_color(p.accent)
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.selected))
+                .child(Icon::new(IconName::Users).size(px(18.)))
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Play {host}'s Lobby")),
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.mp_view_play(window, cx)))
+                .into_any_element(),
+        )
     }
 
     pub(crate) fn play_bar(&self, p: Palette, wide: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -686,6 +801,7 @@ impl Shell {
                     .gap(px(20.))
                     .child(self.game_info(p, wide, cx))
                     .child(self.status(&state, p, cx))
+                    .children(self.room_button(&state, p, cx))
                     .child(self.big_button(&state, p, cx)),
             )
     }

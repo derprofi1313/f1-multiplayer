@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "team.garage 1.0",
+  "x-registry": "team.garage",
+  "x-version": "1.0",
+  "x-applies": "boot",
+  "x-snapshot": false,
+  "description": "teams::Garage: the garage and pit lane art of one team in one box. The textures folder holds one .dds or .png per stock texture, at the path of the stock resource below root. The core packs them into an archive and adds it to the asset groups of the team's cars in that box only.",
+  "type": "object",
+  "properties": {
+    "package": {
+      "description": "The box's content package.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "content.package"
+    },
+    "team": {
+      "description": "The team the art dresses: the package's team entry that names this team identity.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "team.identity"
+    },
+    "entry": {
+      "description": "The key of the package's team entry the art dresses, for a package whose entries name no team identity. One of team and entry is required.",
+      "type": "string"
+    },
+    "textures": {
+      "$ref": "#/$defs/path",
+      "description": "A folder in the addon holding .dds and .png files. A file at garage_liveries/garage_livery_renault_a_01_da.dds is the resource root + garage_liveries/garage_livery_renault_a_01_da.tif.image."
+    },
+    "root": {
+      "description": "The resource name every file path is appended to.",
+      "type": "string",
+      "pattern": "^eaid://.*/$"
+    },
+    "srgb": {
+      "description": "A .png file is encoded as sRGB BC7 when true, linear BC7 when false. A .dds file keeps its own format.",
+      "type": "boolean"
+    },
+    "extends": {
+      "description": "Data files only: this record is a variant of that record, and its value is a merge patch on the base.",
+      "type": "string",
+      "x-ref": "team.garage",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    }
+  },
+  "required": [
+    "package",
+    "textures"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "path": {
+      "description": "A folder in the addon's folder, with / between folders.",
+      "type": "string",
+      "pattern": "^[^/\\\\][^\\\\]*$"
+    }
+  }
+}

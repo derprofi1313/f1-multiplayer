@@ -14,6 +14,7 @@
 #include "dbread_logic.hpp"
 #include "layout.hpp"
 #include "perf.hpp"
+#include "view_state.hpp"
 
 // Flow states (site_FeFlow_SetStateStatus, FlowState). Every flow state's status change goes
 // through FeFlow_Set_StateStatus(state, status); the site sits after its prologue with rcx = the
@@ -254,14 +255,20 @@ void on_flow(SwoftyContext *c)
         perf::mark("flow", name + " " + STATUS[to]);
     if (perf_on())
         perf_flow(hash, uint32_t(from), to, name);
+    runtime::watchdog_flow(hash, to, name.c_str());
     runtime::netplay_flow(hash, to);
     runtime::testagent_flow(name, to);
+    view::flow(hash, to);
+    if (known) {
+        runtime::era_session_trace(known, int(to));
+        runtime::era_session_unloaded(known, int(to));
+    }
     if (known && to == 1 && !std::strcmp(known, "StateLoadSession")) {
         runtime::era_session_load();
         swofty_core::apply::moments::session_load("StateLoadSession");
     }
+    runtime::session_flow(known, int(to));
     if (known && to == 1 && !std::strcmp(known, "StateUnloadSession")) {
-        runtime::era_session_end();
         swofty_core::apply::moments::session_end("StateUnloadSession");
     }
     fire(SWOFTY_EVENT_FLOW_STATE, to, from, &f);

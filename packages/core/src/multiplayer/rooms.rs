@@ -153,6 +153,15 @@ pub struct RoomAddons {
     pub count: u32,
     #[serde(default)]
     pub tracks: Vec<String>,
+    /// Every addon the host has on, when the server lists them.
+    #[serde(default)]
+    pub list: Vec<RoomAddon>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomAddon {
+    pub id: String,
+    pub name: String,
 }
 
 /// The lobby state members see.

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../erp_zstd.hpp"
+
 #include <zstd.h>
 
 #include <algorithm>
@@ -214,11 +216,9 @@ inline bool rewrite(const Source &src, const Archive &a, const Changes &changes,
                     Frag &f = o.e.frags[i];
                     f.size = data.size();
                     if (f.comp == ZSTD_COMP) {
-                        std::string z(ZSTD_compressBound(data.size()), '\0');
-                        size_t n = ZSTD_compress(z.data(), z.size(), data.data(), data.size(), ZSTD_LEVEL);
-                        if (ZSTD_isError(n))
+                        std::string z;
+                        if (!erp_zstd::compress(data.data(), data.size(), ZSTD_LEVEL, z))
                             return why = "a fragment does not compress", false;
-                        z.resize(n);
                         o.packed[i] = std::move(z);
                     } else
                         o.packed[i] = std::move(data);

@@ -83,6 +83,21 @@ concept save_streams = requires(C *c, CS *cs, MS *ms, SV *sv) {
 };
 
 template <class S>
+concept slot_details = requires(S *s) {
+    s->game_setup_mode;
+    s->info_season;
+    s->info_weekend;
+    s->info_team;
+    s->info_driver;
+    s->info_vehicle;
+    s->info_date;
+    s->type_flags;
+};
+
+template <class S>
+concept slot_name = requires(S *s) { s->name; };
+
+template <class S>
 concept named_container = requires(S *s) {
     s->vtable;
     s->name;
@@ -96,6 +111,8 @@ concept property = requires(PV *pv, TV *tv) {
     tv->key_offset;
 };
 
+inline constexpr bool SLOT_DETAILS = slot_details<g::SaveSlotInfo>;
+inline constexpr bool SLOT_NAME = slot_name<g::SaveSlotInfo>;
 inline constexpr bool FLOW = flow_state<g::FlowState>;
 inline constexpr bool GDB_STRING = gdb_string<g::GdbStringRecord>;
 inline constexpr bool CAREER = career_chain<g::GameManager, g::GameModeContext, g::ChampionshipHolder, g::CareerEntity>;

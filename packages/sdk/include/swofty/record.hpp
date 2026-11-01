@@ -99,7 +99,7 @@ inline const char *result_name(Result r)
 }
 
 enum class Applies { boot, content, session, read };
-enum class Scope { global, profile, career };
+enum class Scope { global, profile, career, automatic };
 enum class Status { ok, no_record, no_registry, invalid, late };
 
 struct Version {
@@ -431,7 +431,7 @@ template <class T> using Edit = std::function<void(T &)>;
 namespace swofty {
 
 SWOFTY_ENUM(Applies, boot, content, session, read)
-SWOFTY_ENUM(Scope, global, profile, career)
+SWOFTY_ENUM(Scope, global, profile, career, automatic)
 
 namespace detail {
 

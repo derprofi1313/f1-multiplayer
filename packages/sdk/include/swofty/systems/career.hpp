@@ -48,8 +48,15 @@ struct ModeRecord {
 SWOFTY_RECORD(ModeRecord, data_group, save_container, title, kind, freeze, stat_id)
 inline Registry<ModeRecord> modes{"career.mode", {.applies = Applies::boot}};
 
+struct Requirement {
+    std::string id;
+    std::string range;
+    std::string why;
+};
+SWOFTY_RECORD(Requirement, id, range, why)
+
 struct Content {
-    static constexpr Version version{1, 0};
+    static constexpr Version version{1, 1};
     Ref<ModeRecord> mode;
     Path tile;
     Ref<Content> model;
@@ -64,10 +71,11 @@ struct Content {
     int badge = 0;
     std::string entitlement;
     Careers careers = Careers::driver;
+    std::vector<Requirement> needs;
     json::Value extra;
 };
 SWOFTY_RECORD(Content, mode, tile, model, calendar, after_last, title, description, data_group, suffix, save_container,
-              car_group, badge, entitlement, careers)
+              car_group, badge, entitlement, careers, needs)
 inline Registry<Content> contents{"career.content", {.applies = Applies::boot}};
 
 struct SeasonTeam {
@@ -108,13 +116,14 @@ struct Round {
 SWOFTY_RECORD(Round, round, race, venue, date)
 
 struct Calendar {
-    static constexpr Version version{1, 0};
+    static constexpr Version version{1, 1};
+    std::string data_group;
     Keyed<Round, &Round::round> rounds;
     int seasons = 10;
     std::vector<int> transfer_windows;
     json::Value extra;
 };
-SWOFTY_RECORD(Calendar, rounds, seasons, transfer_windows)
+SWOFTY_RECORD(Calendar, data_group, rounds, seasons, transfer_windows)
 inline Registry<Calendar> calendars{"career.calendar", {.applies = Applies::boot}};
 
 struct DriverRatings {
@@ -333,6 +342,8 @@ SWOFTY_CAREER_EVENT_(Unloaded, "career.unloaded")
 SWOFTY_CAREER_EVENT_(SeasonEnd, "career.season.end")
 SWOFTY_CAREER_EVENT_(SeasonBreak, "career.season.break")
 SWOFTY_CAREER_EVENT_(Saving, "career.saving")
+SWOFTY_CAREER_EVENT_(Saved, "career.saved")
+SWOFTY_CAREER_EVENT_(Missing, "career.missing")
 #undef SWOFTY_CAREER_EVENT_
 
 }
@@ -341,6 +352,59 @@ struct ApplyReport {
     size_t changed = 0, unchanged = 0, refused = 0;
     std::vector<std::string> refusals;
 };
+
+namespace detail {
+
+inline std::atomic<const SwoftyCareerSaves *> &saves_override()
+{
+    static std::atomic<const SwoftyCareerSaves *> t{nullptr};
+    return t;
+}
+
+inline void set_saves_table(const SwoftyCareerSaves *t) { saves_override() = t; }
+
+inline const SwoftyCareerSaves *saves_table()
+{
+    if (auto t = saves_override().load())
+        return t->version >= 1 ? t : nullptr;
+#if defined(_WIN32)
+    static std::atomic<const SwoftyCareerSaves *> found{nullptr};
+    if (auto t = found.load())
+        return t;
+    HMODULE core = GetModuleHandleW(L"swofty_core.dll");
+    auto get = core ? reinterpret_cast<SwoftyCoreCareerSavesFn>(GetProcAddress(core, "SwoftyCoreCareerSaves")) : nullptr;
+    const SwoftyCareerSaves *t = get ? get() : nullptr;
+    if (t && t->version < 1)
+        t = nullptr;
+    found = t;
+    return t;
+#else
+    return nullptr;
+#endif
+}
+
+inline const SwoftyCareerSaves *live_saves()
+{
+    auto t = saves_table();
+    return t && t->available && t->available() ? t : nullptr;
+}
+
+template <class Fn> inline std::string grow(Fn &&fn)
+{
+    std::string out(2048, '\0');
+    size_t len = 0;
+    int r = fn(out.data(), out.size(), &len);
+    if (r == SWOFTY_TOO_SMALL) {
+        out.assign(len + 1, '\0');
+        r = fn(out.data(), out.size(), &len);
+    }
+    if (r != SWOFTY_ASSET_OK || len > out.size())
+        return {};
+    out.resize(len);
+    return out;
+}
+
+}
 
 // The core's career operations (swofty_api.h SwoftyCareerOps, the core export SwoftyCoreCareerOps). On a core
 // without them every call returns unavailable.
@@ -497,6 +561,194 @@ inline Result report_season(int year, int season_index)
     if (!t || t->version < 2 || !t->report_season)
         return Result::unavailable;
     return detail::ops_result(t->report_season(year, season_index));
+}
+
+// Career saves (since 1.7.0, experimental). The core keeps an index of the careers it has seen, in the
+// launcher's data folder ($DATA/careers/index.json), and an addon's own data for each career beside it.
+// Every call reports unavailable on a core without the table (SwoftyCareerSaves, the core export
+// SwoftyCoreCareerSaves), and the index is empty then.
+//
+//   auto here = career::saves::current();                 // "f1_career_progressive:7731"
+//   career::saves::need("swofty.progressive", "^1.3.0", "its calendar");
+//   auto mine = career::saves::data("swofty.progressive");
+//   mine.set(here, json::parse(R"({"driver":"max"})"), 2);
+//   auto back = mine.get(here);                           // {version, value}
+//
+// career.saving fires before the game writes the profile (a handler may call data(...).set for the loaded
+// career: the core writes it with the index), career.saved when the profile's containers have been written,
+// and career.missing when the index knew a career the game's profile load did not find.
+namespace saves {
+
+struct Need {
+    std::string id, range, why;
+};
+
+struct Entry {
+    std::string career, mode, content, team, driver, label, status;
+    int season = 0, round = 0;
+    int64_t last_saved = 0;
+    std::vector<Need> addons;
+};
+
+namespace detail {
+
+inline Entry entry_of(const json::Value &v)
+{
+    Entry e;
+    e.career = std::string(v["career"].as_string());
+    e.mode = std::string(v["mode"].as_string());
+    e.content = std::string(v["content"].as_string());
+    e.team = std::string(v["team"].as_string());
+    e.driver = std::string(v["driver"].as_string());
+    e.label = std::string(v["label"].as_string());
+    e.status = std::string(v["status"].as_string());
+    e.season = static_cast<int>(v["season"].as_int());
+    e.round = static_cast<int>(v["round"].as_int());
+    e.last_saved = v["last_saved"].as_int();
+    if (const json::Array *list = v["addons"].if_array())
+        for (const json::Value &a : *list)
+            e.addons.push_back({std::string(a["id"].as_string()), std::string(a["need"].as_string()),
+                                std::string(a["why"].as_string())});
+    return e;
+}
+
+inline std::vector<Entry> entries_of(const std::string &text)
+{
+    std::vector<Entry> out;
+    if (text.empty())
+        return out;
+    json::Value v = json::parse(text);
+    if (const json::Array *list = v["careers"].if_array())
+        for (const json::Value &c : *list)
+            out.push_back(entry_of(c));
+    return out;
+}
+
+}
+
+inline bool available() { return ::swofty::career::detail::live_saves() != nullptr; }
+
+inline std::vector<Entry> index()
+{
+    auto t = ::swofty::career::detail::live_saves();
+    if (!t || !t->index)
+        return {};
+    return detail::entries_of(::swofty::career::detail::grow(
+        [&](char *buf, size_t cap, size_t *len) { return t->index(buf, cap, len); }));
+}
+
+inline std::vector<Entry> missing()
+{
+    auto t = ::swofty::career::detail::live_saves();
+    if (!t || !t->missing)
+        return {};
+    return detail::entries_of(::swofty::career::detail::grow(
+        [&](char *buf, size_t cap, size_t *len) { return t->missing(buf, cap, len); }));
+}
+
+inline std::string current()
+{
+    auto t = ::swofty::career::detail::live_saves();
+    if (!t || !t->current)
+        return {};
+    return ::swofty::career::detail::grow([&](char *buf, size_t cap, size_t *len) { return t->current(buf, cap, len); });
+}
+
+inline std::optional<Entry> find(std::string_view career)
+{
+    for (Entry &e : index())
+        if (e.career == career)
+            return std::move(e);
+    return std::nullopt;
+}
+
+struct Description {
+    std::optional<std::string> driver, team, label;
+    std::optional<int> season, round;
+};
+
+inline Result describe(const Description &d)
+{
+    auto t = ::swofty::career::detail::live_saves();
+    if (!t || !t->describe)
+        return Result::unavailable;
+    json::Value v = json::Value::object();
+    if (d.driver)
+        v["driver"] = json::Value(*d.driver);
+    if (d.team)
+        v["team"] = json::Value(*d.team);
+    if (d.label)
+        v["label"] = json::Value(*d.label);
+    if (d.season)
+        v["season"] = json::Value(int64_t(*d.season));
+    if (d.round)
+        v["round"] = json::Value(int64_t(*d.round));
+    std::string text = json::dump(v);
+    return ::swofty::career::detail::ops_result(t->describe({text.data(), text.size()}));
+}
+
+inline Result need(std::string_view addon, std::string_view range = {}, std::string_view why = {})
+{
+    auto t = ::swofty::career::detail::live_saves();
+    if (!t || !t->need)
+        return Result::unavailable;
+    return ::swofty::career::detail::ops_result(
+        t->need(std::string(addon).c_str(), std::string(range).c_str(), std::string(why).c_str()));
+}
+
+struct Stored {
+    uint32_t version = 0;
+    json::Value value;
+};
+
+class Data {
+public:
+    explicit Data(std::string addon) : addon_(std::move(addon)) {}
+
+    std::optional<Stored> get(std::string_view career) const
+    {
+        auto t = ::swofty::career::detail::live_saves();
+        if (!t || !t->data_get)
+            return std::nullopt;
+        std::string career_id(career);
+        uint32_t version = 0;
+        std::string text = ::swofty::career::detail::grow([&](char *buf, size_t cap, size_t *len) {
+            return t->data_get(career_id.c_str(), addon_.c_str(), buf, cap, len, &version);
+        });
+        if (text.empty())
+            return std::nullopt;
+        return Stored{version, json::parse(text)};
+    }
+
+    std::optional<Stored> get_current() const { return get(current()); }
+
+    Result set(std::string_view career, const json::Value &value, uint32_t version = 1) const
+    {
+        auto t = ::swofty::career::detail::live_saves();
+        if (!t || !t->data_set)
+            return Result::unavailable;
+        std::string career_id(career), text = json::dump(value);
+        return ::swofty::career::detail::ops_result(
+            t->data_set(career_id.c_str(), addon_.c_str(), version, {text.data(), text.size()}));
+    }
+
+    Result set_current(const json::Value &value, uint32_t version = 1) const { return set(current(), value, version); }
+
+    Result remove(std::string_view career) const
+    {
+        auto t = ::swofty::career::detail::live_saves();
+        if (!t || !t->data_remove)
+            return Result::unavailable;
+        std::string career_id(career);
+        return ::swofty::career::detail::ops_result(t->data_remove(career_id.c_str(), addon_.c_str()));
+    }
+
+private:
+    std::string addon_;
+};
+
+inline Data data(std::string_view addon) { return Data(std::string(addon)); }
+
 }
 
 }

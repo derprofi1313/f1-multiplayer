@@ -73,8 +73,8 @@ bool stat_file(const std::string &rel, uint64_t &size, uint64_t &time)
 
 bool hash_file(const std::string &rel, uint64_t &hash)
 {
-    HANDLE h = CreateFileW(game_file(rel).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                           FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    HANDLE h = CreateFileW(game_file(rel).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (h == INVALID_HANDLE_VALUE)
         return false;
     std::vector<char> buf(size_t(1) << 20);
@@ -91,9 +91,38 @@ bool hash_file(const std::string &rel, uint64_t &hash)
 
 std::string flat(const std::string &rel)
 {
-    std::string s = rel.substr(std::string(logo_build::UI_FOLDER).size());
+    std::string folder = logo_build::UI_FOLDER;
+    std::string s = rel.compare(0, folder.size(), folder) == 0 ? rel.substr(folder.size()) : rel;
     std::replace(s.begin(), s.end(), '/', '_');
     return s;
+}
+
+std::map<std::string, std::vector<std::string>> overlay_archives()
+{
+    std::map<std::string, std::vector<std::string>> out;
+    std::string root = runtime::narrow(runtime::game_root()), sw = runtime::narrow(runtime::swofty_root());
+    if (runtime::lower(sw).rfind(runtime::lower(root), 0) != 0)
+        return out;
+    std::string base = sw.substr(root.size());
+    std::replace(base.begin(), base.end(), '\\', '/');
+    while (!base.empty() && base.front() == '/')
+        base.erase(base.begin());
+    if (!base.empty() && base.back() != '/')
+        base += '/';
+    for (auto &j : runtime::config()["resource_erps"].a) {
+        std::string file = j["file"].str();
+        if (file.empty())
+            continue;
+        std::replace(file.begin(), file.end(), '\\', '/');
+        std::string rel = base + file;
+        for (auto &x : j["erps"].a)
+            if (x.type == json::Value::Str) {
+                auto &list = out[runtime::lower(x.s)];
+                if (std::find(list.begin(), list.end(), rel) == list.end())
+                    list.push_back(rel);
+            }
+    }
+    return out;
 }
 
 }
@@ -102,7 +131,8 @@ void deliver_logos(const std::vector<LogoImage> &logos, LogoReport &report)
 {
     std::vector<logo_build::Want> wants;
     std::set<std::string> seen;
-    uint64_t key = 0xcbf29ce484222325ull;
+    logo_build::Refusals refusals;
+    uint64_t key = stamp(0xcbf29ce484222325ull, logo_cache::CACHE_FORMAT);
     for (auto &l : logos) {
         if (!seen.insert(l.array + "|" + l.key).second)
             continue;
@@ -113,7 +143,7 @@ void deliver_logos(const std::vector<LogoImage> &logos, LogoReport &report)
         if (l.stock.empty()) {
             std::string bytes = runtime::read_file(runtime::under_swofty("addons/" + l.addon + "/" + l.file), size_t(64) << 20), why;
             if (bytes.empty() || !png::decode(bytes, w.rgba, w.width, w.height, why)) {
-                report.lines.push_back("team.logo " + l.id + ": " + l.context + " image " + l.file + (why.empty() ? " is empty" : ": " + why));
+                refusals.add(l.context + " image does not decode: " + (why.empty() ? "it is empty" : why), l.id + " " + l.file);
                 report.refused++;
                 continue;
             }
@@ -124,46 +154,59 @@ void deliver_logos(const std::vector<LogoImage> &logos, LogoReport &report)
         }
         wants.push_back(std::move(w));
     }
+    refusals.flush(report.lines);
     if (wants.empty())
         return;
     std::vector<std::string> files;
     list_erps(game_file(logo_build::UI_FOLDER), logo_build::UI_FOLDER, files, 0);
+    auto overlays = overlay_archives();
+    std::vector<std::string> keyed_files = files;
+    for (auto &rel : files) {
+        auto it = overlays.find(runtime::lower(rel));
+        if (it != overlays.end())
+            keyed_files.insert(keyed_files.end(), it->second.begin(), it->second.end());
+    }
     std::string dir = "addons/" + std::string(CACHE_ADDON) + "/";
     std::wstring dirw = runtime::under_swofty("addons");
     CreateDirectoryW(dirw.c_str(), nullptr);
     CreateDirectoryW(runtime::under_swofty(dir).c_str(), nullptr);
     std::wstring stamps_path = runtime::under_swofty(dir + logo_cache::STAMPS);
+    DeleteFileW(runtime::under_swofty(dir + logo_cache::OLD_STAMPS).c_str());
     std::string stamps_before = runtime::read_file(stamps_path, size_t(16) << 20);
-    DWORD hash_t0 = GetTickCount();
-    logo_cache::Keyed keyed = logo_cache::key_archives(key, files, {stat_file, hash_file}, logo_cache::parse(stamps_before));
-    if (keyed.hashed)
-        report.lines.push_back("team.logo: " + std::to_string(keyed.hashed) + " archive(s) (" +
-                               std::to_string(keyed.hashed_bytes >> 20) + " MB) hashed in " + std::to_string(GetTickCount() - hash_t0) +
-                               " ms");
-    std::string stamps_after = logo_cache::text(keyed.stamps);
-    if (stamps_after != stamps_before)
-        runtime::write_file(stamps_path, stamps_after);
+    logo_cache::Env stamp_env{stat_file, hash_file};
+    auto key_inputs = [&](const std::set<std::string> &inputs, const logo_cache::Stamps &before) {
+        DWORD t0 = GetTickCount();
+        logo_cache::Keyed k = logo_cache::key_archives(key, keyed_files, inputs, stamp_env, before);
+        if (k.hashed)
+            report.lines.push_back("team.logo: " + std::to_string(k.hashed) + " input archive(s) (" + std::to_string(k.hashed_bytes >> 20) +
+                                   " MB) hashed in " + std::to_string(GetTickCount() - t0) + " ms");
+        return k;
+    };
+    logo_cache::Stamps before = logo_cache::parse(stamps_before);
+    std::set<std::string> inputs = logo_cache::inputs_of(before);
+    inputs.insert(logo_build::DATABASES);
+    logo_cache::Keyed keyed = key_inputs(inputs, before);
     std::string id = runtime::hex16(keyed.key).substr(2);
     std::string manifest_name = "logos_" + id + ".manifest";
     std::string manifest = runtime::read_file(runtime::under_swofty(dir + manifest_name), size_t(1) << 20);
     std::vector<std::pair<std::string, std::string>> routes;
-    if (!manifest.empty()) {
-        size_t at = 0;
-        while (at < manifest.size()) {
-            size_t end = manifest.find('\n', at);
-            if (end == std::string::npos)
-                end = manifest.size();
-            std::string line = manifest.substr(at, end - at);
-            size_t tab = line.find('\t');
-            if (tab != std::string::npos)
-                routes.emplace_back(line.substr(0, tab), line.substr(tab + 1));
-            at = end + 1;
-        }
+    int cached_built = -1;
+    if (!manifest.empty())
+        logo_cache::manifest_parse(manifest, [&](const std::string &file) {
+            return GetFileAttributesW(runtime::under_swofty(dir + file).c_str()) != INVALID_FILE_ATTRIBUTES;
+        }, cached_built, routes);
+    if (!routes.empty()) {
+        report.built = cached_built;
         report.lines.push_back("team.logo: " + std::to_string(routes.size()) + " cached archive(s) of " + id + " reused");
     } else {
+        DeleteFileW(runtime::under_swofty(dir + manifest_name).c_str());
         DWORD t0 = GetTickCount();
         logo_build::Env env;
         env.list = [&] { return files; };
+        env.overlays = [&](const std::string &rel) {
+            auto it = overlays.find(runtime::lower(rel));
+            return it == overlays.end() ? std::vector<std::string>{} : it->second;
+        };
         env.open = [&](const std::string &rel) -> std::shared_ptr<erpfile::Source> {
             auto fs = std::make_shared<FileSource>();
             fs->h = CreateFileW(game_file(rel).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -185,7 +228,13 @@ void deliver_logos(const std::vector<LogoImage> &logos, LogoReport &report)
         for (auto &l : res.lines)
             report.lines.push_back(l);
         report.refused += res.refused;
-        std::string out_manifest;
+        std::set<std::string> read = res.read;
+        read.insert(logo_build::DATABASES);
+        if (read != inputs) {
+            keyed = key_inputs(read, keyed.stamps);
+            id = runtime::hex16(keyed.key).substr(2);
+            manifest_name = "logos_" + id + ".manifest";
+        }
         for (auto &[rel, changes] : res.changes) {
             auto src = env.open(rel);
             erpfile::Archive arc;
@@ -214,14 +263,16 @@ void deliver_logos(const std::vector<LogoImage> &logos, LogoReport &report)
                 continue;
             }
             routes.emplace_back(rel, file);
-            out_manifest += rel + "\t" + file + "\n";
         }
-        if (routes.size() == res.changes.size() && !routes.empty())
-            runtime::write_file(runtime::under_swofty(dir + manifest_name), out_manifest);
+        if (logo_cache::cacheable(routes.size(), res.changes.size(), res.refused))
+            runtime::write_file(runtime::under_swofty(dir + manifest_name), logo_cache::manifest_text(res.built, routes));
         report.built = res.built;
         report.lines.push_back("team.logo: " + std::to_string(res.built) + " slice(s) built into " + std::to_string(routes.size()) +
                                " archive(s) in " + std::to_string(GetTickCount() - t0) + " ms");
     }
+    std::string stamps_after = logo_cache::text(keyed.stamps);
+    if (stamps_after != stamps_before)
+        runtime::write_file(stamps_path, stamps_after);
     std::set<std::string> keep;
     for (auto &r : routes)
         keep.insert(r.second);

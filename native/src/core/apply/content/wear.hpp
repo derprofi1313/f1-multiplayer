@@ -593,11 +593,11 @@ inline std::vector<PoolScan> scan_wear_pools(const std::function<std::optional<s
     }
     looks.lo = top + 1;
     out.push_back(std::move(looks));
-    PoolScan drivers{"driver.identity", DRIVERS, 208, 253, {}, {}};
+    PoolScan drivers{"driver.identity", DRIVERS, 208, 16382, {}, {}};
     top_of(drivers, std::string(DRIVERS) + ".driver_", count(DRIVERS, "driver"), "stat_id");
     int64_t run = -1;
-    for (int64_t i = 208; i <= 254; i++) {
-        bool free = i <= 253 && !drivers.used.count(i);
+    for (int64_t i = 208; i <= 16383; i++) {
+        bool free = i <= 16382 && i != 254 && (i & 0xff) != 0xff && !drivers.used.count(i);
         if (free && run < 0)
             run = i;
         if (!free && run >= 0) {
@@ -605,8 +605,8 @@ inline std::vector<PoolScan> scan_wear_pools(const std::function<std::optional<s
             run = -1;
         }
     }
-    drivers.lo = drivers.holes.empty() ? 254 : drivers.holes.front().first;
-    drivers.hi = drivers.holes.empty() ? 253 : drivers.holes.back().second;
+    drivers.lo = drivers.holes.empty() ? 16383 : drivers.holes.front().first;
+    drivers.hi = drivers.holes.empty() ? 16382 : drivers.holes.back().second;
     out.push_back(std::move(drivers));
     PoolScan kits{"wearable.season_set", KIT_YEARS, 0, 255, {}, {}};
     int64_t ktop = -1;

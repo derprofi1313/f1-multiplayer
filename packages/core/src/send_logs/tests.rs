@@ -140,7 +140,11 @@ fn collects_the_logs_the_developers_need() {
             want.insert(format!("sessions/{s}/{f}"));
         }
     }
-    assert_eq!(names(&zip), want);
+    let mut got = names(&zip);
+    if cfg!(windows) {
+        got.remove("windows/application-events.txt");
+    }
+    assert_eq!(got, want);
     let addons: Value = serde_json::from_str(&entry(&zip, "addons.json")).unwrap();
     let helper = addons["installed"]
         .as_array()
@@ -1709,4 +1713,133 @@ fn carries_the_blocked_record_when_there_is_one() {
     put(&store.root.join("state/blocked.json"), "{\"files\":[]}");
     let bundle = Bundle::collect_with(&store, &report(&game), Limits::default(), "20261020-101010");
     assert!(bundle.entries.iter().any(|e| e.path == "state/blocked.json"));
+}
+
+#[test]
+fn finds_a_crash_report_left_in_the_data_folder() {
+    let root = tmp("crashfallback");
+    let (store, game) = fake_data(&root);
+    put(&store.root.join("state/crash-20261101-125350.txt"), CRASH);
+    put(
+        &store.root.join("state/crash-20261101-125350.dmp"),
+        noise(50_000, 3),
+    );
+    let bundle = Bundle::collect_with(&store, &report(&game), Limits::default(), "x");
+    let names: Vec<_> = bundle.entries.iter().map(|e| e.path.clone()).collect();
+    assert!(
+        names.contains(&"crash/crash-20261101-125350.txt".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&"crash/crash-20261101-125350.dmp".to_string()),
+        "{names:?}"
+    );
+    assert!(!summary_of(&bundle).contains("No crash report was found"));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_logged_crash_report_that_is_missing_is_not_reported_as_never_written() {
+    let root = tmp("crashunsaved");
+    let (store, game) = fake_data(&root);
+    let path = "C:\\Users\\id\\AppData\\Local\\Swofty\\state\\crash-20261101-125350.txt";
+    put(
+        &store.root.join("state/loader-fallback.log"),
+        format!(
+            "2026-11-01 12:53:50.100 [5] [crash] crash report {path}: boom; minidump failed (error 5)\r\n"
+        ),
+    );
+    let bundle = Bundle::collect_with(&store, &report(&game), Limits::default(), "x");
+    let summary = summary_of(&bundle);
+    assert!(!summary.contains("No crash report was found"), "{summary}");
+    assert!(
+        summary.contains(&format!(
+            "A crash report was started ({path}) but could not be saved"
+        )),
+        "{summary}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn no_crash_line_and_no_file_still_says_none_was_written() {
+    let root = tmp("crashnone");
+    let (store, game) = fake_data(&root);
+    let bundle = Bundle::collect_with(&store, &report(&game), Limits::default(), "x");
+    assert!(summary_of(&bundle).contains("No crash report was found"));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_fast_fail_exit_without_a_crash_report_is_named_with_the_loader_log_tail() {
+    let root = tmp("fastfail");
+    let (store, game) = fake_data(&root);
+    let session = store.root.join("sessions").join("20261020-090000");
+    put(&session.join("exit_code"), "-1073740791\n");
+    put(
+        &session.join("loader.log"),
+        "[core] up\n[crash] crash log armed\n[loader] last line before the end\n",
+    );
+    let bundle = Bundle::collect_with(&store, &report(&game), Limits::default(), "x");
+    let summary = summary_of(&bundle);
+    assert!(
+        summary.contains(
+            "F1 25 stopped itself after detecting a corrupted stack or an invalid call (0xc0000409).\n\
+             Last loader.log lines:\n  [core] up\n  [crash] crash log armed\n  [loader] last line before the end\n"
+        ),
+        "{summary}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_clean_exit_adds_no_fast_fail_sentence() {
+    let root = tmp("fastfailclean");
+    let (store, game) = fake_data(&root);
+    let session = store.root.join("sessions").join("20261020-090000");
+    put(&session.join("exit_code"), "0\n");
+    let bundle = Bundle::collect_with(&store, &report(&game), Limits::default(), "x");
+    assert!(!summary_of(&bundle).contains("stopped itself"));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn saves_excerpt_keeps_the_save_source_and_slot_lines() {
+    let text = "1 [core] up\n\
+        2 [saves] launcher saves are off for profile main: the game reads Steam's saves natively\n\
+        3 [saves] sandbox: FileRead profile (call 1)\n\
+        4 [saves] profile load 1: manager 0 slot 0: gm_driver_career id=3 key=0000000000abcdef career=dc-000b0000\n";
+    let lines = super::saves_excerpt(text, 10);
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("reads Steam's saves natively"));
+    assert!(lines[1].contains("career=dc-000b0000"));
+    assert_eq!(super::saves_excerpt(text, 1).len(), 1);
+}
+
+#[test]
+fn summary_names_the_stub_an_antivirus_blocked() {
+    let root = tmp("stub-av");
+    let (store, game) = fake_data(&root);
+    let mut bundle = Bundle::collect_with(&store, &report(&game), Limits::default(), "x");
+    assert_eq!(bundle.stub_blocked_line(Some(&game)), None);
+
+    bundle.entries.push(Entry {
+        path: "ea-app/EAEgsProxy.log".into(),
+        data: b"20\t[2026-11-01T01:57:04.895Z]\tERROR   \t(eax::services::process::ProcessWin::createProcess)\t[PROCESS] \
+          Create Process: Operation did not complete successfully because the file contains a virus or \
+          potentially unwanted software. | exe=[C:\\F1 25\\F1 25\\EAAntiCheat.GameServiceLauncher.exe] | OS \
+          ErrorCode:  0xe1\n"
+            .to_vec(),
+        note: None,
+    });
+    let line = bundle.stub_blocked_line(Some(&game)).unwrap();
+    assert!(
+        line.starts_with("offline: EAAntiCheat.GameServiceLauncher.exe was blocked by antivirus (error 225)"),
+        "{line}"
+    );
+
+    put(&game.join("EAAntiCheat.GameServiceLauncher.exe.bak"), "real");
+    let plain = Bundle::collect_with(&store, &report(&game), Limits::default(), "x");
+    assert_eq!(plain.stub_blocked_line(Some(&game)), None);
+    std::fs::remove_dir_all(&root).ok();
 }

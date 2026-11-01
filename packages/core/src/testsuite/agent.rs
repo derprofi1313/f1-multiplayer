@@ -41,6 +41,7 @@ pub const COMMANDS_V1: &[&str] = &[
     "career",
     "home",
     "tile",
+    "session.start",
 ];
 
 /// A run name the agent accepts as a folder name.
@@ -184,7 +185,10 @@ pub fn step_commands(step: &Step) -> Result<Vec<(String, Value)>, Error> {
         }
         "wait" => match (arg.get("event"), arg.get("screen")) {
             (Some(e), _) => one("wait", json!({ "event": e })),
-            (None, Some(n)) => one("at", json!({ "phase": n })),
+            (None, Some(n)) => one(
+                "at",
+                json!({ "phase": n, "settle_ms": arg.get("settle_ms").cloned().unwrap_or(json!(1000)) }),
+            ),
             _ => Ok(Vec::new()),
         },
         "home" => one("home", Value::Null),
@@ -327,6 +331,11 @@ pub fn parse_shell(line: &str) -> Result<(String, Value, Option<u64>), String> {
             ("run_test".into(), json!({ "fn": rest[0] }), None)
         }
         "title" => (cmd, Value::Null, None),
+        "session" | "session.start" => (
+            "session.start".into(),
+            super::session::shell_args(&rest)?,
+            Some(10 * 60 * 1000),
+        ),
         "career" => {
             let usage = "career load <slot|newest> [at team_hq|weekend_hub|session] [mode driver_career|my_team_career]";
             need(2, usage)?;

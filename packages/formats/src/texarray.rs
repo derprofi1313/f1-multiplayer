@@ -53,6 +53,39 @@ impl Array {
         self.fits(stock) && self.count == stock.count
     }
 
+    /// An array of one slice or more: a source for `append`.
+    pub fn read_slices(res: &Resource) -> Option<Array> {
+        let (f0, f1) = (res.fragments.first()?, res.fragments.get(1)?);
+        let head = f0.data().ok()?;
+        let count = u32::from_le_bytes(head.get(COUNT..COUNT + 4)?.try_into().ok()?) as usize;
+        let data = f1.data().ok()?;
+        if count == 0 || data.is_empty() || data.len() % count != 0 {
+            return None;
+        }
+        Some(Array {
+            layout: head[LAYOUT].to_vec(),
+            count,
+            data,
+        })
+    }
+
+    /// Puts every slice of `source` after this array's slices and returns their
+    /// indices. `source` fits this array.
+    pub fn append(&mut self, source: &Array) -> std::ops::Range<usize> {
+        let at = self.count;
+        self.data.extend_from_slice(&source.data);
+        self.count += source.count;
+        at..self.count
+    }
+
+    /// Fragment 0 of a surface with its array size set to `count`.
+    pub fn with_count(head: &[u8], count: usize) -> Option<Vec<u8>> {
+        let mut head = head.to_vec();
+        head.get_mut(COUNT..COUNT + 4)?
+            .copy_from_slice(&(count as u32).to_le_bytes());
+        Some(head)
+    }
+
     /// Writes each slice of `source` that differs from `stock` over this array and
     /// returns their indices. This array has `stock`'s layout and `source` fits it.
     pub fn merge(&mut self, stock: &Array, source: &Array) -> Vec<usize> {
@@ -116,6 +149,13 @@ mod tests {
         let wide = Array::read(&surface(4, &[[0; 4], [1; 4], [2; 4], [3; 4]])).unwrap();
         assert!(!wide.fits(&stock));
         assert!(Array::read(&surface(2, &[[0; 4]])).is_none());
+        let one = Array::read_slices(&surface(2, &[[5; 4]])).unwrap();
+        assert!(Array::read(&surface(2, &[[5; 4]])).is_none() && one.fits(&stock));
+        let mut grown = stock.clone();
+        assert_eq!(grown.append(&one), 4..5);
+        assert_eq!((grown.count, grown.slice(4)), (5, &[5u8; 4][..]));
+        let head = Array::with_count(&[0u8; 40], 5).unwrap();
+        assert_eq!(&head[28..32], &5u32.to_le_bytes());
         let mut empty = surface(2, &[[0; 4], [1; 4]]);
         empty.fragments[1] = fragment(Vec::new());
         assert!(Array::read(&empty).is_none());

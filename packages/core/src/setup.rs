@@ -24,6 +24,21 @@ pub const RETIRED: &str = "baseline-retired";
 pub const NEEDED: &str = "F1 Multiplayer needs a one-time setup before modded play: open F1 Multiplayer and press Play, \
                           or run `f1mp setup reset`, verify the game files, then run `f1mp setup done`";
 
+/// What stops a build whose record of original game files names backups
+/// that are gone from the data folder.
+pub fn backups_missing(files: &[String]) -> String {
+    let (backups, are) = match files.len() {
+        1 => ("backup", "is"),
+        _ => ("backups", "are"),
+    };
+    format!(
+        "F1 Multiplayer's {backups} of the original {} {are} missing from its data folder. Run the one-time setup again: \
+         open F1 Multiplayer and press Play, or run `f1mp setup reset`, repair the game in the EA app or verify \
+         the game files in Steam, then run `f1mp setup done`",
+        crate::stock::names(files)
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Setup {
     pub version: u32,
@@ -139,6 +154,16 @@ pub fn record_notice(data: &Path) -> Result<()> {
         write_json(&path(data), &setup)?;
     }
     Ok(())
+}
+
+/// Send the player through the setup again: the next Play opens it, and every
+/// install refuses until it is done.
+pub fn redo(data: &Path) -> Result<()> {
+    let p = path(data);
+    match std::fs::remove_file(&p) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(crate::io_err(&p)(e)),
+        _ => Ok(()),
+    }
 }
 
 /// The player verified the game files: modded play may start, and the old

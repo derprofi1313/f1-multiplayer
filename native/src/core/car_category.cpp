@@ -559,6 +559,37 @@ bool bind_all(std::string &why)
 
 namespace runtime {
 
+// Names the category value the next setupFromUnranked applies, for a host that skips the Car Category screen
+// (netplay_room.cpp): what a press on an addon box remembers. An empty value drops any earlier choice, so a
+// stock host starts from the stock index. False, with the reason, when the value cannot be applied.
+bool car_category_choose(const std::string &value, std::string &why)
+{
+    std::lock_guard<std::recursive_mutex> g(lock);
+    if (value.empty()) {
+        chosen.clear();
+        restore_forced("a stock category was chosen without the screen");
+        return true;
+    }
+    if (!live || off) {
+        why = "the addon category " + value + " needs the Car Category hooks, which are " +
+              (off ? "off: " + off_why : std::string("not installed"));
+        return false;
+    }
+    std::string err;
+    void *option = category_option(err);
+    if (!option) {
+        why = "the addon category " + value + " cannot be checked: " + err;
+        return false;
+    }
+    if (logic::value_of(values_of(option), value) < 0) {
+        why = "no category value is named " + value;
+        return false;
+    }
+    chosen = value;
+    swofty::log("[car-category] category %s chosen without the Car Category screen", value.c_str());
+    return true;
+}
+
 std::vector<CoreMixins> car_category_mixins()
 {
     std::vector<CoreMixins> out;

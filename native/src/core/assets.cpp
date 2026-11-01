@@ -88,6 +88,7 @@ struct Plan {
 };
 
 std::vector<Entry> declared;
+std::map<std::string, std::vector<std::string>> extensions;
 std::vector<std::string> auto_prefixes;
 std::string config_source;
 uintptr_t base;
@@ -908,6 +909,25 @@ void apply_overlay(Manifest &mf, const Probe &pr, const runtime::Overlay &ov)
         runtime::overlay_registered(registered, patched_groups);
 }
 
+void extend_entries(std::vector<Entry> &entries)
+{
+    for (auto &[group, erps] : extensions) {
+        auto it = std::find_if(entries.begin(), entries.end(), [&](const Entry &e) { return e.group == group; });
+        if (it == entries.end()) {
+            for (auto &erp : erps)
+                swofty::log("[assets] group %s is not declared by an addon (a stock group is not extended); %s is not attached",
+                            group.c_str(), erp.c_str());
+            continue;
+        }
+        for (auto &erp : erps) {
+            if (std::find(it->erps.begin(), it->erps.end(), erp) != it->erps.end())
+                continue;
+            it->erps.insert(it->erps.begin(), erp);
+            swofty::log("[assets] group %s: %s added to its ERP list (now %zu)", group.c_str(), erp.c_str(), it->erps.size());
+        }
+    }
+}
+
 void apply(uint8_t *m, const char *when, const runtime::Overlay *ov)
 {
     std::lock_guard<std::mutex> g(patch_lock);
@@ -929,6 +949,7 @@ void apply(uint8_t *m, const char *when, const runtime::Overlay *ov)
     Probe pr = probe(mf);
     std::vector<Entry> entries = declared;
     add_auto(mf, entries);
+    extend_entries(entries);
     struct Late {
         Manifest &mf;
         const Probe &pr;
@@ -1236,6 +1257,18 @@ std::string runtime::erp_name(uint64_t hash)
     Manifest mf(static_cast<uint8_t *>(m));
     std::string n = mf.name_of(hash);
     return n.empty() ? hex(hash) : n;
+}
+
+int runtime::group_extend(const std::string &group, const std::string &erp)
+{
+    std::lock_guard<std::mutex> g(patch_lock);
+    if (!h_parse || patched)
+        return SWOFTY_ASSET_LATE;
+    auto &list = extensions[norm(group)];
+    std::string e = norm(erp);
+    if (std::find(list.begin(), list.end(), e) == list.end())
+        list.push_back(e);
+    return SWOFTY_ASSET_OK;
 }
 
 int runtime::group_add(const json::Value &entry)

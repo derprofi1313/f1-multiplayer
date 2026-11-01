@@ -20,6 +20,10 @@
 
 namespace runtime::save_sandbox {
 
+constexpr const char *OFF_ENV = "SWOFTY_LAUNCHER_SAVES";
+constexpr unsigned EXIT_TEST = 91;
+constexpr unsigned EXIT_LAUNCHER = 93;
+constexpr const char *STATUS_FILE = "launcher-saves.json";
 constexpr const char *RUN_ENV = "SWOFTY_TEST_RUN";
 constexpr const char *TOKEN_ENV = "SWOFTY_TEST_TOKEN";
 constexpr const char *RUN_FILE = "run.json";
@@ -203,6 +207,98 @@ inline bool still_armed(std::string_view text, std::string_view token)
            doc["token"].type == json::Value::Str && !token.empty() && doc["token"].s == token;
 }
 
+// The launcher's saves (swofty/settings.json): {"launcher_saves":{"profile":"default","remote":"Z:\\...\\saves\\default\\remote"}}.
+// The block is there when the profile uses launcher saves; the core then serves the profile save from
+// `remote` with the same proxy the test sandbox uses.
+struct Launcher {
+    bool present = false, ok = false;
+    std::string why, profile, remote;
+};
+
+inline std::vector<std::string> split_path(std::string_view p)
+{
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : p) {
+        if (c == '/' || c == '\\') {
+            if (!cur.empty())
+                out.push_back(cur);
+            cur.clear();
+        } else
+            cur += c;
+    }
+    if (!cur.empty())
+        out.push_back(cur);
+    return out;
+}
+
+inline bool ansi_path(std::string_view p);
+inline bool utf8_path(std::string_view p);
+
+// The store of a launcher profile ends in saves/<profile>/remote, so a setting that names any other folder
+// is refused.
+inline bool store_path_ok(std::string_view remote, std::string_view profile)
+{
+    if (remote.empty() || remote.size() > 400 || !utf8_path(remote))
+        return false;
+    auto parts = split_path(remote);
+    if (parts.size() < 3)
+        return false;
+    for (size_t i = 0; i < parts.size(); i++)
+        if (parts[i] == "." || parts[i] == ".." || (i > 0 && parts[i].find(':') != std::string::npos))
+            return false;
+    size_t n = parts.size();
+    return parts[n - 1] == REMOTE && parts[n - 2] == profile && parts[n - 3] == "saves";
+}
+
+inline Launcher parse_launcher(std::string_view text)
+{
+    Launcher l;
+    json::Value doc;
+    if (text.empty() || !json::parse(std::string(text), doc) || doc.type != json::Value::Obj)
+        return l;
+    const json::Value &b = doc["launcher_saves"];
+    if (b.type == json::Value::Null)
+        return l;
+    l.present = true;
+    if (b.type != json::Value::Obj)
+        return l.why = "settings.json's launcher_saves is not an object", l;
+    if (b["profile"].type != json::Value::Str || !simple_name(b["profile"].s))
+        return l.why = "settings.json's launcher_saves has no plain profile name", l;
+    l.profile = b["profile"].s;
+    if (b["remote"].type != json::Value::Str)
+        return l.why = "settings.json's launcher_saves names no remote folder", l;
+    l.remote = b["remote"].s;
+    if (!store_path_ok(l.remote, l.profile))
+        return l.why = "settings.json's launcher_saves names a folder that is not saves/" + l.profile + "/remote: " + l.remote, l;
+    l.ok = true;
+    return l;
+}
+
+enum class Mode { off, test, launcher, fail };
+
+struct Selection {
+    Mode mode = Mode::off;
+    std::string why;
+};
+
+// Which save mode a session runs in. A test run keeps its own sandbox and never mixes with the launcher's.
+// `ea_backend` says the EA copy's storage can be served; until it can, an EA copy keeps its own saves.
+inline Selection select_mode(bool test_env, const Launcher &l, bool opted_out, std::string_view distribution, bool ea_backend)
+{
+    if (test_env)
+        return {Mode::test, ""};
+    if (!l.present)
+        return {Mode::off, ""};
+    if (opted_out)
+        return {Mode::off, "this session runs on Steam's saves (the launcher asked for it once)"};
+    if (distribution == "ea" && !ea_backend)
+        return {Mode::off, "launcher saves are not available on the EA copy yet; this session uses the EA copy's own saves"};
+    if (!l.ok)
+        return {Mode::fail, l.why};
+    return {Mode::launcher, ""};
+}
+
 // A path the game can open: a Unix path (the CLI under Proton) maps to Wine's Z: drive.
 inline std::string windows_path(std::string p)
 {
@@ -219,6 +315,31 @@ inline bool ansi_path(std::string_view p)
     return !p.empty() && std::all_of(p.begin(), p.end(), [](char c) { return c >= 0x20 && c < 0x7f; });
 }
 
+// A store path from settings.json is UTF-8 (a Windows user folder can be "C:\\Users\\Hüseyin"); the sandbox opens it
+// through wide paths, so any well-formed UTF-8 without control characters is accepted.
+inline bool utf8_path(std::string_view p)
+{
+    if (p.empty())
+        return false;
+    for (size_t i = 0; i < p.size();) {
+        auto c = static_cast<unsigned char>(p[i]);
+        if (c < 0x80) {
+            if (c < 0x20 || c == 0x7f)
+                return false;
+            i++;
+            continue;
+        }
+        size_t n = c >= 0xc2 && c <= 0xdf ? 2 : c >= 0xe0 && c <= 0xef ? 3 : c >= 0xf0 && c <= 0xf4 ? 4 : 0;
+        if (!n || i + n > p.size())
+            return false;
+        for (size_t k = 1; k < n; k++)
+            if ((static_cast<unsigned char>(p[i + k]) & 0xc0) != 0x80)
+                return false;
+        i += n;
+    }
+    return true;
+}
+
 // A Steam remote storage file name: one flat name, as the save device builds them
 // (<title dir>@<save>#<file>). Anything that could leave the folder is refused.
 inline bool valid_name(std::string_view n)
@@ -232,6 +353,76 @@ inline bool valid_name(std::string_view n)
             c == '"' || c == '<' || c == '>' || c == '|')
             return false;
     return n.find("..") == std::string_view::npos;
+}
+
+
+// The EA copy's save device (vtable 0x145b6dbf0) has no Steam helper: it opens <title dir>\\<save>\\<file> in place.
+// Its title dir is the wide string at save system+0xc0 (device+0x18 = save system+0x50, so config+0x70), an
+// inline buffer of config+0x68 characters whose storage sits at config+0x78.
+constexpr uintptr_t EA_VTABLE = 0x145b6dbf0;
+constexpr size_t EA_DEVICE_CONFIG = 0x18;
+constexpr size_t EA_CONFIG_CAP = 0x68;
+constexpr size_t EA_CONFIG_PTR = 0x70;
+constexpr size_t EA_CONFIG_INLINE = 0x78;
+constexpr size_t EA_TITLE_CAP = 0x104;
+constexpr const char *EA_TITLE_TAIL = "savegame\\ea";
+constexpr const char *EA_DIR_NAME = "ea";
+
+struct EaDevice {
+    bool readable = false;
+    uintptr_t vtable = 0, start_slot = 0, start = 0;
+    uint64_t cap = 0;
+    uintptr_t ptr = 0, inline_at = 0;
+    std::wstring title;
+};
+
+inline bool ends_with_nocase(const std::wstring &s, std::wstring_view tail)
+{
+    if (s.size() < tail.size())
+        return false;
+    for (size_t i = 0; i < tail.size(); i++) {
+        wchar_t a = s[s.size() - tail.size() + i], b = tail[i];
+        if (a >= L'A' && a <= L'Z')
+            a += 32;
+        if (b >= L'A' && b <= L'Z')
+            b += 32;
+        if (a != b)
+            return false;
+    }
+    return true;
+}
+
+inline std::string check_ea_device(const EaDevice &d, uintptr_t expected_vtable)
+{
+    if (!d.readable)
+        return "the EA save device is not readable";
+    if (!d.start || d.start_slot != d.start)
+        return "the save device's vtable slot +0x08 is not Ne_SaveSystem2Win_Start: not the NeSaveSystem2Win device";
+    if (expected_vtable && d.vtable != expected_vtable)
+        return "the save device's vtable is not the EA build's NeSaveSystem2Win";
+    if (d.cap != EA_TITLE_CAP)
+        return "the save device's title folder buffer is not 260 characters: not the layout the EA backend was written for";
+    if (!d.ptr || d.ptr != d.inline_at)
+        return "the save device's title folder is not held inline in its save system";
+    if (!ends_with_nocase(d.title, L"\\savegame\\ea"))
+        return "the save device's title folder does not end in savegame\\ea: it is not the EA copy's save folder";
+    return {};
+}
+
+// The title folder the EA device is pointed at for a store `.../saves/<profile>/remote`: its sibling `ea`, whose
+// `profile` folder is the profile save. Anything else is refused.
+inline std::string ea_title_dir(std::string_view remote, std::string_view profile)
+{
+    if (!store_path_ok(remote, profile))
+        return {};
+    std::string p(remote);
+    while (!p.empty() && (p.back() == '\\' || p.back() == '/'))
+        p.pop_back();
+    size_t cut = p.find_last_of("\\/");
+    if (cut == std::string::npos)
+        return {};
+    std::string out = p.substr(0, cut + 1) + EA_DIR_NAME;
+    return out.size() < EA_TITLE_CAP ? out : std::string();
 }
 
 // What the core reads from the save device at Ne_SaveSystem2Win_Start, before it changes anything.

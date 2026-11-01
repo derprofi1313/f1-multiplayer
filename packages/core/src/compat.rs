@@ -361,8 +361,9 @@ pub fn write_blocked_text_for(game: &Path, windows: bool) -> String {
         format!(
             "F1 25 is installed in {}, a folder Windows lets only administrators change, so F1 Multiplayer \
              can't add your mods there. Run F1 Multiplayer as administrator, or move F1 25 to a \
-             folder outside Program Files",
-            game.display()
+             folder outside Program Files{}",
+            game.display(),
+            crate::copies::move_hint(crate::install::Source::detect(game))
         )
     } else {
         format!(

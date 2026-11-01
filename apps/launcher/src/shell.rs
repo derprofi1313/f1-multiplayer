@@ -41,6 +41,7 @@ pub enum Page {
     Importer,
     Tools,
     Profiles,
+    Careers,
     Database,
     Multiplayer,
     Career,
@@ -57,6 +58,7 @@ impl Page {
             Self::Importer => tr("Simplified Importer"),
             Self::Tools => tr("Tools"),
             Self::Profiles => tr("Profiles"),
+            Self::Careers => tr("Saves"),
             Self::Database => tr("DB Editor"),
             Self::Multiplayer => tr("Multiplayer"),
             Self::Career => tr("Career"),
@@ -80,6 +82,7 @@ impl Page {
             Self::Importer => IconName::FolderInput,
             Self::Tools => IconName::Wrench,
             Self::Profiles => IconName::Layers,
+            Self::Careers => IconName::Save,
             Self::Database => IconName::Database,
             Self::Multiplayer => IconName::Users,
             Self::Career => IconName::Trophy,
@@ -124,6 +127,7 @@ pub struct Shell {
     pub(crate) crash_view: Option<CrashView>,
     pub(crate) crash_open: bool,
     pub(crate) dismissed: Option<PathBuf>,
+    pub(crate) steam_saves_once: bool,
     pub(crate) launch: Option<Launch>,
     pub(crate) notice: Option<String>,
     pub(crate) blocked: Option<Blocked>,
@@ -151,6 +155,9 @@ pub struct Shell {
     pub(crate) dropping: bool,
     pub(crate) vr_profiles: BTreeSet<String>,
     pub(crate) start_store: bool,
+    pub(crate) developer_mode: bool,
+    reload_generation: u64,
+    slow_logged: bool,
     /// `updates.check` from config.json, read when the library loads.
     pub(crate) update_check: bool,
     pub(crate) updates: crate::update::Updates,
@@ -175,6 +182,7 @@ pub struct Shell {
     /// The addon the Addons page highlights, and since when.
     pub(crate) highlight: Option<(String, Instant)>,
     pub(crate) addons: crate::addons::AddonsPage,
+    pub(crate) saves: crate::career_saves::SavesPage,
     pub(crate) db: crate::db::Db,
     pub(crate) news: crate::news::News,
     pub(crate) news_scroll: crate::news::NewsScroll,
@@ -393,6 +401,7 @@ impl Shell {
         } = prepared;
         let vr_profiles = config.vr_profiles;
         let start_store = config.launch.start_store;
+        let developer_mode = config.developer;
         let update_check = config.updates.check;
         crate::i18n::set(config.language.as_deref());
         let stale = store.clone();
@@ -402,19 +411,22 @@ impl Shell {
                     Ok(lines) => lines.iter().for_each(|l| eprintln!("swofty-launcher: {l}")),
                     Err(e) => eprintln!("swofty-launcher: could not check for an unfinished session: {e}"),
                 }
+                game::vault_at_start(&stale);
             })
             .detach();
         let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
-                let Ok((store, rediscover, seen)) = this.update(cx, |s, _| {
+                let Ok((store, rediscover, seen, profile, banner_due)) = this.update(cx, |s, _| {
                     let r = std::mem::take(&mut s.rediscover);
-                    (s.store.clone(), r, s.requests)
+                    let profile = s.library.profile.name.clone();
+                    let due = r || s.saves.banner_profile != profile;
+                    (s.store.clone(), r, s.requests, profile, due)
                 }) else {
                     break;
                 };
                 let probe = cx
                     .background_executor()
-                    .spawn(async move { game::probe(&store, rediscover, seen) })
+                    .spawn(async move { game::probe(&store, rediscover, seen, &profile, banner_due) })
                     .await;
                 if this
                     .update_in(cx, |s, window, cx| s.apply(probe, window, cx))
@@ -490,7 +502,7 @@ impl Shell {
             }
         });
         mp_poll.detach();
-        Self::watch_multiplayer(cx);
+        Self::watch_multiplayer(window, cx);
         let mut shell = Self {
             library,
             store,
@@ -519,6 +531,7 @@ impl Shell {
             crash_view: None,
             crash_open: false,
             dismissed: None,
+            steam_saves_once: false,
             launch: None,
             notice: None,
             blocked: None,
@@ -546,6 +559,9 @@ impl Shell {
             dropping: false,
             vr_profiles,
             start_store,
+            developer_mode,
+            reload_generation: 0,
+            slow_logged: false,
             update_check,
             updates: crate::update::Updates::new(),
             forms: HashMap::new(),
@@ -564,6 +580,7 @@ impl Shell {
             live_n: 0,
             highlight: None,
             addons: crate::addons::AddonsPage::new(window, cx),
+            saves: crate::career_saves::SavesPage::default(),
             db: crate::db::Db::new(cx),
             news,
             news_scroll: Default::default(),
@@ -576,6 +593,9 @@ impl Shell {
             _catalog: catalog,
         };
         shell.refresh_views(cx);
+        if std::env::var("SWOFTY_LAUNCHER_OPEN_PAGE").is_ok_and(|v| v == "saves") {
+            shell.open_page(Page::Careers, cx);
+        }
         shell.fetch_news(cx);
         shell.sync_catalog_updates();
         shell.fetch_catalog(cx);
@@ -638,9 +658,44 @@ impl Shell {
     }
 
     fn apply(&mut self, probe: Probe, window: &mut Window, cx: &mut Context<Self>) {
+        let started = Instant::now();
+        self.apply_probe(probe, window, cx);
+        self.note_slow("probe", self.page_name(), started);
+    }
+
+    fn page_name(&self) -> &'static str {
+        match self.page {
+            Page::Section(_) => "panel",
+            page => page.nav_label(),
+        }
+    }
+
+    fn note_slow(&mut self, what: &str, page: &str, started: Instant) {
+        let took = started.elapsed();
+        if took > Duration::from_millis(100) && !self.slow_logged {
+            self.slow_logged = true;
+            crate::app_log::note(&format!(
+                "ui: {what} took {} ms on the UI thread while on the {page} page",
+                took.as_millis()
+            ));
+        }
+    }
+
+    fn apply_probe(&mut self, probe: Probe, window: &mut Window, cx: &mut Context<Self>) {
         let before = (self.requests, self.processes.clone(), self.session.clone());
         let was_live = self.launch.is_some();
         self.requests = probe.requests;
+        let root = self.store.root.clone();
+        if let Some(banner) = probe.banner
+            && probe.banner_profile == self.library.profile.name
+        {
+            self.saves.banner = banner;
+            self.saves.banner_profile = probe.banner_profile;
+        }
+        self.saves.game_running = !probe.processes.is_empty();
+        if probe.saves_marker && self.saves.take_notice(&root) {
+            self.show_saves_notice(window, cx);
+        }
         if let Some(n) = probe.recovered.filter(|n| n.at > self.recovered_seen) {
             self.recovered_seen = n.at;
             let mut text: Vec<String> = n.lines.iter().take(4).cloned().collect();
@@ -691,6 +746,9 @@ impl Shell {
             self.copies = found.all;
             self.missing_copies = found.missing;
             self.detected = true;
+            if self.page == Page::Careers {
+                self.refresh_saves();
+            }
             if probe.merged {
                 self.reload(cx);
             } else if changed {
@@ -744,6 +802,10 @@ impl Shell {
                         None => failed.unwrap_or_else(|| launch.failure()),
                     })
                     .filter(|n| !n.contains(swofty_core::busy::CANCELLED));
+                    let why = self.notice.clone().unwrap_or_else(|| launch.failure());
+                    self.mp_launch_ended(Some(why));
+                } else {
+                    self.mp_launch_ended(None);
                 }
                 self.launch = None;
             }
@@ -806,13 +868,51 @@ impl Shell {
     }
 
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
-        self.library = Library::load(&self.store);
+        self.reload_generation += 1;
+        let library = Library::load(&self.store);
+        self.install_library(library, cx);
+    }
+
+    pub(crate) fn reload_in_background(&mut self, cx: &mut Context<Self>) {
+        self.reload_generation += 1;
+        let generation = self.reload_generation;
+        let store = self.store.clone();
+        cx.spawn(async move |this, cx| {
+            let started = Instant::now();
+            let library = cx
+                .background_executor()
+                .spawn(async move { Library::read(&store) })
+                .await;
+            crate::app_log::note(&format!(
+                "profile switch: library loaded in {} ms",
+                started.elapsed().as_millis()
+            ));
+            this.update(cx, |s, cx| {
+                if s.reload_generation == generation {
+                    let mut library = library;
+                    library.save_order(&s.store);
+                    s.install_library(library, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn install_library(&mut self, library: Library, cx: &mut Context<Self>) {
+        self.library = library;
         let config = self.store.config();
+        self.developer_mode = config.developer;
         self.vr_profiles = config.vr_profiles;
         self.start_store = config.launch.start_store;
         self.update_check = config.updates.check;
         if matches!(self.page, Page::Section(i) if i >= self.library.sections.len()) {
             self.page = Page::Addons;
+        }
+        if self.page == Page::Careers {
+            self.refresh_saves_in_background(cx);
+        } else {
+            self.refresh_banner_in_background(cx);
         }
         self.refresh_views(cx);
         self.db_profile_changed(cx);
@@ -882,32 +982,49 @@ impl Shell {
     }
 
     pub(crate) fn play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.play_for(None, window, cx);
+    }
+
+    /// Play, or Play for a room: armed to go straight to the room's lobby, with the host's row ids for the
+    /// build when `room` has them. Whether the launch started.
+    pub(crate) fn play_for(
+        &mut self,
+        room: Option<crate::multiplayer::RoomLaunch>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(install) = self.install.clone() else {
-            return;
+            return false;
         };
         if install.source == Source::EaApp && self.ea_app_warn_pending() {
             self.ea_app_warn(window, cx);
-            return;
+            return false;
         }
         if self.addons.checking {
             window.push_notification(Notification::info("Play when the conflict check finishes."), cx);
-            return;
+            return false;
+        }
+        if let Some(moved) = install.moved.clone() {
+            self.show_ea_moved(moved, window, cx);
+            return false;
         }
         if swofty_core::compat::write_blocker(&install.dir).is_some() {
             self.show_admin_needed(&install, window, cx);
-            return;
+            return false;
         }
-        if !swofty_core::setup::done(&self.store.root) {
+        // Vanilla is F1 25 as it shipped: the modded setup and the offline terms don't apply to it.
+        let vanilla = self.library.profile.is_vanilla();
+        if !vanilla && !swofty_core::setup::done(&self.store.root) {
             self.open_setup(window, cx);
-            return;
+            return false;
         }
-        if !swofty_core::offline::is_accepted(&self.store.root) {
+        if !vanilla && !swofty_core::offline::is_accepted(&self.store.root) {
             self.confirm_offline_play(window, cx);
-            return;
+            return false;
         }
-        if swofty_core::setup::first_launch(&self.store.root) {
+        if !vanilla && swofty_core::setup::first_launch(&self.store.root) {
             self.first_launch_notice(window, cx);
-            return;
+            return false;
         }
         self.notice = None;
         self.blocked = None;
@@ -918,19 +1035,31 @@ impl Shell {
         self.note_lonely_bases(window, cx);
         if !self.registry_check(window, cx) {
             cx.notify();
-            return;
+            return false;
         }
         if let Some(d) = swofty_core::known_problems::outdated_exe(install.version().as_deref()) {
             window.push_notification(Notification::warning(d.text()).title(d.title).autohide(false), cx);
         }
-        match Launch::start(
+        let armed = match &room {
+            Some(_) => Some(swofty_core::multiplayer::bridge::ARMED),
+            None => self
+                .mp_allowed()
+                .then_some(swofty_core::multiplayer::bridge::ARMED),
+        };
+        let started = match Launch::start(
             &self.store,
             &self.library.profile.name,
             &install,
             self.launch_mode(),
-            self.mp_allowed(),
+            armed,
+            room.as_ref().and_then(|r| r.row_ids.as_deref()),
+            room.as_ref().map(|r| r.direct_start.as_str()),
+            std::mem::take(&mut self.steam_saves_once),
         ) {
-            Ok(l) => self.launch = Some(l),
+            Ok(l) => {
+                self.launch = Some(l);
+                true
+            }
             Err(e) => {
                 self.launch_failed_seen = game::now_secs();
                 window.push_notification(
@@ -939,9 +1068,11 @@ impl Shell {
                         .autohide(false),
                     cx,
                 );
+                false
             }
-        }
+        };
         cx.notify();
+        started
     }
 
     /// The 1.6 dependency check before Play, as the build runs it: a stop shows as an error and
@@ -985,6 +1116,16 @@ impl Shell {
         };
         let all = deps::read_all(&self.store, &installed);
         let report = deps::for_order(&profile.name, &plan.order, &installed, &all);
+        let careers =
+            swofty_core::stdlib::careers::read(&swofty_core::stdlib::careers::data_path(&self.store.root));
+        if let Some(line) = swofty_core::stdlib::careers::play_line(&careers, &plan.order, &installed) {
+            window.push_notification(
+                Notification::warning(line)
+                    .title("Careers that need addons")
+                    .autohide(false),
+                cx,
+            );
+        }
         for f in &report.findings {
             let body = f.detail.join(" ");
             let n = match f.level {
@@ -1037,6 +1178,50 @@ impl Shell {
                 cx,
             );
         }
+    }
+
+    pub(crate) fn saves_refused(&self) -> Option<&SessionRecord> {
+        self.session.as_ref().filter(|s| {
+            s.exit_code == Some(swofty_core::launcher_saves::EXIT)
+                && self.dismissed.as_ref() != Some(&s.dir)
+                && s.ended.is_some_and(|e| game::now_secs() - e < 1800.0)
+        })
+    }
+
+    pub(crate) fn play_with_steam_saves(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.steam_saves_once = true;
+        self.play(window, cx);
+        if self.launch.is_none() {
+            self.steam_saves_once = false;
+        }
+    }
+
+    pub(crate) fn set_launcher_saves(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.library.profile.name.clone();
+        match self.store.update_profile(&name, |p| {
+            p.launcher_saves = on;
+            Ok(())
+        }) {
+            Ok(()) => {
+                crate::app_log::note(&format!(
+                    "saves: profile {name} now plays on {}",
+                    if on { "its launcher saves" } else { "Steam's saves" }
+                ));
+                self.library.profile.launcher_saves = on;
+                window.push_notification(
+                    Notification::info(match on {
+                        true => format!("{name} plays on its own launcher saves."),
+                        false => format!("{name} plays on your Steam saves."),
+                    }),
+                    cx,
+                );
+            }
+            Err(e) => {
+                crate::app_log::action("save profile").failed(&e);
+                window.push_notification(Notification::error(e.to_string()), cx);
+            }
+        }
+        cx.notify();
     }
 
     pub(crate) fn launch_mode(&self) -> LaunchMode {
@@ -1309,7 +1494,16 @@ impl Shell {
             crate::app_log::action("switch profile").failed(&e);
             window.push_notification(Notification::error(e.to_string()), cx);
         }
-        self.reload(cx);
+        self.reload_in_background(cx);
+    }
+
+    /// Plays F1 25 as it shipped: the vanilla profile, with no addons. The profile stays
+    /// vanilla afterwards; switch back on the Addons or Profiles page.
+    pub(crate) fn play_vanilla(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.library.profile.is_vanilla() {
+            self.switch_profile(swofty_core::profile::VANILLA, window, cx);
+        }
+        self.play(window, cx);
     }
 
     pub(crate) fn locate_game(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1517,7 +1711,7 @@ impl Shell {
                     div()
                         .text_size(px(12.))
                         .text_color(p.text_placeholder)
-                        .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                        .child(format!("v{}", swofty_core::update::DISPLAY_VERSION)),
                 ),
         )
     }
@@ -1536,6 +1730,9 @@ impl Shell {
         }
         self.db_page_change(page, cx);
         self.page = page;
+        if page == Page::Careers {
+            self.refresh_saves_in_background(cx);
+        }
         if let Some(i) = self.open_section().filter(|i| !self.section_loaded(*i)) {
             self.fetch_views(Some(i), cx);
         }
@@ -1552,6 +1749,65 @@ impl Shell {
     fn big_nav(&self, page: Page, count: Option<usize>, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let art = NavArt::Icon(page.icon());
         self.big_row(page, page.nav_label().into(), art, count, p, cx)
+    }
+
+    fn profile_pointer(&self, p: Palette) -> Div {
+        v_flex().flex_shrink_0().items_center().gap(px(2.)).child(
+            h_flex()
+                .w_full()
+                .gap(px(8.))
+                .items_center()
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(p.accent)
+                .bg(p.selected)
+                .text_size(px(12.))
+                .text_color(p.text)
+                .child(
+                    Icon::new(IconName::ArrowDown)
+                        .size(px(14.))
+                        .flex_shrink_0()
+                        .text_color(p.accent),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child("Switch profiles here to see their saves"),
+                ),
+        )
+    }
+
+    fn sub_nav(&self, page: Page, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.page == page;
+        h_flex()
+            .id(SharedString::from(format!("nav-{}", page.nav_label())))
+            .h(px(32.))
+            .flex_shrink_0()
+            .ml(px(18.))
+            .pl(px(6.))
+            .pr(px(10.))
+            .gap(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .cursor_pointer()
+            .text_size(px(13.))
+            .font_weight(FontWeight::MEDIUM)
+            .map(|d| {
+                if active {
+                    d.bg(p.selected).border_color(p.accent).text_color(p.text)
+                } else {
+                    d.border_color(transparent_black())
+                        .text_color(p.text_muted)
+                        .hover(move |s| s.bg(p.hover).text_color(p.text))
+                }
+            })
+            .child(nav_art(NavArt::Icon(page.icon()), 22., active, p))
+            .child(div().flex_1().truncate().child(page.nav_label()))
+            .on_click(cx.listener(move |this, _, _, cx| this.open_page(page, cx)))
+            .into_any_element()
     }
 
     fn big_row(
@@ -1709,9 +1965,13 @@ impl Shell {
             (Page::News, None),
             (Page::Addons, Some(self.library.listed().count())),
             (Page::Browser, None),
-            (Page::Tools, None),
             (Page::Profiles, Some(self.library.profiles.len())),
+            (Page::Careers, None),
         ];
+        if self.developer_mode {
+            big.insert(3, (Page::Tools, None));
+        }
+        // F1 Multiplayer signs in to the host's own server, not Swofty's: both pages are always there.
         big.push((Page::Multiplayer, None));
         big.push((Page::Career, None));
         v_flex()
@@ -1739,12 +1999,12 @@ impl Shell {
                         .scroll_y("sidebar")
                         .pr(px(SCROLLBAR_GAP))
                         .gap(px(8.))
-                        .child(
-                            v_flex().flex_shrink_0().gap(px(2.)).children(
-                                big.into_iter()
-                                    .map(|(page, count)| self.big_nav(page, count, p, cx)),
-                            ),
-                        )
+                        .child(v_flex().flex_shrink_0().gap(px(2.)).children(big.into_iter().map(
+                            |(page, count)| match page {
+                                Page::Careers => self.sub_nav(page, p, cx),
+                                _ => self.big_nav(page, count, p, cx),
+                            },
+                        )))
                         .child(
                             v_flex()
                                 .flex_shrink_0()
@@ -1770,6 +2030,7 @@ impl Shell {
                     .gap(px(6.))
                     .pt(px(4.))
                     .pb(px(2.))
+                    .children((self.page == Page::Careers).then(|| self.profile_pointer(p)))
                     .child(label("ACTIVE PROFILE", p).px(px(4.)))
                     .child(self.profile_picker(p, cx)),
             )
@@ -1822,6 +2083,7 @@ fn panel_art(art: NavArt, active: bool, p: Palette) -> Div {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let started = Instant::now();
         self.painted = Instant::now();
         let p = palette(cx);
         let wide = window.viewport_size().width > px(1500.);
@@ -1859,6 +2121,7 @@ impl Render for Shell {
             Page::Browser => self.browser_page(p, cx),
             Page::Database => self.db_page(p, cx),
             Page::Profiles => self.profiles_page(p, wide, cx),
+            Page::Careers => self.careers_page(p, wide, cx),
             Page::Multiplayer => self.multiplayer_page(p, cx),
             Page::Career => self.career_page(p, cx),
             Page::Section(i) => self.section_page(i, p, cx),
@@ -1866,7 +2129,8 @@ impl Render for Shell {
         if self.dropping && !cx.has_active_drag() {
             self.dropping = false;
         }
-        v_flex()
+        let page = self.page_name();
+        let tree = v_flex()
             .id("shell")
             .relative()
             .size_full()
@@ -1906,7 +2170,9 @@ impl Render for Shell {
             .children(self.progress_card(p))
             .children(self.task_dialog(p, window, cx))
             .children(self.crash_overlay(p, cx))
-            .when(self.dropping, |d| d.child(self.drop_overlay(p)))
+            .when(self.dropping, |d| d.child(self.drop_overlay(p)));
+        self.note_slow("render", page, started);
+        tree
     }
 }
 

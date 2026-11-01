@@ -241,6 +241,21 @@ impl Collector {
         }
     }
 
+    fn ea_diagnostics(&mut self) {
+        if !cfg!(windows) {
+            return;
+        }
+        let mut taken = Vec::new();
+        for log in crate::ea_diag::newest_logs(&crate::ea_diag::log_dirs(), crate::ea_diag::LOG_FILES) {
+            let name = crate::ea_diag::log_entry_name(&log, &mut taken);
+            self.file_capped(format!("ea-app/{name}"), &log, None, crate::ea_diag::LOG_TAIL);
+        }
+        match crate::ea_diag::application_events() {
+            Ok(text) => self.push("windows/application-events.txt".into(), text.into_bytes(), None),
+            Err(e) => self.skipped.push(format!("windows/application-events.txt: {e}")),
+        }
+    }
+
     fn file(&mut self, path: String, from: &Path, redact: Option<fn(&str) -> String>) {
         self.file_capped(path, from, redact, self.limits.file);
     }
@@ -421,6 +436,7 @@ impl Bundle {
                 Some(crate::multiplayer::diag::scrub as fn(&str) -> String),
             );
         }
+        c.ea_diagnostics();
         let not_stock = store.root.join("state/not-stock.json");
         if not_stock.is_file() {
             c.file("state/not-stock.json".into(), &not_stock, None);
@@ -455,6 +471,24 @@ impl Bundle {
             }
             crash_report = std::fs::read_to_string(&c0.report).ok();
         }
+        let found = match (crash_report.as_deref(), crash.is_none()) {
+            (Some(text), _) => CrashFound::Report(text),
+            (None, true) => logged_report(store, &sessions).map_or_else(
+                || {
+                    let lines = sessions
+                        .first()
+                        .map(|d| crate::fast_fail::session_lines(d))
+                        .unwrap_or_default();
+                    if lines.is_empty() {
+                        CrashFound::None
+                    } else {
+                        CrashFound::FastFail(lines)
+                    }
+                },
+                CrashFound::Unsaved,
+            ),
+            (None, false) => CrashFound::None,
+        };
         let os = os_description();
         let mut bundle = Self {
             stem: format!("swofty-logs-{}-{stamp}", file_safe(&report.name)),
@@ -467,7 +501,7 @@ impl Bundle {
             skipped: c.skipped,
         };
         let perf = newest_perf(live_perf, &sessions);
-        let summary = bundle.summary(store, report, stamp, perf, crash_report.as_deref(), &loader);
+        let summary = bundle.summary(store, report, stamp, perf, found, &loader);
         bundle.entries.insert(
             0,
             Entry {
@@ -479,13 +513,29 @@ impl Bundle {
         bundle
     }
 
+    fn stub_blocked_line(&self, game: Option<&Path>) -> Option<String> {
+        let logs: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|e| e.path.ends_with(crate::ea_diag::PROXY_LOG))
+            .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+            .collect();
+        let block = crate::offline::stub_blocked(game.unwrap_or(Path::new("")), &logs, 0)?;
+        Some(format!(
+            "offline: {} was blocked by antivirus (error {}); {}",
+            block.name(),
+            block.code,
+            "the EA app log shows the virus error on createProcess"
+        ))
+    }
+
     fn summary(
         &self,
         store: &Store,
         report: &Report,
         stamp: &str,
         perf: Option<(String, PathBuf)>,
-        crash: Option<&str>,
+        crash: CrashFound,
         loader: &[String],
     ) -> String {
         let mut s = String::new();
@@ -565,16 +615,40 @@ impl Bundle {
         }
         s.push_str("\nCrash\n");
         match crash {
-            Some(text) => {
+            CrashFound::Report(text) => {
                 for l in crash_excerpt(text) {
                     s.push_str(&l);
                     s.push('\n');
                 }
             }
-            None => s.push_str("No crash report was found (the game did not write one this session)\n"),
+            CrashFound::Unsaved(path) => s.push_str(&format!(
+                "A crash report was started ({path}) but could not be saved, so none was found\n"
+            )),
+            CrashFound::FastFail(lines) => {
+                s.push_str("No crash report was found (the game did not write one this session)\n");
+                for l in lines {
+                    s.push_str(&l);
+                    s.push('\n');
+                }
+            }
+            CrashFound::None => {
+                s.push_str("No crash report was found (the game did not write one this session)\n")
+            }
+        }
+        s.push_str("\nSaves\n");
+        let mut sources = logs.clone();
+        for name in LAUNCH_LOGS {
+            sources.push((name.to_owned(), store.root.join(name)));
+        }
+        for l in saves_lines(&sources) {
+            s.push_str(&l);
+            s.push('\n');
         }
         s.push_str("\nGame files against Steam\n");
         s.push_str(&game_files_section(store, report.game.dir.as_deref()));
+        if let Some(line) = self.stub_blocked_line(report.game.dir.as_deref()) {
+            s.push_str(&format!("  {line}\n"));
+        }
         s.push_str("\nPerformance\n");
         match perf {
             Some((label, path)) => {
@@ -788,6 +862,43 @@ fn overlay_lines(store: &Store, logs: &[(String, PathBuf)]) -> Vec<String> {
     out
 }
 
+const SAVES_LINES: usize = 60;
+
+/// The `[saves]` lines that say where the game's profile save came from and which career slots
+/// and containers it held, minus the per-call sandbox chatter.
+fn saves_excerpt(text: &str, cap: usize) -> Vec<String> {
+    text.lines()
+        .filter(|l| {
+            (l.contains("[saves]") && !l.contains("[saves] sandbox:"))
+                || l.contains("saves: Steam remote folder")
+        })
+        .take(cap)
+        .map(|l| format!("  {}", l.trim_end()))
+        .collect()
+}
+
+fn saves_lines(logs: &[(String, PathBuf)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (label, log) in logs {
+        let Ok(head) = read_head(log, OVERLAY_READ) else {
+            continue;
+        };
+        let lines = saves_excerpt(&String::from_utf8_lossy(&head), SAVES_LINES);
+        if lines.is_empty() && label.starts_with("state/") {
+            continue;
+        }
+        out.push(label.clone());
+        if lines.is_empty() {
+            out.push("  no [saves] lines".to_owned());
+        }
+        out.extend(lines);
+    }
+    if out.is_empty() {
+        out.push("  No loader log was found".to_owned());
+    }
+    out
+}
+
 fn newest_perf(live: Option<PathBuf>, sessions: &[PathBuf]) -> Option<(String, PathBuf)> {
     let kept = sessions.iter().map(|d| d.join("perf.log")).find(|p| p.is_file());
     match (live, kept) {
@@ -811,8 +922,31 @@ fn file_name(path: &Path) -> String {
 /// A crash report the core wrote (`crash-<time>.txt`) or its minidump
 /// (`crash-<time>.dmp`).
 fn is_crash_file(path: &Path) -> bool {
-    let name = file_name(path);
-    name.starts_with("crash-") && (name.ends_with(".txt") || name.ends_with(".dmp"))
+    crate::crash_report::is_crash_name(&file_name(path))
+}
+
+enum CrashFound<'a> {
+    Report(&'a str),
+    Unsaved(String),
+    FastFail(Vec<String>),
+    None,
+}
+
+const LOGGED_READ: u64 = 4 << 20;
+
+/// The crash report path the newest session's loader.log (or the fallback log in the data folder) says the
+/// core began writing, for when no such file turned up.
+fn logged_report(store: &Store, sessions: &[PathBuf]) -> Option<String> {
+    let mut logs: Vec<PathBuf> = sessions
+        .first()
+        .map(|d| d.join("loader.log"))
+        .into_iter()
+        .collect();
+    logs.push(store.root.join(LOADER_FALLBACK));
+    logs.iter().find_map(|log| {
+        let (tail, _) = read_tail(log, LOGGED_READ).ok()?;
+        crate::crash_report::logged_path(&String::from_utf8_lossy(&tail))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -821,8 +955,8 @@ pub struct Crash {
     pub dump: Option<PathBuf>,
 }
 
-/// The newest crash report across the running game's loader folder and the
-/// kept sessions, with its minidump beside it when one exists.
+/// The newest crash report across the running game's loader folder, the
+/// data folder's fallback and the kept sessions, with its minidump beside it when one exists.
 pub fn newest_crash(store: &Store, game: Option<&Path>, sessions: &[PathBuf]) -> Option<Crash> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(game) = game {
@@ -832,14 +966,14 @@ pub fn newest_crash(store: &Store, game: Option<&Path>, sessions: &[PathBuf]) ->
         dirs.push(s.clone());
         dirs.push(s.join("game-logs"));
     }
-    let _ = store;
+    dirs.push(crate::crash_report::fallback_dir(&store.root));
     let mut reports: Vec<PathBuf> = dirs
         .iter()
         .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
         .map(|e| e.path())
         .filter(|p| {
             let n = file_name(p);
-            n.starts_with("crash-") && n.ends_with(".txt") && p.is_file()
+            crate::crash_report::is_crash_name(&n) && n.ends_with(".txt") && p.is_file()
         })
         .collect();
     // The names carry a sortable UTC-ish stamp, so the last by name is the newest; modified time

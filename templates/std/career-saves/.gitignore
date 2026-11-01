@@ -1,0 +1,4 @@
+native/build/
+native/*.dll
+native/*.lib
+test/storage/

@@ -22,7 +22,11 @@ pub const TABLES: [&str; 2] = [
 /// What the game reads when a value picks a Driver Manager driver a build doesn't add.
 pub const MISSING: &str = "the game would read a driver and entrant its database doesn't have";
 const FILE: &str = "drivers.json";
-const IDS: std::ops::RangeInclusive<u32> = 208..=253;
+const IDS: std::ops::RangeInclusive<u32> = 208..=16382;
+
+fn usable(id: u32) -> bool {
+    IDS.contains(&id) && id != 254 && id & 0xff != 0xff
+}
 const FIRST_LOOK: u32 = 366;
 const NAME_MAX: usize = 24;
 const NATIONALITIES: &str = "entrants.nationality.nationality";
@@ -208,9 +212,9 @@ fn added(d: &Saved, all: &[Saved], stock: &Stock) -> bool {
             .iter()
             .any(|o| o.code == d.code && (new || o.stat_id < d.stat_id));
     let ids = match new {
-        true => all.len() < IDS.clone().count(),
+        true => all.len() < IDS.clone().filter(|id| usable(*id)).count(),
         false => {
-            IDS.contains(&d.stat_id)
+            usable(d.stat_id)
                 && d.preset_id >= FIRST_LOOK
                 && !stock.drivers.contains(&d.stat_id)
                 && !stock.looks.contains(&d.preset_id)

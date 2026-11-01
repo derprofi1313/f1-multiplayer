@@ -200,6 +200,13 @@ pub enum Role {
     Client,
 }
 
+/// The room launch cover's current step, as the running game reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cover {
+    pub step: String,
+    pub percent: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameStatus {
     pub screen: Screen,
@@ -211,6 +218,11 @@ pub struct GameStatus {
     pub self_member: u8,
     #[serde(default)]
     pub base: u16,
+    #[serde(default)]
+    pub cover: Option<Cover>,
+    /// Why the game's own room start (the direct start) failed, when it did.
+    #[serde(default)]
+    pub room_failed: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

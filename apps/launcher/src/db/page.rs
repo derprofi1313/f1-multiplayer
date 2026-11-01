@@ -763,6 +763,17 @@ impl Shell {
                 .id(SharedString::from(format!("db-note-{i}")))
                 .into_any_element()
         });
+        let warnings: Vec<AnyElement> = slot
+            .map(|s| s.view.warnings.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(i, w)| {
+                notice("db-warning", IconName::TriangleAlert, p.warning, w, p)
+                    .id(SharedString::from(format!("db-warning-{i}")))
+                    .into_any_element()
+            })
+            .collect();
         let toolbar = slot.map(|slot| {
             let scope = module.scope.as_ref().map(|sc| {
                 let current = slot.scope.clone().unwrap_or_default();
@@ -850,6 +861,7 @@ impl Shell {
             .gap(px(14.))
             .child(head)
             .children(notes)
+            .children(warnings)
             .children(toolbar)
             .child(
                 h_flex()

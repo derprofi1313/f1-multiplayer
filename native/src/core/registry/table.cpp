@@ -135,6 +135,7 @@ int c_layer(const char *registry, const char *id, SwoftyText patch, uint32_t sco
     sp.registry = str(registry);
     sp.id = str(id);
     sp.scope = scope_of(scope);
+    sp.automatic = scope == SWOFTY_SCOPE_AUTOMATIC;
     sp.change.patch = v;
     return store().layer(sp, nullptr);
 }
@@ -250,6 +251,7 @@ int c_layer_fn(const char *registry, const char *id, SwoftyEditFn edit, void *us
     sp.registry = str(registry);
     sp.id = str(id);
     sp.scope = scope_of(scope);
+    sp.automatic = scope == SWOFTY_SCOPE_AUTOMATIC;
     sp.change.is_patch = false;
     sp.change.fn = edit;
     sp.change.user = user;
@@ -267,6 +269,7 @@ int c_layer_select(const char *registry, SwoftyMatchFn match, const char *prefix
     sp.registry = str(registry);
     sp.selector = true;
     sp.scope = scope_of(scope);
+    sp.automatic = scope == SWOFTY_SCOPE_AUTOMATIC;
     sp.match = match;
     sp.match_user = user;
     sp.has_prefix = prefix != nullptr;
@@ -566,7 +569,15 @@ int load_data_file(const std::string &addon, const std::string &path, const std:
                     sp.addon = addon;
                     sp.registry = reg;
                     sp.selector = true;
+                    sp.automatic = true;
                     sp.source = path;
+                    if (auto sc = sel.find("scope")) {
+                        if (!sc->is_string() || sc->as_string() != "global") {
+                            bad++;
+                            continue;
+                        }
+                        sp.automatic = false;
+                    }
                     if (auto ids = sel.find("ids"); ids && ids->is_string()) {
                         std::string p(ids->as_string());
                         if (!p.empty() && p.back() == '*')
@@ -612,6 +623,7 @@ int load_data_file(const std::string &addon, const std::string &path, const std:
                 sp.addon = addon;
                 sp.registry = reg;
                 sp.id = key;
+                sp.automatic = true;
                 sp.source = path;
                 sp.change.patch = value;
                 bad += st.layer(sp, nullptr) != SWOFTY_ASSET_OK;

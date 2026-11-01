@@ -69,6 +69,7 @@ pub fn waited(log: &str, wait: &Wait) -> bool {
     match wait {
         Wait::Event(id) => count_event(log, id) > 0,
         Wait::Log(p) => count_log(log, p) > 0,
+        Wait::Ms(_) => true,
     }
 }
 
@@ -76,6 +77,7 @@ pub fn wait_text(wait: &Wait) -> String {
     match wait {
         Wait::Event(id) => format!("event {id}"),
         Wait::Log(p) => format!("a log line /{p}/"),
+        Wait::Ms(n) => format!("{n} ms"),
     }
 }
 

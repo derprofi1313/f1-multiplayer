@@ -29,6 +29,7 @@ static_assert(offsetof(GdbValueMap, mask) == 0x30);
 static_assert(offsetof(GdbValueMap, max_num_elements_allowed) == 0x38);
 static_assert(sizeof(GdbValueMap) == 0x48);
 
+inline constexpr address<"Gdb_FindMetadata"> Gdb_FindMetadata{}; // L2 experimental
 using Gdb_HashMap_Rehash_t = void(GdbValueMap *map, uint64_t num_buckets);
 inline constexpr fn<"Gdb_HashMap_Rehash", Gdb_HashMap_Rehash_t> Gdb_HashMap_Rehash{}; // L2 experimental
 using Gdb_Load_GameDatabase_t = GdbDatabase *(GdbDatabase *db, void *cfg);

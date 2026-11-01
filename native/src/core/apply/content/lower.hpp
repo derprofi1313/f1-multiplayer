@@ -51,6 +51,12 @@ struct Folder {
     std::string game_dir, file, addon, id;
 };
 
+struct GarageArt {
+    std::string id, addon, package, team, folder, root, game_path;
+    bool srgb = true;
+    std::vector<std::string> vehicles, groups;
+};
+
 struct Owned {
     std::string label, id;
     bool owned = true;
@@ -78,6 +84,7 @@ struct Plan {
     std::vector<Folder> folders;
     std::vector<Owned> owned;
     std::vector<LogoImage> logos;
+    std::vector<GarageArt> garages;
     std::vector<std::pair<std::string, std::string>> texts;
     std::vector<std::string> lines;
     std::size_t keys = 0;
@@ -317,6 +324,10 @@ inline void lower_vehicle(const std::string &id, const Value &rec, const Lookup 
         set["tyre_wear_scale"] = text(rec["tyre_wear_scale"]);
     if (rec["package"].is_string())
         set["vehicle_package"] = key_of(rec["package"].as_string());
+    if (rec["drs_capable"].is_bool())
+        set["drs_capable"] = text(rec["drs_capable"]);
+    if (rec["engine"].is_string())
+        set["engine"] = key_of(rec["engine"].as_string());
     const Value &ai = rec["ai"]["asset_filename"];
     if (ai.is_string() && ai.as_string() != "auto")
         set["asset_filename"] = ai;

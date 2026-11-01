@@ -37,6 +37,11 @@ pub struct RunArgs {
     winedebug: String,
     #[arg(long, help = "Close this copy's running F1 25 first")]
     restart: bool,
+    #[arg(
+        long,
+        help = "Start F1 25 as it shipped: put the game folder back to its baseline, then start it through Steam with no Swofty file, loader or launch option"
+    )]
+    vanilla: bool,
     #[arg(long, help = "Launch through Proton directly instead of asking Steam")]
     direct: bool,
     #[arg(
@@ -47,6 +52,11 @@ pub struct RunArgs {
     no_start_store: bool,
     #[arg(long, hide = true)]
     via_ea: bool,
+    #[arg(
+        long,
+        help = "Play this one session on Steam's saves, though the profile uses launcher saves"
+    )]
+    steam_saves_once: bool,
     #[arg(
         long,
         help = "Start F1 25 in VR, like Steam's VR launch option (passes -vr; on Linux, starts SteamVR first)"
@@ -89,6 +99,9 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
     let g = crate::build::game(store, explicit)?;
     if wrapped {
         return wrapper(store, profile, &args, &g).inspect_err(|e| note_blocked(store, e));
+    }
+    if args.vanilla {
+        return run_vanilla(store, &g);
     }
     crate::build::supported(&g)?;
     let game = g.dir.clone();
@@ -135,6 +148,7 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
     }
     match crate::ea::store_start(Source::detect(&game), args.direct) {
         crate::ea::StoreStart::EaApp => {
+            crate::ea::check_recorded(&game)?;
             if args.apply {
                 crate::ea::dll_setting(store, &g, args.no_start_store)?;
             }
@@ -149,6 +163,10 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
         profile: Some(profile.into()),
         apply: args.apply,
         netplay: std::env::var(NETPLAY_ENV).ok().filter(|v| !v.is_empty()),
+        row_ids: std::env::var_os(swofty_core::row_ids::ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from),
+        steam_saves_once: args.steam_saves_once,
     };
     write_json(&store.root.join("state/launch.json"), &request)?;
     let mode = if args.vr {
@@ -405,6 +423,27 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
     if request.netplay.is_some() && !written_within(&launch_path, NETPLAY_REQUEST_LIFE) {
         request.netplay = None;
     }
+    if request.row_ids.is_some() && !written_within(&launch_path, NETPLAY_REQUEST_LIFE) {
+        request.row_ids = None;
+    }
+    if let Some(file) = &request.row_ids {
+        match swofty_core::row_ids::Overrides::read(file) {
+            Ok(ids) => {
+                say(
+                    "info",
+                    &format!(
+                        "room launch: building with the host's stat ids for {} addon(s)",
+                        ids.rows.len()
+                    ),
+                );
+                swofty_core::row_ids::lend(Some(ids));
+            }
+            Err(e) => bail!(
+                "the host's stat ids for the room couldn't be read ({}): {e}",
+                file.display()
+            ),
+        }
+    }
     let profile = request.profile.clone().unwrap_or_else(|| profile.to_owned());
     if let (Ok(p), Ok(installed)) = (store.profile(&profile), store.addons()) {
         let catalog = swofty_core::catalog::cached(&store.root).unwrap_or_default();
@@ -453,10 +492,11 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
              with EA AntiCheat",
         );
     }
-    let backup = crate::saves::before_session(store, &profile, g);
+    let before = crate::saves::before_session(store, &profile, g, &request.id, !request.steam_saves_once);
     let result = run_loop(store, args, &config, &request, &profile, g, installed);
-    crate::saves::after_session(store, backup.as_ref());
-    finish(session, result)
+    let out = finish(session, result);
+    crate::saves::after_session(before);
+    out
 }
 
 fn stage_offline(store: &Store, game: &Path) -> Result<()> {
@@ -799,6 +839,9 @@ fn play(
         .chain(library_path.map(|p| ("LD_LIBRARY_PATH", p)))
         .map(|(k, v)| (k.to_owned(), v)),
     );
+    if request.steam_saves_once {
+        game_env.insert(swofty_core::launcher_saves::OFF_ENV.to_owned(), "off".to_owned());
+    }
     if let Some(armed) = &request.netplay {
         for (name, value) in armed_env(armed) {
             game_env.entry(name.to_owned()).or_insert(value);
@@ -873,7 +916,7 @@ fn play(
     if mode.is_vr() {
         say("info", &format!("starting F1 25 in VR ({})", extra.join(" ")));
     }
-    let usage = swofty_core::usage::Session::start(&store.root);
+    let usage = swofty_core::usage::Session::start(&store.root, game);
     let new_watch =
         || AttachWatch::new(loader.clone(), before.clone(), Instant::now()).with_fallback(fallback.clone());
     let mut watch = placed_loader.then(new_watch);
@@ -881,8 +924,21 @@ fn play(
         .unwrap_or_default()
         .into_iter()
         .find_map(|(rel, sha)| rel.eq_ignore_ascii_case(PROXY).then_some(sha));
+    let sampled: std::cell::RefCell<Option<Vec<loader_check::Seen>>> = std::cell::RefCell::new(None);
     let missed = || {
-        let found = loader_check::collect(game, placed.as_deref(), launched, g.user_reg.as_deref());
+        let mut found = loader_check::collect(game, placed.as_deref(), launched, g.user_reg.as_deref());
+        if found.games.is_empty()
+            && let Some(early) = sampled.borrow_mut().take()
+        {
+            found.games = early;
+            say(
+                "loader",
+                &format!(
+                    "  the game had closed by now; the game lines below are from a look {} s after it started",
+                    quarantine::PROBE_AFTER.as_secs()
+                ),
+            );
+        }
         say(
             "loader",
             "version.dll did not attach to F1 25; what the session found:",
@@ -912,9 +968,14 @@ fn play(
         if let Some(w) = watch.as_mut()
             && w.state() == Attach::Waiting
         {
+            if w.probe_due(Instant::now()) {
+                let early = loader_check::collect(game, placed.as_deref(), launched, g.user_reg.as_deref());
+                *sampled.borrow_mut() = Some(early.games);
+            }
             verdict(w.poll(Instant::now()));
         }
     };
+    let via_ea = ea.is_some();
     let (code, unread) = match ea {
         Some(started) => {
             crate::ea::wait(game, &copies_before, started, tick);
@@ -931,7 +992,7 @@ fn play(
         verdict(w.ended(Instant::now()));
     }
     wait_relaunched(game, &copies_before, code, launched.elapsed().unwrap_or_default());
-    keep_game_logs(game, &fallback, &dir, before.as_ref(), launched);
+    keep_game_logs(&store.root, game, &fallback, &dir, before.as_ref(), launched);
     let loader = std::fs::read(dir.join("loader.log"))
         .ok()
         .map(|b| launch::LoaderSeen::scan(&String::from_utf8_lossy(&b)));
@@ -961,7 +1022,11 @@ fn play(
     {
         stop_process(g.pid).ok();
     }
-    note_failed_launch(store, loader, code, launched.elapsed().unwrap_or_default());
+    let blocked =
+        via_ea && end.end != swofty_core::session::Ending::Quit && crate::ea::note_stub_blocked(store, game);
+    if !blocked {
+        note_failed_launch(store, loader, code, launched.elapsed().unwrap_or_default());
+    }
     Ok(code)
 }
 
@@ -1196,7 +1261,15 @@ fn note_refused(fallback: &Path) {
 
 /// The session's loader.log: the game folder's when the loader wrote it,
 /// else its fallback in the data folder, which a session starts without.
-fn keep_game_logs(game: &Path, fallback: &Path, dir: &Path, before: Option<&LogMark>, launched: SystemTime) {
+fn keep_game_logs(
+    data: &Path,
+    game: &Path,
+    fallback: &Path,
+    dir: &Path,
+    before: Option<&LogMark>,
+    launched: SystemTime,
+) {
+    swofty_core::crash_report::keep_fallback(data, &dir.join("game-logs"), launched);
     let loader = game.join(LOADER_LOG);
     if LogMark::replaced(&loader, before) {
         std::fs::copy(&loader, dir.join("loader.log")).ok();
@@ -1551,6 +1624,44 @@ pub fn steam_check(store: &Store, start: bool) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Vanilla: F1 25 as it shipped. The game folder goes back to its baseline first, so no
+/// Swofty file is left in it, then Steam starts the game itself. Nothing of Swofty's runs: no
+/// loader, no launch-option wrapper and no build. A wrapper set in Steam is refused, not
+/// removed, because the player set it.
+fn run_vanilla(store: &Store, g: &Game) -> Result<ExitCode> {
+    if !game_processes().is_empty() {
+        bail!("F1 25 is running; close it first, then start it vanilla again");
+    }
+    if let Some(root) = steam::find_game().map(|i| i.steam_root) {
+        let wrapped = steam::launch_options(&root)
+            .into_iter()
+            .find(|(_, options)| steam::wrapper_installed(options));
+        if let Some((user, options)) = wrapped {
+            bail!(
+                "Steam's launch option for F1 25 (user {user}: {options}) starts Swofty's wrapper; remove it in Steam (Properties → Launch Options) to start vanilla"
+            );
+        }
+    }
+    let done = swofty_core::recovery::restore(&store.root, g)?;
+    if !done.left.is_empty() {
+        bail!(
+            "the game folder still has {} file(s) that aren't the baseline; run `f1mp restore` and check them",
+            done.left.len()
+        );
+    }
+    steam_command(&steam_launch_args_vanilla())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("could not ask Steam to start F1 25")?;
+    println!("vanilla: F1 25 is starting through Steam with no Swofty files");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn steam_launch_args_vanilla() -> Vec<String> {
+    vec!["-applaunch".to_owned(), STEAM_APP_ID.to_string()]
 }
 
 fn steam_launch_args(mode: LaunchMode) -> Vec<String> {
@@ -2244,13 +2355,13 @@ mod tests {
         touch(&perf, launched - Duration::from_secs(600));
         let before = LogMark::read(&loader);
         let fallback = dir.join(LOADER_FALLBACK);
-        keep_game_logs(&game, &fallback, &session, before.as_ref(), launched);
+        keep_game_logs(&dir, &game, &fallback, &session, before.as_ref(), launched);
         assert!(!session.join("loader.log").exists());
         assert!(!session.join("perf.log").exists());
 
         std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
         std::fs::write(&fallback, "attached in the data folder\n").unwrap();
-        keep_game_logs(&game, &fallback, &session, before.as_ref(), launched);
+        keep_game_logs(&dir, &game, &fallback, &session, before.as_ref(), launched);
         assert_eq!(
             std::fs::read_to_string(session.join("loader.log")).unwrap(),
             "attached in the data folder\n"
@@ -2259,7 +2370,7 @@ mod tests {
         std::fs::write(&loader, "fresh\n").unwrap();
         std::fs::write(&perf, "F1 Multiplayer performance report\nnew\n").unwrap();
         touch(&perf, launched + Duration::from_secs(1));
-        keep_game_logs(&game, &fallback, &session, before.as_ref(), launched);
+        keep_game_logs(&dir, &game, &fallback, &session, before.as_ref(), launched);
         assert_eq!(
             std::fs::read_to_string(session.join("loader.log")).unwrap(),
             "fresh\n"
@@ -2268,6 +2379,15 @@ mod tests {
             std::fs::read_to_string(session.join("perf.log")).unwrap(),
             "F1 Multiplayer performance report\nnew\n"
         );
+
+        std::fs::write(
+            fallback.with_file_name("crash-20261101-125350.txt"),
+            "F1 Multiplayer crash report\n",
+        )
+        .unwrap();
+        keep_game_logs(&dir, &game, &fallback, &session, before.as_ref(), launched);
+        assert!(session.join("game-logs/crash-20261101-125350.txt").is_file());
+        assert!(!fallback.with_file_name("crash-20261101-125350.txt").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2426,6 +2546,11 @@ mod tests {
             "a build whose heartbeat stopped is silent"
         );
         drop(lock);
+        drop(
+            SessionLock::wait(&data, Duration::from_secs(10))
+                .unwrap()
+                .expect("a forked child still holds the dropped lock"),
+        );
         beat(&data, 2_000);
         assert!(
             silence.of(&log, &data) >= Duration::from_millis(30),

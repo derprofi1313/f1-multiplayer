@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ids.hpp"
@@ -24,6 +25,7 @@ void career_renamed(const char *from, const char *to);
 void box_picked(const char *entrant_list);
 void box_picked(const char *entrant_list, const void *mode_context);
 void session_load(const char *source);
+std::pair<std::string, std::string> session_mode_track();
 void session_end(const char *source);
 void window();
 int write_reports(const char *when);

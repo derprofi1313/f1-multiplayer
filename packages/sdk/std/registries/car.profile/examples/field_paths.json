@@ -1,0 +1,14 @@
+{
+  "car.profile": {
+    "heavy": {
+      "when": [
+        "race"
+      ],
+      "ai_only": true,
+      "aero.drag_scale": {
+        "scale": 1.05
+      },
+      "brakes.bias": 0.56
+    }
+  }
+}

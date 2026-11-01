@@ -9,7 +9,7 @@
 #include <swofty/systems/forward.hpp>
 
 // Teams: real constructors (core-owned constructor/ ids), team identities (one entrants.teams row each),
-// logos per context and pit times. A new team names a donor, the stock row whose every key it copies
+// logos per context, garage art per box and pit times. A new team names a donor, the stock row whose every key it copies
 // (story_info included); a variant of a stock team copies its base's row the same way. A constructor/ id
 // works as a team reference and resolves to the last enabled team in load order that is that constructor.
 // What a row holds that this header doesn't name is kept in the record's `extra`. The operations return
@@ -56,6 +56,19 @@ struct Logo {
 SWOFTY_RECORD(Logo, images)
 SWOFTY_RECORD_REGISTRY(Logo, "team.logo")
 
+struct Garage {
+    static constexpr Version version{1, 0};
+    Ref<content::Package> package;
+    Ref<Identity> team;
+    std::string entry;
+    Path textures;
+    std::string root = "eaid://environment_package/core_assets/objects/textures/";
+    bool srgb = true;
+    json::Value extra;
+};
+SWOFTY_RECORD(Garage, package, team, entry, textures, root, srgb)
+SWOFTY_RECORD_REGISTRY(Garage, "team.garage")
+
 struct Identity {
     static constexpr Version version{1, 1};
     Ref<Identity> donor;
@@ -91,6 +104,7 @@ inline Registry<Constructor> constructors{"team.constructor",
 inline Registry<Identity> identities{"team.identity", {.applies = Applies::boot}};
 inline Registry<Logo> logos{"team.logo", {.applies = Applies::read}};
 inline Registry<PitTimes> pit_times{"team.pit_times", {.applies = Applies::boot}};
+inline Registry<Garage> garages{"team.garage", {.applies = Applies::boot}};
 
 inline Result set_logo(Ref<Identity> team, Ref<Logo> logo)
 {

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
@@ -10,8 +11,8 @@ use crate::conflicts::Changes;
 use crate::dbedit::deps::Copy;
 use crate::entrant_lists::StockLists;
 use crate::ops::{
-    DbOps, DbReport, ErpOp, FieldNames, MovedStatId, apply_db_ops_lenient, apply_db_ops_report,
-    explicit_stat_ids, stat_id_ceiling,
+    DbOps, DbReport, ErpOp, FieldNames, MovedStatId, RowIds, apply_db_ops_lenient, explicit_stat_ids, no_row,
+    stat_id_ceiling,
 };
 use crate::owned::{self, Added};
 use crate::rowkeys::{Names, RowKeys};
@@ -121,10 +122,11 @@ pub fn track_removals_line(name: &str, n: usize) -> String {
     )
 }
 
-// Field names, plus the ids that the addons after this one set on the rows they add.
+// Field names, the ids that the addons after this one set on the rows they add, and the install's kept row ids.
 struct Reserving<'a> {
     names: Names<'a>,
     later: &'a HashSet<(String, i64)>,
+    row_ids: Option<crate::row_ids::Scoped<'a>>,
 }
 
 impl FieldNames for Reserving<'_> {
@@ -147,6 +149,43 @@ impl FieldNames for Reserving<'_> {
     fn reserved(&self, table: &str, row: &str, id: i64) -> bool {
         self.later.contains(&(format!("{table}.{row}"), id))
     }
+
+    fn row_ids(&self) -> Option<&dyn RowIds> {
+        self.row_ids.as_ref().map(|s| s as &dyn RowIds)
+    }
+}
+
+// What every addon's database ops share: field names, stock and track keys, and the kept row ids.
+struct Shared<'a> {
+    fields: &'a BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    stock: &'a HashSet<u64>,
+    tracks: &'a HashSet<u64>,
+    row_ids: Option<&'a RefCell<crate::row_ids::Store>>,
+}
+
+impl<'a> Shared<'a> {
+    fn names(&self, addon: &'a str, later: &'a HashSet<(String, i64)>) -> Reserving<'a> {
+        static NONE: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        Reserving {
+            names: Names {
+                fields: self.fields.get(addon).unwrap_or(&NONE),
+                keys: RowKeys::builtin(),
+                stock: Some(self.stock),
+                tracks: Some(self.tracks),
+            },
+            later,
+            row_ids: self.row_ids.map(|store| crate::row_ids::Scoped { addon, store }),
+        }
+    }
+}
+
+// An addon's ops waiting for their row, with the error each gave last.
+struct Waiting {
+    origin: Origin,
+    ops: DbOps,
+    later: HashSet<(String, i64)>,
+    errors: Vec<swofty_addon::Error>,
+    since: usize,
 }
 
 fn stat_row(row: &str) -> &str {
@@ -221,6 +260,7 @@ pub struct Planner<'a> {
     removals: usize,
     fields: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     skipped: Vec<String>,
+    waits: BTreeSet<(String, String)>,
     stock_removals: BTreeMap<String, usize>,
     track_removals: BTreeMap<String, usize>,
     lists: Option<StockLists>,
@@ -229,6 +269,7 @@ pub struct Planner<'a> {
     lenient: BTreeMap<String, String>,
     touched: BTreeMap<String, Touched>,
     overlays: Option<&'a OverlayNames<'a>>,
+    row_ids: Option<RefCell<crate::row_ids::Store>>,
 }
 
 /// The resource names in an `erp.overlay` op's archive.
@@ -271,6 +312,8 @@ fn erp_target(op: &ErpOp) -> Option<(Target, bool)> {
         ErpOp::Overlay { .. } => None,
         // The build writes one target per slice it changes, through `Planner::replaced`.
         ErpOp::MergeSlices { .. } => None,
+        // It adds slices after the array as earlier addons left it, so it replaces nothing.
+        ErpOp::AppendSlices { .. } => None,
     }
 }
 
@@ -312,6 +355,7 @@ impl<'a> Planner<'a> {
             removals: 0,
             fields: BTreeMap::new(),
             skipped: Vec::new(),
+            waits: BTreeSet::new(),
             stock_removals: BTreeMap::new(),
             track_removals: BTreeMap::new(),
             lists: None,
@@ -320,6 +364,7 @@ impl<'a> Planner<'a> {
             lenient: BTreeMap::new(),
             touched: BTreeMap::new(),
             overlays: None,
+            row_ids: None,
         }
     }
 
@@ -672,6 +717,12 @@ impl<'a> Planner<'a> {
     /// key in `stock` is left out unless the op allows it, and one of a key in
     /// `tracks`, the records track activation added, always; see
     /// [`Planner::take_stock_removals`] and [`Planner::take_track_removals`].
+    ///
+    /// An op whose selector matches no row waits, with the ops after it in its
+    /// file that fail, and applies right after the first later addon whose ops
+    /// add records, if its row exists then; the addons after that still override
+    /// it. One still failing after every addon is skipped or fails the build, as
+    /// the addon's other failing ops are.
     pub fn apply_db_report(
         &mut self,
         db: &mut Gvdb,
@@ -680,106 +731,245 @@ impl<'a> Planner<'a> {
         report: &mut DbReport,
     ) -> Result<Vec<Added>> {
         let fields = std::mem::take(&mut self.fields);
-        let none = BTreeMap::new();
         let mut added = Vec::new();
         let pending = std::mem::take(&mut self.db);
+        let row_ids = self.row_ids.take();
+        if let Some(ids) = &row_ids {
+            let mut ids = ids.borrow_mut();
+            ids.building(pending.iter().map(|(o, _)| o.addon.clone()));
+            ids.plan(
+                db,
+                stock,
+                tracks,
+                pending.iter().map(|(o, ops)| (o.addon.as_str(), ops)),
+            );
+        }
         let mut later = vec![HashSet::new(); pending.len()];
         for k in (1..pending.len()).rev() {
             let mut ids = later[k].clone();
             ids.extend(explicit_stat_ids(&pending[k].1));
             later[k - 1] = ids;
         }
+        let shared = Shared {
+            fields: &fields,
+            stock,
+            tracks,
+            row_ids: row_ids.as_ref(),
+        };
+        let mut waiting = Vec::new();
+        let mut grew: Vec<String> = Vec::new();
         for ((origin, ops), later) in pending.into_iter().zip(later) {
-            let before = owned::counts(db);
-            let names = Reserving {
-                names: Names {
-                    fields: fields.get(&origin.addon).unwrap_or(&none),
-                    keys: RowKeys::builtin(),
-                    stock: Some(stock),
-                    tracks: Some(tracks),
-                },
-                later: &later,
-            };
-            let mut ours = DbReport::default();
-            let lists = self.lists.as_ref().filter(|l| l.touched(&ops));
-            let was = lists.map(|l| l.before(db));
-            let replaced = if let Some(name) = self.lenient.get(&origin.addon) {
-                let (replaced, failed) = apply_db_ops_lenient(db, &ops, &names, &mut ours);
-                self.skipped.extend(
-                    failed
-                        .into_iter()
-                        .map(|(_, e)| format!("{name}: change skipped: {e}")),
-                );
-                replaced
-            } else {
-                apply_db_ops_report(db, &ops, &names, &mut ours)
-                    .map_err(|e| Error::Other(format!("applying {origin}: {e}")))?
-            };
-            report
-                .lines
-                .extend(ours.lines.into_iter().map(|l| format!("{}: {l}", origin.addon)));
-            report.warnings.extend(
-                ours.warnings
-                    .into_iter()
-                    .map(|w| format!("{}: {w}", origin.addon)),
-            );
-            if ours.stock_removals > 0 {
-                *self.stock_removals.entry(origin.addon.clone()).or_default() += ours.stock_removals;
+            let size = db.records.len();
+            let names = shared.names(&origin.addon, &later);
+            let (failed, rows) = self.apply_ops(db, &origin, &ops, &names, report, false);
+            added.extend(rows);
+            let since = grew.len();
+            let adder = origin.addon.clone();
+            waiting.extend(self.wait(origin, &ops, later, failed, since)?);
+            if db.records.len() != size {
+                grew.push(adder);
+                self.retry(db, &mut waiting, &shared, report, &mut added, &grew)?;
             }
-            if ours.track_removals > 0 {
-                *self.track_removals.entry(origin.addon.clone()).or_default() += ours.track_removals;
-            }
-            if let (Some(lists), Some(was)) = (lists, was) {
-                let kept = lists.missing(db, &was);
-                if !kept.is_empty() {
-                    self.kept_lists
-                        .entry(origin.addon.clone())
-                        .or_default()
-                        .extend(kept);
-                }
-            }
-            self.copies.extend(ours.added_rows.into_iter().map(|r| Copy {
-                addon: origin.addon.clone(),
-                from: r.from,
-                row: r.row,
-                ignore: ops.side_data.ignore.clone(),
-                quiet: false,
-            }));
-            for m in ours.moved_stat_ids {
-                let Some(held) = &m.holder else {
-                    report.warnings.push(moved_stat_id_line(&origin.addon, None, &m));
-                    continue;
-                };
-                let holder = self
-                    .copies
-                    .iter()
-                    .rev()
-                    .find(|c| &c.row == held)
-                    .map_or_else(|| origin.addon.clone(), |c| c.addon.clone());
-                report
-                    .warnings
-                    .push(moved_stat_id_line(&origin.addon, Some(&holder), &m));
-                let keeper = Origin {
-                    addon: holder,
-                    item: None,
-                };
-                if keeper.addon != origin.addon {
-                    let field = m.field;
-                    let key = swofty_formats::hash::fnv1a64(format!("{held}.{field}"));
-                    let name = match &m.holder_label {
-                        Some(l) => format!("{}[_metadata_={l}].{field}", stat_row(held)),
-                        None => format!("{held}.{field}"),
-                    };
-                    self.planned.record_names.insert(key, name);
-                    self.kept(Target::Record(key), &keeper, &origin);
-                }
-            }
-            for key in replaced {
-                self.write(Target::Record(key), &origin, true);
-            }
-            added.extend(owned::added(db, &origin.addon, &before));
         }
+        self.retry(db, &mut waiting, &shared, report, &mut added, &grew)?;
+        for w in waiting {
+            self.settle(&w.origin, w.errors, true)?;
+        }
+        self.row_ids = row_ids;
         Ok(added)
+    }
+
+    fn retry(
+        &mut self,
+        db: &mut Gvdb,
+        waiting: &mut Vec<Waiting>,
+        shared: &Shared,
+        report: &mut DbReport,
+        added: &mut Vec<Added>,
+        grew: &[String],
+    ) -> Result<()> {
+        for Waiting {
+            origin,
+            ops,
+            later,
+            since,
+            ..
+        } in std::mem::take(waiting)
+        {
+            let names = shared.names(&origin.addon, &later);
+            let (failed, rows) = self.apply_ops(db, &origin, &ops, &names, report, true);
+            added.extend(rows);
+            if failed.len() < ops.ops.len() {
+                for adder in grew[since.min(grew.len())..]
+                    .iter()
+                    .filter(|a| **a != origin.addon)
+                {
+                    self.waits.insert((origin.addon.clone(), adder.clone()));
+                }
+            }
+            waiting.extend(self.wait(origin, &ops, later, failed, since)?);
+        }
+        Ok(())
+    }
+
+    // The failures before `failed`'s first selector that matches no row settle now;
+    // that op and the failing ops after it wait.
+    fn wait(
+        &mut self,
+        origin: Origin,
+        ops: &DbOps,
+        later: HashSet<(String, i64)>,
+        mut failed: Vec<(usize, swofty_addon::Error)>,
+        since: usize,
+    ) -> Result<Option<Waiting>> {
+        let at = failed.iter().position(|(_, e)| no_row(e)).unwrap_or(failed.len());
+        let rest = failed.split_off(at);
+        self.settle(&origin, failed.into_iter().map(|(_, e)| e).collect(), false)?;
+        if rest.is_empty() {
+            return Ok(None);
+        }
+        let (picked, errors): (Vec<usize>, Vec<_>) = rest.into_iter().unzip();
+        let ops = DbOps {
+            schema_version: ops.schema_version,
+            fields: ops.fields.clone(),
+            strict: ops.strict,
+            side_data: ops.side_data.clone(),
+            ops: picked.into_iter().map(|i| ops.ops[i].clone()).collect(),
+        };
+        Ok(Some(Waiting {
+            origin,
+            ops,
+            later,
+            errors,
+            since,
+        }))
+    }
+
+    // A lenient addon's failures are skipped with a warning; another's first fails the build.
+    fn settle(&mut self, origin: &Origin, errors: Vec<swofty_addon::Error>, last: bool) -> Result<()> {
+        let line = |e: &swofty_addon::Error| match last && no_row(e) {
+            true => format!("{e}, even after every addon's changes"),
+            false => e.to_string(),
+        };
+        match self.lenient.get(&origin.addon) {
+            Some(name) => {
+                self.skipped.extend(
+                    errors
+                        .iter()
+                        .map(|e| format!("{name}: change skipped: {}", line(e))),
+                );
+                Ok(())
+            }
+            None => match errors.first() {
+                Some(e) => Err(Error::Other(format!("applying {origin}: {}", line(e)))),
+                None => Ok(()),
+            },
+        }
+    }
+
+    fn apply_ops(
+        &mut self,
+        db: &mut Gvdb,
+        origin: &Origin,
+        ops: &DbOps,
+        names: &Reserving,
+        report: &mut DbReport,
+        late: bool,
+    ) -> (Vec<(usize, swofty_addon::Error)>, Vec<Added>) {
+        let before = owned::counts(db);
+        let mut ours = DbReport::default();
+        let lists = self.lists.as_ref().filter(|l| l.touched(ops));
+        let was = lists.map(|l| l.before(db));
+        let (replaced, failed) = apply_db_ops_lenient(db, ops, names, &mut ours);
+        report
+            .lines
+            .extend(ours.lines.into_iter().map(|l| format!("{}: {l}", origin.addon)));
+        report.warnings.extend(
+            ours.warnings
+                .into_iter()
+                .map(|w| format!("{}: {w}", origin.addon)),
+        );
+        if ours.stock_removals > 0 {
+            *self.stock_removals.entry(origin.addon.clone()).or_default() += ours.stock_removals;
+        }
+        if ours.track_removals > 0 {
+            *self.track_removals.entry(origin.addon.clone()).or_default() += ours.track_removals;
+        }
+        if let (Some(lists), Some(was)) = (lists, was) {
+            let kept = lists.missing(db, &was);
+            if !kept.is_empty() {
+                self.kept_lists
+                    .entry(origin.addon.clone())
+                    .or_default()
+                    .extend(kept);
+            }
+        }
+        self.copies.extend(ours.added_rows.into_iter().map(|r| Copy {
+            addon: origin.addon.clone(),
+            from: r.from,
+            row: r.row,
+            ignore: ops.side_data.ignore.clone(),
+            quiet: false,
+        }));
+        for m in ours.moved_stat_ids {
+            let Some(held) = &m.holder else {
+                report.warnings.push(moved_stat_id_line(&origin.addon, None, &m));
+                continue;
+            };
+            let holder = self
+                .copies
+                .iter()
+                .rev()
+                .find(|c| &c.row == held)
+                .map_or_else(|| origin.addon.clone(), |c| c.addon.clone());
+            report
+                .warnings
+                .push(moved_stat_id_line(&origin.addon, Some(&holder), &m));
+            let keeper = Origin {
+                addon: holder,
+                item: None,
+            };
+            if keeper.addon != origin.addon {
+                let field = m.field;
+                let key = swofty_formats::hash::fnv1a64(format!("{held}.{field}"));
+                let name = match &m.holder_label {
+                    Some(l) => format!("{}[_metadata_={l}].{field}", stat_row(held)),
+                    None => format!("{held}.{field}"),
+                };
+                self.planned.record_names.insert(key, name);
+                self.kept(Target::Record(key), &keeper, origin);
+            }
+        }
+        let rank = |p: &Self, o: &Origin| p.ranks.iter().position(|r| r == o);
+        for key in replaced {
+            let target = Target::Record(key);
+            let ahead: Vec<Origin> = match late {
+                true => self
+                    .writers
+                    .get(&target)
+                    .into_iter()
+                    .flatten()
+                    .filter(|w| rank(self, w) > rank(self, origin))
+                    .cloned()
+                    .collect(),
+                false => Vec::new(),
+            };
+            self.write(target.clone(), origin, true);
+            for w in ahead {
+                self.kept(target.clone(), origin, &w);
+            }
+        }
+        (failed, owned::added(db, &origin.addon, &before))
+    }
+
+    /// Gives the rows `add-row` gives an id of its own the ids `ids` keeps; see [`Planner::take_row_ids`].
+    pub fn keep_row_ids(&mut self, ids: crate::row_ids::Store) {
+        self.row_ids = Some(RefCell::new(ids));
+    }
+
+    /// The kept row ids, with the ids the last `apply_db` gave.
+    pub fn take_row_ids(&mut self) -> Option<crate::row_ids::Store> {
+        self.row_ids.take().map(RefCell::into_inner)
     }
 
     /// The addon whose write of the record `key` wins, the last in load order.
@@ -797,6 +987,12 @@ impl<'a> Planner<'a> {
     }
 
     /// Per addon id, the removals of stock records the last `apply_db` left out.
+    /// The (addon, other) pairs where `addon` had ops wait for rows that `other` added, so `addon`
+    /// has to load below `other`.
+    pub fn take_waits(&mut self) -> BTreeSet<(String, String)> {
+        std::mem::take(&mut self.waits)
+    }
+
     pub fn take_stock_removals(&mut self) -> BTreeMap<String, usize> {
         std::mem::take(&mut self.stock_removals)
     }
@@ -1096,6 +1292,134 @@ mod tests {
         p.push(op("b", &remove("r")));
         assert_eq!(p.route(Kind::Erp), Route::Build);
         assert_eq!(p.route_note(Kind::Erp), None);
+    }
+
+    fn lists() -> Gvdb {
+        use swofty_formats::gvdb::Record;
+        Gvdb {
+            records: vec![
+                Record::new("t._list_instancecount_", 0, "1"),
+                Record::new("t.list_0._metadata_", 4, "f1"),
+                Record::new("t.list_0.name", 4, "stock"),
+                Record::new("t.list_0.colour", 4, "red"),
+            ],
+        }
+    }
+
+    fn set(row: &str, field: &str, value: &str) -> String {
+        format!(
+            r#"{{"op":"db.set","select":"t.list[_metadata_={row}]","field":"{field}","value":"{value}"}}"#
+        )
+    }
+
+    fn add(label: &str) -> String {
+        format!(
+            r#"{{"op":"db.add-row","table":"t","from":"t.list[_metadata_=f1]","set":{{"_metadata_":"{label}","name":"{label}"}}}}"#
+        )
+    }
+
+    fn list_fields(p: &mut Planner, addon: &str) {
+        let names = ["_metadata_", "name", "colour"].map(str::to_owned).to_vec();
+        p.add_fields(addon, BTreeMap::from([("t.list".to_owned(), names)]));
+    }
+
+    #[test]
+    fn an_op_on_a_row_a_later_addon_adds_applies_after_that_addon() {
+        let features = Features::default();
+        let opt_in = BTreeSet::new();
+        let grid = Origin {
+            addon: "simplified".into(),
+            item: Some("grid-editor".into()),
+        };
+        let mut p = Planner::new(&features, &opt_in);
+        list_fields(&mut p, "cs");
+        for json in [
+            set("cs_f1_2016", "name", "edited"),
+            set("cs_f1_2016", "colour", "grid"),
+            set("f1", "name", "grid"),
+        ] {
+            p.push(Op {
+                op: serde_json::from_str(&json).unwrap(),
+                origin: grid.clone(),
+            });
+        }
+        p.push(op("cs", &add("cs_f1_2016")));
+        p.push(op("cs", &set("f1", "name", "cs")));
+        p.push(op("cs", &set("cs_f1_2016", "name", "cs")));
+        p.push(op("late", &set("cs_f1_2016", "colour", "late")));
+        let mut db = lists();
+        p.apply_db(&mut db).unwrap();
+        assert_eq!(db.get_text("t.list_1._metadata_").as_deref(), Some("cs_f1_2016"));
+        assert_eq!(db.get_text("t.list_1.name").as_deref(), Some("edited"));
+        assert_eq!(db.get_text("t.list_1.colour").as_deref(), Some("late"));
+        assert_eq!(db.get_text("t.list_0.name").as_deref(), Some("cs"));
+        assert!(p.take_skipped().is_empty());
+        assert_eq!(
+            p.take_waits(),
+            BTreeSet::from([("simplified".to_owned(), "cs".to_owned())])
+        );
+        let key = |path: &str| Target::Record(swofty_formats::hash::fnv1a64(path));
+        let winner = |p: &Planned, path: &str| {
+            let c = p.conflicts.iter().find(|c| c.target == key(path)).unwrap();
+            (
+                c.winner.to_string(),
+                c.overridden.iter().map(Origin::to_string).collect::<Vec<_>>(),
+            )
+        };
+        let planned = p.finish();
+        assert_eq!(
+            winner(&planned, "t.list_0.name"),
+            ("cs".to_owned(), vec!["simplified (grid-editor)".to_owned()])
+        );
+        assert_eq!(
+            winner(&planned, "t.list_1.name"),
+            ("simplified (grid-editor)".to_owned(), vec!["cs".to_owned()])
+        );
+        assert_eq!(
+            winner(&planned, "t.list_1.colour"),
+            ("late".to_owned(), vec!["simplified (grid-editor)".to_owned()])
+        );
+    }
+
+    #[test]
+    fn an_op_on_a_row_no_addon_adds_is_skipped_or_fails_as_before() {
+        let features = Features::default();
+        let opt_in = BTreeSet::new();
+        let lenient = BTreeMap::from([("edits".to_owned(), "My DB Edits".to_owned())]);
+        let mut p = Planner::new(&features, &opt_in).lenient(lenient);
+        list_fields(&mut p, "cs");
+        p.push(op("edits", &set("gone", "name", "x")));
+        p.push(op("edits", &set("f1", "name", "edits")));
+        p.push(op("cs", &add("cs_f1_2016")));
+        let mut db = lists();
+        p.apply_db(&mut db).unwrap();
+        assert_eq!(db.get_text("t.list_0.name").as_deref(), Some("edits"));
+        assert_eq!(
+            p.take_skipped(),
+            [
+                "My DB Edits: change skipped: t.list[_metadata_=gone]: no row matches, even after every addon's changes"
+            ]
+        );
+
+        let mut p = Planner::new(&features, &opt_in);
+        list_fields(&mut p, "cs");
+        p.push(op("a", &set("gone", "name", "x")));
+        p.push(op("cs", &add("cs_f1_2016")));
+        let e = p.apply_db(&mut lists()).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "applying a: t.list[_metadata_=gone]: no row matches, even after every addon's changes"
+        );
+
+        let mut p = Planner::new(&features, &opt_in);
+        list_fields(&mut p, "cs");
+        p.push(op("a", &set("cs_f1_2016", "missing", "x")));
+        p.push(op("cs", &add("cs_f1_2016")));
+        let e = p.apply_db(&mut lists()).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "applying a: t.list[_metadata_=cs_f1_2016].missing: no such key"
+        );
     }
 
     #[test]

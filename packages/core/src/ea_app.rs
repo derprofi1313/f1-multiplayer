@@ -98,6 +98,103 @@ pub fn find_installs(
     out
 }
 
+fn names_f1_25(values: &str) -> bool {
+    parse_reg_query(values).iter().any(|(name, data)| {
+        let plain: String = data
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || c.is_whitespace())
+            .collect();
+        let plain = plain
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        name.eq_ignore_ascii_case("DisplayName") && (plain == "f1 25" || plain.ends_with(" f1 25"))
+    })
+}
+
+/// The folders the EA app records F1 25 in, whether or not the game is
+/// still there. `reg` runs `reg query` with the given arguments.
+pub fn recorded(reg: impl Fn(&[&str]) -> Option<String>) -> Vec<PathBuf> {
+    let keyed = INSTALL_KEYS
+        .iter()
+        .filter_map(|k| reg(&[k]))
+        .flat_map(|out| install_dirs(&out));
+    let listed = UNINSTALL_KEYS
+        .iter()
+        .filter_map(|k| reg(&[k, "/s"]))
+        .flat_map(|out| reg_tree(&out))
+        .filter(|(_, values)| names_f1_25(values))
+        .flat_map(|(_, values)| install_dirs(&values));
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in keyed.chain(listed) {
+        if !out.iter().any(|o| same_folder(o, &dir)) {
+            out.push(dir);
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+pub fn recorded_here() -> Vec<PathBuf> {
+    recorded(reg_exe)
+}
+
+#[cfg(not(windows))]
+pub fn recorded_here() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+fn same_folder(a: &Path, b: &Path) -> bool {
+    let plain = |p: &Path| {
+        p.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    crate::copies::same_dir(a, b) || (cfg!(windows) && plain(a) == plain(b))
+}
+
+/// An EA app copy in a folder the EA app has no record of: moved by hand,
+/// so the EA app's launch link starts the recorded copy, or none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Moved {
+    pub dir: PathBuf,
+    pub recorded: PathBuf,
+    /// Whether the game is in the recorded folder.
+    pub there: bool,
+}
+
+impl Moved {
+    pub fn text(&self) -> String {
+        let fix = if self.there {
+            format!("Play the copy in {} instead", self.recorded.display())
+        } else {
+            format!("Move the folder back to {}", self.recorded.display())
+        };
+        format!(
+            "The EA app has F1 25 in {}, so it can't start the copy in {}. {fix}. To keep F1 25 somewhere \
+             else, move it with EA app > F1 25 > Manage > Move, not File Explorer",
+            self.recorded.display(),
+            self.dir.display()
+        )
+    }
+}
+
+/// `dir` against the folders the EA app records F1 25 in. Nothing recorded
+/// says nothing either way.
+pub fn moved(dir: &Path, recorded: &[PathBuf], is_install: impl Fn(&Path) -> bool) -> Option<Moved> {
+    if recorded.is_empty() || recorded.iter().any(|r| same_folder(r, dir)) {
+        return None;
+    }
+    let there = recorded.iter().find(|r| is_install(r));
+    Some(Moved {
+        dir: dir.to_path_buf(),
+        recorded: there.unwrap_or(&recorded[0]).clone(),
+        there: there.is_some(),
+    })
+}
+
 #[cfg(windows)]
 fn reg_exe(args: &[&str]) -> Option<String> {
     let mut all = vec!["query"];
@@ -573,6 +670,74 @@ mod tests {
         let found = find_installs(reg, &[root.join("EA Games")], is_install);
         assert_eq!(found, [keyed, listed, default]);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_copy_moved_by_hand_is_not_where_the_ea_app_has_it() {
+        let root = std::env::temp_dir().join(format!("swofty-ea-moved-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let program_files = root.join("Program Files/EA Games/F1 25");
+        let moved_to = root.join("EA Games/F1 25");
+        for d in [&program_files, &moved_to] {
+            std::fs::create_dir_all(d.join("__Installer")).unwrap();
+            std::fs::write(d.join(GAME_EXE), b"MZ").unwrap();
+            std::fs::write(d.join(MARKER), INSTALLERDATA).unwrap();
+        }
+        let record = program_files.display().to_string();
+        let reg = |args: &[&str]| -> Option<String> {
+            match args {
+                [k] if *k == INSTALL_KEYS[1] => {
+                    Some(format!("\r\n{k}\r\n    Install Dir    REG_SZ    {record}\r\n"))
+                }
+                [k, "/s"] if *k == UNINSTALL_KEYS[0] => Some(format!(
+                    "\r\nHKEY_X\\{{A}}\r\n    DisplayName    REG_SZ    Other\r\n    InstallLocation    REG_SZ    C:\\Other\r\n\r\n\
+                     HKEY_X\\{{B}}\r\n    DisplayName    REG_SZ    F1® 25\r\n    InstallLocation    REG_SZ    \"{record}\"\r\n"
+                )),
+                _ => None,
+            }
+        };
+        let rec = recorded(reg);
+        assert_eq!(rec.len(), 1, "{rec:?}");
+        assert!(crate::copies::same_dir(&rec[0], &program_files));
+        assert_eq!(moved(&program_files, &rec, is_install), None);
+        let m = moved(&moved_to, &rec, is_install).unwrap();
+        assert!(m.there);
+        assert!(crate::copies::same_dir(&m.recorded, &program_files));
+        let text = m.text();
+        assert!(
+            text.starts_with(&format!("The EA app has F1 25 in {}", m.recorded.display())),
+            "{text}"
+        );
+        assert!(text.contains(&moved_to.display().to_string()), "{text}");
+        assert!(text.contains("Play the copy in"), "{text}");
+        assert!(
+            text.ends_with("EA app > F1 25 > Manage > Move, not File Explorer"),
+            "{text}"
+        );
+
+        std::fs::remove_dir_all(&program_files).unwrap();
+        let gone = moved(&moved_to, &rec, is_install).unwrap();
+        assert!(!gone.there);
+        assert!(
+            gone.text().contains(". Move the folder back to "),
+            "{}",
+            gone.text()
+        );
+        assert_eq!(moved(&moved_to, &[], is_install), None);
+        assert!(recorded(|_| None).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn only_f1_25_uninstall_entries_count_as_its_record() {
+        assert!(names_f1_25("    DisplayName    REG_SZ    F1® 25\r\n"));
+        assert!(names_f1_25("    DisplayName    REG_SZ    F1 25\r\n"));
+        assert!(names_f1_25("    DisplayName    REG_SZ    EA SPORTS™ F1® 25\r\n"));
+        assert!(!names_f1_25("    DisplayName    REG_SZ    F1® 24\r\n"));
+        assert!(!names_f1_25(
+            "    DisplayName    REG_SZ    F1 25 Champions Edition Content\r\n"
+        ));
+        assert!(!names_f1_25("    InstallLocation    REG_SZ    F1 25\r\n"));
     }
 
     #[test]

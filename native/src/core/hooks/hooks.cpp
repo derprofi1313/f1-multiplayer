@@ -4,6 +4,7 @@
 
 #include "../blackbox.hpp"
 #include "../perf.hpp"
+#include "core_events.hpp"
 #include "guard.hpp"
 #include "hooks.hpp"
 
@@ -148,6 +149,7 @@ Table &the_table()
         t->declare_core();
         declare_game_points(*t);
         declare_session_points(*t);
+        declare_car_points(*t);
         return t;
     }();
     return *t;
@@ -312,6 +314,7 @@ void window_stage()
         return;
     t.arm();
     arm_session_points();
+    arm_car_points();
     for (auto &[point, subs] : t.undefined())
         swofty::log("[hooks] %s: handlers from %s are attached, and no addon has defined it", point.c_str(), subs.c_str());
     if (runtime::enabled("events", nullptr))
@@ -344,6 +347,10 @@ void bridge_legacy(const char *event, int64_t a, int64_t b, const void *data)
     }
     if (id == "career.hub" && a != 1)
         return;
+    if (id == "session.lap") {
+        events::session_lap(uint32_t(a));
+        return;
+    }
     fire_shell(e->id);
     if (id == "career.unloaded")
         update_facts([](Facts &f) {

@@ -443,6 +443,7 @@ Def parse_schema(const std::string &name, const Value &schema)
     if (def.major < 1)
         def.major = 1;
     def.snapshot = schema["x-snapshot"].as_bool(false);
+    def.group_scoped = schema["x-data-group"].as_bool(false);
     def.budget = static_cast<std::size_t>(schema["x-snapshot-budget"].as_int(65536));
     if (auto sh = schema.find("x-shared"); sh && sh->is_object()) {
         def.shared = true;
@@ -684,6 +685,33 @@ struct Store::Impl {
     }
 
     bool late_for(const Reg &r) const { return !registering_now() && r.def.applies == Applies::boot; }
+
+    bool hidden(const Reg &r, const Res &R) const
+    {
+        if (!r.def.group_scoped || R.st != Status::ok)
+            return false;
+        const Value *g = R.v.find("data_group");
+        return g && g->is_string() && !g->as_string().empty() && g->as_string() != ctx.data_group;
+    }
+
+    std::set<std::string> career_groups(const std::string &addon) const
+    {
+        std::set<std::string> out;
+        for (const char *name : {"career.mode", "career.content"}) {
+            auto it = regs.find(name);
+            if (it == regs.end())
+                continue;
+            for (auto &[key, provs] : it->second.provs)
+                for (auto &p : provs) {
+                    if (p.addon != addon || p.variant || !p.value.is_object())
+                        continue;
+                    const Value *g = p.value.find("data_group");
+                    if (g && g->is_string() && !g->as_string().empty())
+                        out.emplace(g->as_string());
+                }
+        }
+        return out;
+    }
 
     void evaluate(Reg &r);
 };
@@ -1214,6 +1242,11 @@ struct Engine {
             return false;
         if (!L.spec.in.is_null() && !in_ok(L.spec.in))
             return false;
+        if (L.spec.automatic && L.spec.scope == Scope::global && r.def.applies != Applies::boot) {
+            auto groups = s.career_groups(L.spec.addon);
+            if (!groups.empty() && !groups.count(ctx.data_group))
+                return false;
+        }
         return when_ok(L.spec.addon, L.spec.when);
     }
 
@@ -2288,6 +2321,8 @@ Record Store::get(const std::string &registry_at, const std::string &id)
         R = e.compute(id, {});
         e.finalize(R);
     }
+    if (d->hidden(*r, R))
+        R = Res();
     out.status = R.st;
     out.owner = R.owner;
     out.why = R.why;
@@ -2370,7 +2405,7 @@ bool Store::next(const std::string &registry, const std::string &prefix, const s
     for (; it != top.end(); ++it) {
         if (it->first.compare(0, prefix.size(), prefix) != 0)
             return false;
-        if (it->second.st != Status::no_record) {
+        if (it->second.st != Status::no_record && !d->hidden(*r, it->second)) {
             id = it->first;
             return true;
         }
@@ -2388,7 +2423,7 @@ std::vector<std::string> Store::list(const std::string &registry, const std::str
         return out;
     d->evaluate(*r);
     for (auto &[id, R] : r->eval.top)
-        if (R.st != Status::no_record && id.compare(0, prefix.size(), prefix) == 0)
+        if (R.st != Status::no_record && !d->hidden(*r, R) && id.compare(0, prefix.size(), prefix) == 0)
             out.push_back(id);
     return out;
 }

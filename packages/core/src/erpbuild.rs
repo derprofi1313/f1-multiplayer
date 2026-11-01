@@ -86,6 +86,7 @@ pub struct ErpBuild<'a> {
     // and the origins in the order their ops came.
     writers: HashMap<(String, String), String>,
     origins: Vec<String>,
+    appended: HashMap<(String, String), String>,
     sources: HashMap<SourceKey, Node>,
     archives: HashMap<PathBuf, ErpFile>,
     mipmaps: BTreeMap<String, PathBuf>,
@@ -155,6 +156,25 @@ fn check_scene(uri: &str, data: &[u8]) -> std::result::Result<(), String> {
             ids[0]
         )),
     }
+}
+
+pub fn texture_findings_in(file: &ErpFile) -> Result<Vec<crate::texcheck::Finding>> {
+    use crate::texcheck::{check_surface, view_name};
+    let mut out = Vec::new();
+    for r in file.erp.resources.iter().filter(|r| r.kind() == "GfxSurfaceRes") {
+        let view = match view_name(&r.name) {
+            Some(v) => file
+                .erp
+                .resources
+                .iter()
+                .find(|x| x.name == v)
+                .map(|x| file.load(x))
+                .transpose()?,
+            None => None,
+        };
+        out.extend(check_surface(&file.load(r)?, view.as_ref()));
+    }
+    Ok(out)
 }
 
 pub fn stale_stats_in(file: &ErpFile) -> Result<Vec<String>> {
@@ -334,6 +354,7 @@ pub fn reads(op: &ErpOp) -> Vec<&str> {
         | ErpOp::AddResource { erp, .. }
         | ErpOp::RemoveResource { erp, .. }
         | ErpOp::MergeSlices { erp, .. }
+        | ErpOp::AppendSlices { erp, .. }
         | ErpOp::SetMaterial { erp, .. } => vec![erp.as_str()],
         ErpOp::Overlay { erps, .. } => erps.iter().map(String::as_str).collect(),
         ErpOp::AddMipmaps { .. } => Vec::new(),
@@ -350,6 +371,7 @@ pub fn writes(op: &ErpOp) -> Vec<&str> {
         | ErpOp::RemoveResource { erp, .. }
         | ErpOp::PatchPkg { erp, .. }
         | ErpOp::MergeSlices { erp, .. }
+        | ErpOp::AppendSlices { erp, .. }
         | ErpOp::SetMaterial { erp, .. } => vec![erp.as_str()],
         ErpOp::Overlay { erps, .. } => erps.iter().map(String::as_str).collect(),
         ErpOp::AddMipmaps { .. } => Vec::new(),
@@ -417,6 +439,7 @@ impl<'a> ErpBuild<'a> {
             erps: BTreeMap::new(),
             writers: HashMap::new(),
             origins: Vec::new(),
+            appended: HashMap::new(),
             sources: HashMap::new(),
             archives: HashMap::new(),
             mipmaps: BTreeMap::new(),
@@ -484,6 +507,10 @@ impl<'a> ErpBuild<'a> {
             return Ok(());
         }
         self.apply(op, resolve)?;
+        if let ErpOp::AppendSlices { erp, resource, .. } = op {
+            self.appended
+                .insert((erp.clone(), resource.clone()), origin.to_owned());
+        }
         let written = match op {
             ErpOp::PatchPkg { erp, resource, .. }
             | ErpOp::ReplaceResource { erp, resource, .. }
@@ -510,7 +537,8 @@ impl<'a> ErpBuild<'a> {
                 .last()
                 .filter(|m| m.whole || !m.changed.is_empty())
                 .map(|_| (erp, resource.as_str())),
-            ErpOp::AddMipmaps { .. } | ErpOp::Overlay { .. } => None,
+            // Appending replaces nothing an earlier addon wrote.
+            ErpOp::AddMipmaps { .. } | ErpOp::Overlay { .. } | ErpOp::AppendSlices { .. } => None,
         };
         if let Some((erp, name)) = written {
             self.writers
@@ -654,6 +682,14 @@ impl<'a> ErpBuild<'a> {
                 self.merges.push(merge);
                 Ok(())
             }
+            ErpOp::AppendSlices {
+                erp,
+                resource,
+                source,
+            } => {
+                let path = resolve(source)?;
+                self.append_slices(erp, resource, &path)
+            }
             ErpOp::Overlay { erps, source } => {
                 let path = resolve(source)?;
                 for name in overlay_names(&path)? {
@@ -792,6 +828,74 @@ impl<'a> ErpBuild<'a> {
         }))
     }
 
+    // Puts every slice of `resource` in `from` after the slices of the array in `erp`, as
+    // the game or earlier addons left it, and sets the slice count in the array's
+    // header and in its view (the same name without `.image`, the count at 0x14).
+    fn append_slices(&mut self, erp: &str, resource: &str, from: &Path) -> Result<()> {
+        const VIEW_COUNT: usize = 0x14;
+        let source = self.load_from(from, resource)?;
+        let theirs = Array::read_slices(&source).ok_or_else(|| {
+            fail(format!(
+                "append-slices: {resource} in {} is not a texture array",
+                from.display()
+            ))
+        })?;
+        let mut res = match self.current(erp, resource)? {
+            Some(r) => r,
+            None => self
+                .stock_copy(erp, resource)?
+                .ok_or_else(|| fail(format!("append-slices: the game has no {resource}")))?,
+        };
+        let mut into = Array::read(&res).ok_or_else(|| {
+            fail(format!(
+                "append-slices: {resource} in {erp} is not a texture array"
+            ))
+        })?;
+        if !theirs.fits(&into) {
+            return Err(fail(format!(
+                "append-slices: {resource} differs in format or slice size from the array in {erp}"
+            )));
+        }
+        let added = into.append(&theirs);
+        let head = res
+            .fragments
+            .first()
+            .ok_or_else(|| fail(format!("{resource}: no fragment 0")))?
+            .data()?;
+        let head =
+            Array::with_count(&head, into.count).ok_or_else(|| fail(format!("{resource}: short header")))?;
+        res.set_fragment(0, &head)
+            .map_err(|e| fail(format!("{erp}: {e}")))?;
+        res.set_fragment(1, &into.data)
+            .map_err(|e| fail(format!("{erp}: {e}")))?;
+        self.place(erp, res, true)?;
+        if let Some(view) = resource.strip_suffix(".image") {
+            let found = match self.current(erp, view)? {
+                Some(r) => Some(r),
+                None => self.stock_copy(erp, view)?,
+            };
+            if let Some(mut v) = found {
+                let mut d = v
+                    .fragments
+                    .first()
+                    .ok_or_else(|| fail(format!("{view}: no fragment 0")))?
+                    .data()?;
+                if let Some(at) = d.get_mut(VIEW_COUNT..VIEW_COUNT + 4) {
+                    at.copy_from_slice(&(into.count as u32).to_le_bytes());
+                    v.set_fragment(0, &d).map_err(|e| fail(format!("{erp}: {e}")))?;
+                    self.place(erp, v, true)?;
+                }
+            }
+        }
+        self.notes.push(format!(
+            "{erp}: {} slice(s) appended to {resource} at {}..{}",
+            added.len(),
+            added.start,
+            added.end
+        ));
+        Ok(())
+    }
+
     fn merge_slices(&mut self, erp: &str, resource: &str, from: &Path) -> Result<SliceMerge> {
         let mut merge = SliceMerge {
             erp: erp.to_owned(),
@@ -850,6 +954,66 @@ impl<'a> ErpBuild<'a> {
             .map_err(|e| fail(format!("{erp}: {e}")))?;
         self.place(erp, res, true)?;
         Ok(merge)
+    }
+
+    pub fn cohere_arrays(&mut self) -> Result<Vec<String>> {
+        const VIEW_COUNT: usize = 0x14;
+        let mut lines = Vec::new();
+        let rels: Vec<String> = self.erps.keys().cloned().collect();
+        for rel in rels {
+            let mut images: Vec<String> = self.erps[&rel]
+                .slots
+                .iter()
+                .filter_map(|s| match s {
+                    Slot::Owned(r) => Some(r.name.as_str()),
+                    Slot::Stock(_) => None,
+                })
+                .filter_map(|n| match n.strip_suffix(".image") {
+                    Some(v) if v.ends_with(".texarray") => Some(n.to_owned()),
+                    _ if n.ends_with(".texarray") => Some(format!("{n}.image")),
+                    _ => None,
+                })
+                .collect();
+            images.sort();
+            images.dedup();
+            for image in images {
+                let view = image
+                    .strip_suffix(".image")
+                    .expect("built with the suffix")
+                    .to_owned();
+                let Some(img) = self.current(&rel, &image)? else {
+                    continue;
+                };
+                let Some(array) = Array::read_slices(&img) else {
+                    continue;
+                };
+                let Some(mut v) = self.current(&rel, &view)? else {
+                    continue;
+                };
+                let Some(mut data) = v.fragments.first().map(|f| f.data()).transpose()? else {
+                    continue;
+                };
+                let Some(at) = data.get_mut(VIEW_COUNT..VIEW_COUNT + 4) else {
+                    continue;
+                };
+                let said = u32::from_le_bytes((&*at).try_into().expect("4 bytes"));
+                if said as usize == array.count {
+                    continue;
+                }
+                at.copy_from_slice(&(array.count as u32).to_le_bytes());
+                v.set_fragment(0, &data)
+                    .map_err(|e| fail(format!("{rel}: {e}")))?;
+                self.place(&rel, v, true)?;
+                if let Some(origin) = self.writers.get(&(rel.clone(), image.clone())).cloned() {
+                    self.writers.insert((rel.clone(), view.clone()), origin);
+                }
+                lines.push(format!(
+                    "texture array {view}: view said {said} slices, image has {}; fixed",
+                    array.count
+                ));
+            }
+        }
+        Ok(lines)
     }
 
     pub fn take_merges(&mut self) -> Vec<SliceMerge> {
@@ -1017,6 +1181,35 @@ impl<'a> ErpBuild<'a> {
             write_archive(out, &r.erp, archive, None)?;
         }
         Ok(found)
+    }
+
+    /// Checks the textures an addon wrote or appended to against what the
+    /// game's D3D12 renderer accepts. Each finding names the addon that last
+    /// wrote the resource, as `name` gives it, and the archive.
+    pub fn check_textures(&self, name: &dyn Fn(&str) -> String) -> Vec<(crate::texcheck::Severity, String)> {
+        use crate::texcheck::{check_surface, view_name};
+        let mut out = Vec::new();
+        for (rel, a) in &self.erps {
+            for s in &a.slots {
+                let Slot::Owned(r) = s else { continue };
+                let view = view_name(&r.name).and_then(|v| {
+                    a.slots.iter().find_map(|s| match s {
+                        Slot::Owned(v2) if v2.name == v => Some(v2),
+                        _ => None,
+                    })
+                });
+                let key = (rel.clone(), r.name.clone());
+                let by = self
+                    .writers
+                    .get(&key)
+                    .or_else(|| self.appended.get(&key))
+                    .map_or_else(|| "an addon".to_owned(), |o| name(o));
+                for f in check_surface(r, view) {
+                    out.push((f.severity, format!("{by}: {rel}: {f}")));
+                }
+            }
+        }
+        out
     }
 
     /// Checks the archives with UI resources that ops wrote against the rules
@@ -2575,6 +2768,98 @@ mod tests {
             b.apply_for(&missing, "a", &|s: &Source| Ok(s.resolve(&addon)?))
                 .is_err()
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn view_res(count: u32) -> Resource {
+        let mut v = vec![0u8; 128];
+        v[0x14..0x18].copy_from_slice(&count.to_le_bytes());
+        let mut r = Resource {
+            name: LOGOS.strip_suffix(".image").unwrap().into(),
+            kind: erp::kind("GfxSurfaceRes").unwrap(),
+            unk: vec![0; 4],
+            fragments: vec![Fragment {
+                name: *b"temp",
+                offset: 0,
+                size: v.len() as u64,
+                flags: 0x10,
+                compression: STORED,
+                packed: v.len() as u64,
+                raw: v,
+            }],
+            hash: [0; 16],
+        };
+        r.hash = r.content_hash().unwrap();
+        r
+    }
+
+    fn view_count(r: &Resource) -> u32 {
+        u32::from_le_bytes(r.fragments[0].data().unwrap()[0x14..0x18].try_into().unwrap())
+    }
+
+    type Coherence = (PathBuf, Vec<String>, Vec<(String, u32, String)>, Vec<String>);
+
+    fn coherence_build(name: &str, adds: &[(&str, Resource)]) -> Coherence {
+        let root = texture_game(name);
+        let (game, addon) = (root.join("game"), root.join("addon"));
+        let view = LOGOS.strip_suffix(".image").unwrap();
+        std::fs::create_dir_all(&addon).unwrap();
+        let stock = game.join(UI);
+        std::fs::write(&stock, texture_erp(vec![array(2, &[[0; 4]; 4]), view_res(4)])).unwrap();
+        let original = |rel: &str| game.join(rel);
+        let mut b = ErpBuild::new(&original);
+        for (origin, res) in adds {
+            let file = format!("{origin}-{}.erp", res.name.len());
+            std::fs::write(addon.join(&file), texture_erp(vec![res.clone()])).unwrap();
+            let op = ErpOp::PutResource {
+                erp: UI.into(),
+                resource: res.name.clone(),
+                source: Source::addon(&file),
+                rename: None,
+            };
+            b.apply_for(&op, origin, &|s: &Source| Ok(s.resolve(&addon)?))
+                .unwrap();
+        }
+        let lines = b.cohere_arrays().unwrap();
+        let counts = b
+            .resources()
+            .filter(|(_, r, _, _)| r.name == view)
+            .map(|(_, r, _, o)| (r.name.clone(), view_count(r), o.to_owned()))
+            .collect();
+        let origins = b.origins().to_vec();
+        (root, lines, counts, origins)
+    }
+
+    #[test]
+    fn a_view_from_another_addon_follows_the_image_slice_count() {
+        let (root, lines, views, origins) = coherence_build(
+            "cohere-split",
+            &[("cs", view_res(16)), ("names", array(2, &[[1; 4]; 6]))],
+        );
+        let view = LOGOS.strip_suffix(".image").unwrap();
+        assert_eq!(
+            lines,
+            [format!(
+                "texture array {view}: view said 16 slices, image has 6; fixed"
+            )]
+        );
+        assert_eq!(views, [(view.to_owned(), 6, "names".to_owned())]);
+        assert_eq!(origins, ["cs", "names"]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_stock_view_follows_an_addon_image_and_a_coherent_array_is_untouched() {
+        let (root, lines, views, _) = coherence_build("cohere-stock", &[("names", array(2, &[[1; 4]; 6]))]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(views[0].1, 6);
+        std::fs::remove_dir_all(&root).ok();
+        let (root, lines, views, _) = coherence_build(
+            "cohere-ok",
+            &[("cs", array(2, &[[1; 4]; 6])), ("cs", view_res(6))],
+        );
+        assert!(lines.is_empty());
+        assert_eq!(views[0].1, 6);
         std::fs::remove_dir_all(&root).ok();
     }
 

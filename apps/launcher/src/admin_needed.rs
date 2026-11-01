@@ -5,23 +5,14 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use swofty_core::compat;
 use swofty_core::install::Source;
+use swofty_core::{compat, copies};
 
 use crate::app_log;
 use crate::game::Install;
 use crate::shell::Shell;
 
 const TITLE: &str = "F1 25 needs administrator rights";
-
-/// Where the player moves the game, by the store it came from.
-fn move_hint(source: Source) -> &'static str {
-    match source {
-        Source::EaApp => " in the EA app",
-        Source::Steam => " in Steam (Properties > Installed Files > Move install folder)",
-        Source::Unknown => "",
-    }
-}
 
 pub(crate) fn text(dir: &Path, source: Source, windows: bool) -> String {
     if !windows {
@@ -32,7 +23,7 @@ pub(crate) fn text(dir: &Path, source: Source, windows: bool) -> String {
          add your mods there.\n\nRestart F1 Multiplayer as administrator to play with mods, or move \
          F1 25 to a folder outside Program Files{}.",
         dir.display(),
-        move_hint(source)
+        copies::move_hint(source)
     )
 }
 
@@ -166,7 +157,10 @@ mod tests {
             "{ea}"
         );
         assert!(ea.contains("Restart F1 Multiplayer as administrator"), "{ea}");
-        assert!(ea.ends_with("outside Program Files in the EA app."), "{ea}");
+        assert!(
+            ea.ends_with("outside Program Files with EA app > F1 25 > Manage > Move, not File Explorer."),
+            "{ea}"
+        );
         let steam = text(
             Path::new(r"C:\Program Files\Steam\steamapps\common\F1 25"),
             Source::Steam,

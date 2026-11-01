@@ -15,6 +15,8 @@ struct UpgradesFit;
 struct VtfRead;
 struct Built;
 struct Reset;
+struct UpgradesReplayed;
+struct SetupApplied;
 struct PartsRegister;
 }
 namespace swofty::sounds::events {
@@ -38,12 +40,16 @@ bool career_season_start(int year, int season_index);
 bool career_season_end();
 bool career_season_break();
 bool career_saving();
+bool career_saved();
+bool career_missing();
 bool career_add_activity(swofty::career::events::AddActivity &payload);
 bool career_standings_rebuild(swofty::career::events::StandingsRebuild &payload);
 bool car_upgrades_fit(swofty::cars::events::UpgradesFit &payload);
 bool car_vtf_read(swofty::cars::events::VtfRead &payload);
 bool car_built(swofty::cars::events::Built &payload);
 bool car_reset(swofty::cars::events::Reset &payload);
+bool car_upgrades_replayed(swofty::cars::events::UpgradesReplayed &payload);
+bool car_setup_applied(swofty::cars::events::SetupApplied &payload);
 bool car_parts_register(swofty::cars::events::PartsRegister &payload);
 bool audio_bundle_resolve(swofty::sounds::events::BundleResolve &payload);
 
@@ -53,8 +59,14 @@ bool car_vtf_read(const swofty::cars::live::Car &car, const char *section, const
                   float &value);
 bool car_built(const swofty::cars::live::Car &car);
 bool car_reset(const swofty::cars::live::Car &car, bool upgrade);
+bool car_upgrades_replayed(const swofty::cars::live::Car &car, float progress);
+bool car_setup_applied(const swofty::cars::live::Car &car);
 bool car_parts_register(int32_t car, const char *vehicle, void *front_wing,
                         const std::function<int32_t(const char *node, float detach_at, bool debris)> &add);
 bool audio_bundle_resolve(int32_t car, const char *vehicle, const char *switch_name, std::string &engine_sound);
+bool car_damage(const swofty::cars::live::Car &car, uint32_t part, float amount);
+bool session_pit(uint32_t car, uint32_t previous, uint32_t status);
+bool session_pit_stop(uint32_t car, uint32_t stops);
+bool session_lap(uint32_t car);
 
 }

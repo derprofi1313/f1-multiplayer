@@ -18,31 +18,134 @@ const LEGACY_ADDONS_DIR: &str = "mods";
 
 static PROFILE_WRITE: Mutex<()> = Mutex::new(());
 
-/// Deletes an addon's folder, waiting out a file that is still briefly in use
-/// once its helper has exited.
-fn delete_addon_dir(
-    dir: &Path,
-    name: &str,
-    mut delete: impl FnMut(&Path) -> std::io::Result<()>,
-) -> Result<()> {
+/// Where an addon's old copy waits to be deleted, next to the addons.
+const OLD_PREFIX: &str = ".old-";
+const STAGING_PREFIX: &str = ".installing-";
+
+type Rename<'a> = &'a mut dyn FnMut(&Path, &Path) -> std::io::Result<()>;
+type Delete<'a> = &'a mut dyn FnMut(&Path) -> std::io::Result<()>;
+
+/// Runs a folder move or delete, waiting out a file that is still briefly in
+/// use once its helper has exited.
+fn waiting_out_locks(mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
     const DELAYS_MS: [u64; 5] = [50, 150, 300, 600, 1000];
     let mut attempt = 0;
     loop {
-        match delete(dir) {
-            Ok(()) => return Ok(()),
+        match op() {
             Err(e) if crate::is_locked_file_error(&e) && attempt < DELAYS_MS.len() => {
                 std::thread::sleep(std::time::Duration::from_millis(DELAYS_MS[attempt]));
                 attempt += 1;
             }
-            Err(e) if crate::is_locked_file_error(&e) => {
-                return Err(Error::Other(format!(
-                    "{name}'s files are still in use, so they couldn't be deleted. Close F1 25 and try \
-                     again. If it still fails, restart the launcher first."
-                )));
-            }
-            Err(e) => return Err(Error::Other(format!("Couldn't delete {name}'s files: {e}"))),
+            r => return r,
         }
     }
+}
+
+fn not_done(what: &str, e: &std::io::Error) -> Error {
+    Error::Other(if crate::is_locked_file_error(e) {
+        format!(
+            "{what}: its files are in use. Close other F1 Multiplayer windows and F1 25, then try again."
+        )
+    } else {
+        format!("{what}: {e}")
+    })
+}
+
+fn swap_lock_path(addons: &Path, id: &str) -> PathBuf {
+    addons.join(format!(".swap-{id}.lock"))
+}
+
+/// Held while one process swaps an addon folder, so another launcher's
+/// start-up cleanup leaves the half-finished swap alone. The operating system
+/// drops it when the process ends, which is how a later start tells a dead
+/// swap from a live one. Where the file system cannot lock, swaps go unguarded.
+struct SwapLock {
+    _file: std::fs::File,
+}
+
+impl SwapLock {
+    fn try_acquire(addons: &Path, id: &str) -> Option<Option<Self>> {
+        let path = swap_lock_path(addons, id);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .ok()?;
+        match file.try_lock() {
+            Err(std::fs::TryLockError::WouldBlock) => Some(None),
+            Ok(()) | Err(std::fs::TryLockError::Error(_)) => Some(Some(Self { _file: file })),
+        }
+    }
+}
+
+fn swap_lock_for(dest: &Path, name: &str) -> Result<Option<SwapLock>> {
+    let (Some(addons), Some(id)) = (dest.parent(), dest.file_name()) else {
+        return Ok(None);
+    };
+    match SwapLock::try_acquire(addons, &id.to_string_lossy()) {
+        Some(None) => Err(Error::Other(format!(
+            "Couldn't change {name}: another F1 Multiplayer window is changing it right now"
+        ))),
+        Some(Some(lock)) => Ok(Some(lock)),
+        None => Ok(None),
+    }
+}
+
+/// Moves `dir` to a hidden `.old-` folder beside it. A file still in use stops
+/// the move, and then nothing in `dir` has changed.
+fn set_aside(dir: &Path, rename: Rename) -> std::io::Result<PathBuf> {
+    let parent = dir.parent().unwrap_or(dir);
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    let aside = (0..)
+        .map(|n| match n {
+            0 => parent.join(format!("{OLD_PREFIX}{name}")),
+            n => parent.join(format!("{OLD_PREFIX}{name}-{n}")),
+        })
+        .find(|p| !p.exists())
+        .expect("a free name");
+    waiting_out_locks(|| rename(dir, &aside))?;
+    Ok(aside)
+}
+
+/// Puts `staging` in place of `dest`. The installed copy is moved aside first
+/// and deleted last, so a failure at any step leaves it whole. An old copy that
+/// can't be deleted yet is deleted on the next start; one that can't be put
+/// back is put back then.
+fn swap_in(staging: &Path, dest: &Path, name: &str, rename: Rename, delete: Delete) -> Result<()> {
+    let verb = if dest.exists() { "update" } else { "install" };
+    let what = format!("Couldn't {verb} {name}");
+    let _lock = swap_lock_for(dest, name)?;
+    let aside = match dest.exists().then(|| set_aside(dest, &mut *rename)).transpose() {
+        Ok(aside) => aside,
+        Err(e) => {
+            std::fs::remove_dir_all(staging).ok();
+            return Err(not_done(&what, &e));
+        }
+    };
+    if let Err(e) = waiting_out_locks(|| rename(staging, dest)) {
+        let restored = aside
+            .as_deref()
+            .is_none_or(|aside| waiting_out_locks(|| rename(aside, dest)).is_ok());
+        if restored {
+            std::fs::remove_dir_all(staging).ok();
+        }
+        return Err(not_done(&what, &e));
+    }
+    if let Some(aside) = aside {
+        waiting_out_locks(|| delete(&aside)).ok();
+    }
+    Ok(())
+}
+
+/// Deletes an addon's folder whole or not at all: it is moved aside first, so
+/// a file still in use stops the removal before anything is deleted. An old
+/// copy that can't be deleted yet is deleted on the next start.
+fn delete_addon_dir(dir: &Path, name: &str, rename: Rename, delete: Delete) -> Result<()> {
+    let _lock = swap_lock_for(dir, name)?;
+    let aside = set_aside(dir, rename).map_err(|e| not_done(&format!("Couldn't remove {name}"), &e))?;
+    waiting_out_locks(|| delete(&aside)).ok();
+    Ok(())
 }
 
 fn profile_write() -> MutexGuard<'static, ()> {
@@ -160,9 +263,17 @@ impl Store {
 
     pub fn migrate(&self) -> Result<Vec<String>> {
         let mut notes = Vec::new();
+        if let Some(target) = crate::paths::dangling_link(&self.root) {
+            return Err(Error::Other(format!(
+                "the data folder {} links to {}, which is missing. Reconnect that drive or restore the folder; the launcher will not start a new data folder in its place",
+                self.root.display(),
+                target.display()
+            )));
+        }
         if !self.root.is_dir() {
             return Ok(notes);
         }
+        notes.extend(self.finish_swaps());
         let config: Result<Config> = match crate::load_json(&self.config_path()) {
             Ok(crate::Loaded::Found(c)) => Ok(c),
             Ok(crate::Loaded::Missing | crate::Loaded::Damaged(_)) => Ok(Config::default()),
@@ -216,6 +327,67 @@ impl Store {
             Err(e) => notes.push(format!("data_version not recorded: {e}")),
         }
         Ok(notes)
+    }
+
+    /// Finishes addon updates and removals an earlier run left: an old copy
+    /// whose update stopped before the new copy was in place is put back, and
+    /// any other old copy is deleted.
+    fn finish_swaps(&self) -> Vec<String> {
+        let addons = self.addons_dir();
+        let Ok(rd) = std::fs::read_dir(&addons) else {
+            return Vec::new();
+        };
+        let mut old: Vec<PathBuf> = rd
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(OLD_PREFIX))
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        old.sort();
+        let mut notes = Vec::new();
+        for dir in old {
+            let stem = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().trim_start_matches(OLD_PREFIX).to_owned())
+                .unwrap_or_default();
+            let base = match stem.rsplit_once('-') {
+                Some((b, n)) if !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()) => b.to_owned(),
+                _ => stem.clone(),
+            };
+            let mut names = vec![stem, base];
+            names.extend(manifest_id(&dir));
+            names.sort();
+            names.dedup();
+            let mut guards = Vec::new();
+            let mut busy = false;
+            for n in &names {
+                match SwapLock::try_acquire(&addons, n) {
+                    Some(None) => busy = true,
+                    Some(Some(g)) => guards.push(g),
+                    None => {}
+                }
+            }
+            if busy {
+                notes.push(format!(
+                    "left {} alone: another launcher is changing it",
+                    dir.display()
+                ));
+                continue;
+            }
+            let interrupted = manifest_id(&dir).filter(|id| {
+                !addons.join(id).exists() && addons.join(format!("{STAGING_PREFIX}{id}")).is_dir()
+            });
+            if let Some(id) = interrupted {
+                let to = addons.join(&id);
+                if std::fs::rename(&dir, &to).is_ok() {
+                    std::fs::remove_dir_all(addons.join(format!("{STAGING_PREFIX}{id}"))).ok();
+                    notes.push(format!("put back {id}: its update stopped part way"));
+                }
+            } else if std::fs::remove_dir_all(&dir).is_ok() {
+                notes.push(format!("deleted the old copy {}", dir.display()));
+            }
+        }
+        notes
     }
 
     /// The installed addons this launcher can read. One it can't is left out with a warning;
@@ -358,7 +530,7 @@ impl Store {
         crate::busy::refuse_change(&self.root, &m.id, &m.name)?;
         let dest = self.addons_dir().join(&m.id);
         self.helpers.forget(&m.id);
-        let staging = self.addons_dir().join(format!(".installing-{}", m.id));
+        let staging = self.addons_dir().join(format!("{STAGING_PREFIX}{}", m.id));
         if staging.exists() {
             std::fs::remove_dir_all(&staging).map_err(io_err(&staging))?;
         }
@@ -367,11 +539,14 @@ impl Store {
             std::fs::remove_dir_all(&staging).ok();
             return Err(e);
         }
-        if dest.exists() {
-            delete_addon_dir(&dest, &m.name, |d| std::fs::remove_dir_all(d))?;
-        }
+        swap_in(
+            &staging,
+            &dest,
+            &m.name,
+            &mut |from, to| std::fs::rename(from, to),
+            &mut |d| std::fs::remove_dir_all(d),
+        )?;
         std::fs::remove_file(self.registry_install_path(&m.id)).ok();
-        std::fs::rename(&staging, &dest).map_err(io_err(&dest))?;
         Ok(m)
     }
 
@@ -415,7 +590,7 @@ impl Store {
     pub(crate) fn remove_addon_with(
         &self,
         id: &str,
-        delete: impl FnMut(&Path) -> std::io::Result<()>,
+        mut delete: impl FnMut(&Path) -> std::io::Result<()>,
     ) -> Result<()> {
         if self.is_builtin(id) {
             return Err(Error::Other(format!("{id} is built in and cannot be removed")));
@@ -433,7 +608,12 @@ impl Store {
         crate::busy::refuse_change(&self.root, id, &name)?;
         let _write = profile_write();
         self.helpers.forget(id);
-        delete_addon_dir(&dir, &name, delete)?;
+        delete_addon_dir(
+            &dir,
+            &name,
+            &mut |from, to| std::fs::rename(from, to),
+            &mut delete,
+        )?;
         std::fs::remove_file(self.registry_install_path(id)).ok();
         for name in self.profile_names()? {
             let path = self.profiles_dir().join(format!("{name}.json"));
@@ -533,6 +713,9 @@ impl Store {
         if saves.is_dir() {
             std::fs::rename(&saves, self.saves_dir(to)).map_err(io_err(&saves))?;
         }
+        crate::launcher_saves::rename_vaults(&self.root, from, to)?;
+        crate::launcher_saves::rename_in_marker(&self.root, from, to)?;
+        crate::stdlib::careers::rename_profile(&self.root, from, to)?;
         crate::addon_storage::profile_deleted(&self.root, from)?;
         if self.config().active_profile.as_deref().unwrap_or(DEFAULT_PROFILE) == from {
             self.set_active_profile(to)?;
@@ -695,7 +878,13 @@ impl Store {
 
     pub fn session_settings(&self, profile: &str) -> Result<SessionSettings> {
         let requests = crate::paths::game_folder_view(&self.requests_path(profile));
-        let mut s = SessionSettings::build(&self.profile(profile)?, &self.addons()?, Some(requests))?;
+        let p = self.profile(profile)?;
+        let mut s = SessionSettings::build(&p, &self.addons()?, Some(requests))?;
+        let redirect = p.launcher_saves && !crate::launcher_saves::steam_save_pending(&self.root, &p.name);
+        s.launcher_saves = redirect.then(|| settings::SessionSaves {
+            profile: p.name.clone(),
+            remote: crate::paths::game_folder_view(&crate::launcher_saves::remote_dir(&self.root, &p.name)),
+        });
         s.addons
             .retain(|a| a.id == CORE_ID || !self.is_builtin(&a.id) || !a.options.is_empty());
         Ok(s)
@@ -1400,8 +1589,19 @@ mod tests {
             ]
         };
         write_addon(&Store::new(&root).addons_dir().join("a.user"), "a.user");
+        crate::write_json(
+            &crate::launcher_saves::marker_path(&root),
+            &crate::launcher_saves::Marker {
+                at: 0,
+                launcher: String::new(),
+                profiles: Vec::new(),
+                note: String::new(),
+                seen: true,
+            },
+        )
+        .unwrap();
         let plain = Store::new(&root).with_builtins(vec![tuned()]);
-        let expected = SessionSettings::build(
+        let mut expected = SessionSettings::build(
             &plain.profile(DEFAULT_PROFILE).unwrap(),
             &plain.addons().unwrap(),
             Some(crate::paths::game_folder_view(
@@ -1409,6 +1609,13 @@ mod tests {
             )),
         )
         .unwrap();
+        expected.launcher_saves = Some(settings::SessionSaves {
+            profile: DEFAULT_PROFILE.into(),
+            remote: crate::paths::game_folder_view(&crate::launcher_saves::remote_dir(
+                &plain.root,
+                DEFAULT_PROFILE,
+            )),
+        });
         let plain_json = serde_json::to_vec(&plain.session_settings(DEFAULT_PROFILE).unwrap()).unwrap();
         assert_eq!(plain_json, serde_json::to_vec(&expected).unwrap());
 
@@ -1434,6 +1641,30 @@ mod tests {
         let mut without_pages = s.clone();
         without_pages.ui = None;
         assert_eq!(serde_json::to_vec(&without_pages).unwrap(), plain_json);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_profile_keeps_playing_on_the_steam_save_until_an_import_finds_one() {
+        let root = tmp("steam-pending");
+        let store = Store::new(&root);
+        assert!(
+            store
+                .session_settings(DEFAULT_PROFILE)
+                .unwrap()
+                .launcher_saves
+                .is_none()
+        );
+        let remote = crate::launcher_saves::remote_dir(&root, DEFAULT_PROFILE);
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(remote.join("savegame@profile#X"), b"x").unwrap();
+        assert!(
+            store
+                .session_settings(DEFAULT_PROFILE)
+                .unwrap()
+                .launcher_saves
+                .is_some()
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1532,6 +1763,60 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_profile_keeps_its_vault_careers_and_import_record() {
+        let root = tmp("rename-vault");
+        let store = Store::new(&root);
+        store.create_profile("grid", None).unwrap();
+        let vault = root.join("career-vault").join("launcher-grid");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("marker"), "x").unwrap();
+        let saves = root.join("saves");
+        std::fs::create_dir_all(&saves).unwrap();
+        std::fs::write(
+            saves.join("imported.json"),
+            r#"{"at":1,"launcher":"1","profiles":["grid","other"]}"#,
+        )
+        .unwrap();
+        let careers = root.join("careers");
+        std::fs::create_dir_all(&careers).unwrap();
+        std::fs::write(
+            careers.join("index.json"),
+            r#"{"version":1,"careers":[{"career":"a","profile":"grid"},{"career":"b","profile":"other"}]}"#,
+        )
+        .unwrap();
+        store.rename_profile("grid", "vrgrid").unwrap();
+        assert!(!vault.exists());
+        assert!(
+            root.join("career-vault")
+                .join("launcher-vrgrid")
+                .join("marker")
+                .is_file()
+        );
+        let marker = crate::launcher_saves::marker(&root).unwrap();
+        assert_eq!(marker.profiles, ["vrgrid", "other"]);
+        let index = crate::stdlib::careers::read(&crate::stdlib::careers::data_path(&root));
+        assert_eq!(index[0].profile.as_deref(), Some("vrgrid"));
+        assert_eq!(index[1].profile.as_deref(), Some("other"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn deleting_a_profile_keeps_its_versions_in_the_vault() {
+        let root = tmp("delete-keeps-vault");
+        let store = Store::new(&root);
+        store.create_profile("grid", None).unwrap();
+        store.create_profile("main", None).unwrap();
+        let vault = root.join("career-vault").join("launcher-grid");
+        std::fs::create_dir_all(&vault).unwrap();
+        let plan = store.plan_profile_deletion("grid").unwrap();
+        assert!(!plan.paths.contains(&vault));
+        store.delete_profile("grid").unwrap();
+        assert!(vault.is_dir());
+        assert!(!store.profile_names().unwrap().iter().any(|n| n == "grid"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn keeps_vanilla_and_the_last_profile() {
         let root = tmp("delete-last");
         let store = Store::new(&root);
@@ -1614,37 +1899,250 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    #[test]
-    fn waits_out_a_locked_addon_folder_and_names_the_addon() {
-        let dir = Path::new("/data/Users/someone/addons/t.locked");
-        let denied = || std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        let mut tries = 0;
-        delete_addon_dir(dir, "Locked", |_| {
-            tries += 1;
-            if tries < 3 { Err(denied()) } else { Ok(()) }
-        })
-        .unwrap();
-        assert_eq!(tries, 3);
+    fn denied() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+    }
 
-        tries = 0;
-        let e = delete_addon_dir(dir, "Locked", |_| {
-            tries += 1;
-            Err(denied())
-        })
+    fn real_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
+    fn real_delete(dir: &Path) -> std::io::Result<()> {
+        std::fs::remove_dir_all(dir)
+    }
+
+    fn old_copies(store: &Store) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(store.addons_dir())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(OLD_PREFIX) || n.starts_with(STAGING_PREFIX))
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn installed_with_update(name: &str) -> (PathBuf, Store, PathBuf, PathBuf) {
+        let root = tmp(name);
+        let store = Store::new(&root);
+        let v1 = root.join("v1");
+        std::fs::create_dir_all(v1.join("base")).unwrap();
+        std::fs::write(v1.join(MANIFEST_FILE), manifest_json("a.livery")).unwrap();
+        std::fs::write(v1.join("base/common.erp"), b"v1").unwrap();
+        store.install_addon(&v1).unwrap();
+        let dest = store.addons_dir().join("a.livery");
+        let staging = store.addons_dir().join(format!("{STAGING_PREFIX}a.livery"));
+        std::fs::create_dir_all(staging.join("base")).unwrap();
+        std::fs::write(
+            staging.join(MANIFEST_FILE),
+            manifest_json("a.livery").replace("1.0.0", "1.1.0"),
+        )
+        .unwrap();
+        std::fs::write(staging.join("base/common.erp"), b"v2").unwrap();
+        (root, store, dest, staging)
+    }
+
+    #[test]
+    fn finish_swaps_leaves_a_swap_another_process_is_making() {
+        let (root, store, dest, staging) = installed_with_update("swap-live");
+        let aside = store.addons_dir().join(format!("{OLD_PREFIX}a.livery"));
+        std::fs::rename(&dest, &aside).unwrap();
+        let lock = SwapLock::try_acquire(&store.addons_dir(), "a.livery")
+            .unwrap()
+            .unwrap();
+        let notes = store.finish_swaps();
+        assert!(aside.is_dir() && staging.is_dir() && !dest.exists());
+        assert!(notes.iter().any(|n| n.contains("another launcher")));
+        drop(lock);
+        let notes = store.finish_swaps();
+        assert!(dest.is_dir() && !aside.exists() && !staging.exists());
+        assert!(notes.iter().any(|n| n.contains("put back a.livery")));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_swap_waits_out_nothing_when_another_process_holds_the_same_addon() {
+        let (root, store, dest, staging) = installed_with_update("swap-contended");
+        let lock = SwapLock::try_acquire(&store.addons_dir(), "a.livery")
+            .unwrap()
+            .unwrap();
+        let e = swap_in(
+            &staging,
+            &dest,
+            "A",
+            &mut |from, to| std::fs::rename(from, to),
+            &mut |d| std::fs::remove_dir_all(d),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("another F1 Multiplayer window"));
+        assert_eq!(std::fs::read(dest.join("base/common.erp")).unwrap(), b"v1");
+        drop(lock);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_update_blocked_by_a_file_in_use_keeps_the_installed_copy_whole() {
+        let (root, store, dest, staging) = installed_with_update("swap-locked");
+        let mut tries = 0;
+        let mut deletes = 0;
+        let e = swap_in(
+            &staging,
+            &dest,
+            "Livery",
+            &mut |from, to| {
+                if from == dest.as_path() {
+                    tries += 1;
+                    return Err(denied());
+                }
+                real_rename(from, to)
+            },
+            &mut |_| {
+                deletes += 1;
+                Ok(())
+            },
+        )
         .unwrap_err()
         .to_string();
         assert_eq!(tries, 6);
-        assert!(e.starts_with("Locked's files are still in use"), "{e}");
-        assert!(!e.contains("someone"), "{e}");
+        assert_eq!(deletes, 0);
+        assert!(
+            e.starts_with("Couldn't update Livery: its files are in use"),
+            "{e}"
+        );
+        assert!(e.contains("Close other F1 Multiplayer windows"), "{e}");
+        assert_eq!(std::fs::read(dest.join("base/common.erp")).unwrap(), b"v1");
+        assert_eq!(store.addons().unwrap()["a.livery"].version.to_string(), "1.0.0");
+        assert!(old_copies(&store).is_empty(), "{:?}", old_copies(&store));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
-        tries = 0;
-        let e = delete_addon_dir(dir, "Locked", |_| {
-            tries += 1;
-            Err(std::io::Error::other("disk gone"))
+    #[test]
+    fn a_failed_swap_puts_the_installed_copy_back() {
+        let (root, store, dest, staging) = installed_with_update("swap-put-back");
+        let e = swap_in(
+            &staging,
+            &dest,
+            "Livery",
+            &mut |from, to| {
+                if from == staging.as_path() {
+                    return Err(std::io::Error::other("disk gone"));
+                }
+                real_rename(from, to)
+            },
+            &mut real_delete,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(e, "Couldn't update Livery: disk gone");
+        assert_eq!(std::fs::read(dest.join("base/common.erp")).unwrap(), b"v1");
+        assert!(old_copies(&store).is_empty(), "{:?}", old_copies(&store));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_old_copy_still_in_use_is_deleted_on_the_next_start() {
+        let (root, store, dest, staging) = installed_with_update("swap-old-locked");
+        swap_in(
+            &staging,
+            &dest,
+            "Livery",
+            &mut real_rename,
+            &mut |_| Err(denied()),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(dest.join("base/common.erp")).unwrap(), b"v2");
+        assert_eq!(store.addons().unwrap()["a.livery"].version.to_string(), "1.1.0");
+        assert_eq!(old_copies(&store), [format!("{OLD_PREFIX}a.livery")]);
+
+        let notes = store.migrate().unwrap();
+        assert!(
+            notes.iter().any(|n| n.starts_with("deleted the old copy")),
+            "{notes:?}"
+        );
+        assert!(old_copies(&store).is_empty(), "{:?}", old_copies(&store));
+        assert_eq!(std::fs::read(dest.join("base/common.erp")).unwrap(), b"v2");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_update_stopped_part_way_is_put_back_on_the_next_start() {
+        let (root, store, dest, staging) = installed_with_update("swap-interrupted");
+        let aside = set_aside(&dest, &mut real_rename).unwrap();
+        assert!(!dest.exists());
+        let notes = store.migrate().unwrap();
+        assert!(
+            notes.iter().any(|n| n.starts_with("put back a.livery")),
+            "{notes:?}"
+        );
+        assert_eq!(std::fs::read(dest.join("base/common.erp")).unwrap(), b"v1");
+        assert!(!aside.exists());
+        assert!(!staging.exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_second_old_copy_gets_its_own_name() {
+        let (root, store, dest, staging) = installed_with_update("swap-second-old");
+        std::fs::create_dir_all(store.addons_dir().join(format!("{OLD_PREFIX}a.livery"))).unwrap();
+        swap_in(
+            &staging,
+            &dest,
+            "Livery",
+            &mut real_rename,
+            &mut |_| Err(denied()),
+        )
+        .unwrap();
+        assert_eq!(
+            old_copies(&store),
+            [format!("{OLD_PREFIX}a.livery"), format!("{OLD_PREFIX}a.livery-1")]
+        );
+        store.migrate().unwrap();
+        assert!(old_copies(&store).is_empty(), "{:?}", old_copies(&store));
+        assert_eq!(std::fs::read(dest.join("base/common.erp")).unwrap(), b"v2");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_removal_blocked_by_a_file_in_use_deletes_nothing() {
+        let (root, _, dest, _) = installed_with_update("remove-locked");
+        let mut deletes = 0;
+        let e = delete_addon_dir(&dest, "Livery", &mut |_, _| Err(denied()), &mut |_| {
+            deletes += 1;
+            Ok(())
         })
         .unwrap_err()
         .to_string();
-        assert_eq!(tries, 1);
-        assert_eq!(e, "Couldn't delete Locked's files: disk gone");
+        assert_eq!(deletes, 0);
+        assert!(
+            e.starts_with("Couldn't remove Livery: its files are in use"),
+            "{e}"
+        );
+        assert!(!e.contains(&root.display().to_string()), "{e}");
+        assert_eq!(std::fs::read(dest.join("base/common.erp")).unwrap(), b"v1");
+
+        let e = delete_addon_dir(
+            &dest,
+            "Livery",
+            &mut |_, _| Err(std::io::Error::other("disk gone")),
+            &mut real_delete,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(e, "Couldn't remove Livery: disk gone");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_removed_addon_whose_files_are_still_in_use_is_gone_and_deleted_on_the_next_start() {
+        let (root, store, dest, staging) = installed_with_update("remove-old-locked");
+        std::fs::remove_dir_all(&staging).unwrap();
+        store.remove_addon_with("a.livery", |_| Err(denied())).unwrap();
+        assert!(!dest.exists());
+        assert!(!store.addons().unwrap().contains_key("a.livery"));
+        assert_eq!(old_copies(&store), [format!("{OLD_PREFIX}a.livery")]);
+        store.migrate().unwrap();
+        assert!(old_copies(&store).is_empty(), "{:?}", old_copies(&store));
+        assert!(!dest.exists());
+        std::fs::remove_dir_all(&root).ok();
     }
 }

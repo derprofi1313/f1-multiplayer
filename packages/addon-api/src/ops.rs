@@ -109,12 +109,12 @@ const STAT_ID_CEILINGS: &[(&str, &str, StatIdCeiling)] = &[
         "vehicle_package",
         StatIdCeiling { max: 254, from: None },
     ),
-    // Driver ids are 0-254. A stock row holds 254; the core allocates 208-253.
+    // Driver ids are u16 in memory and 14 bits in saves and net (0x3fff = none); 254 is default_driver, and UDP 2024/2025 read a low byte of 255 as a network player.
     (
         "entrants.drivers",
         "driver",
         StatIdCeiling {
-            max: 254,
+            max: 16382,
             from: Some(208),
         },
     ),
@@ -154,12 +154,31 @@ const STAT_ID_CEILINGS: &[(&str, &str, StatIdCeiling)] = &[
         "scenario",
         StatIdCeiling { max: 254, from: None },
     ),
+    // The mask parser 0x142a0ddb0 sets bit `stat_id` of a u32 for each mode a row lists and throws
+    // 'invalid bitset position' at boot above 31.
+    (
+        "game_setup.game_setup_modes",
+        "game_setup_mode",
+        StatIdCeiling { max: 31, from: None },
+    ),
+    // The same parser's season mask, by `statId`.
+    (
+        "game_setup.seasons",
+        "season",
+        StatIdCeiling { max: 31, from: None },
+    ),
+    // Each game setup mode names its entrant setup mode; kept to the mode mask's range with it.
+    (
+        "entrants.entrant_setup_modes",
+        "entrant_setup_mode",
+        StatIdCeiling { max: 31, from: None },
+    ),
 ];
 
-/// The key that holds the id of `table`'s rows named `row`: `statId` for scenarios, else `stat_id`.
+/// The key that holds the id of `table`'s rows named `row`: `statId` for scenarios and seasons, else `stat_id`.
 pub fn stat_id_field(table: &str, row: &str) -> &'static str {
     match (table, row) {
-        ("game_setup.scenarios", "scenario") => "statId",
+        ("game_setup.scenarios", "scenario") | ("game_setup.seasons", "season") => "statId",
         _ => "stat_id",
     }
 }
@@ -170,6 +189,11 @@ pub fn stat_id_ceiling(table: &str, row: &str) -> Option<StatIdCeiling> {
         .iter()
         .find(|(t, r, _)| *t == table && *r == row)
         .map(|(_, _, c)| *c)
+}
+
+/// Whether a fresh row of `table`'s rows named `row` may not take `id`: driver ids 254 and 255, and any with a low byte of 0xff.
+pub fn stat_id_unusable(table: &str, row: &str, id: i64) -> bool {
+    table == "entrants.drivers" && row == "driver" && (id == 254 || id & 0xff == 0xff)
 }
 
 /// An `add-row` applied: the source row's path and the new row's path.
@@ -294,6 +318,14 @@ pub enum ErpOp {
     // Each slice of the texture array `resource` in `source` that differs from the
     // game's stock slice goes over the array already in `erp`.
     MergeSlices {
+        erp: String,
+        resource: String,
+        source: Source,
+    },
+    // Every slice of the texture array `resource` in `source` goes after the slices of
+    // the array already in `erp` (the game's, or as earlier addons left it), in load
+    // order, and the array's view (`resource` without `.image`) counts them.
+    AppendSlices {
         erp: String,
         resource: String,
         source: Source,
@@ -466,6 +498,55 @@ pub trait FieldNames {
         let _ = (table, row, id);
         false
     }
+
+    /// The install's kept ids for the rows `add-row` gives an id of its own; see [`RowIds`].
+    fn row_ids(&self) -> Option<&dyn RowIds> {
+        None
+    }
+}
+
+/// The ids the install keeps for the rows `add-row` gives an id of its own, so a row gets the same
+/// id at every build whatever else the build adds. A key names an addon's row: `<addon>/<table>.<row>/<label>`.
+pub trait RowIds {
+    /// The key of this addon's row labelled `label` in `table`'s rows named `row`, claimed for this
+    /// build, and the id kept for it.
+    fn claim(&self, table: &str, row: &str, label: &str) -> Claimed;
+
+    /// Whether `id` of `table`'s rows named `row` is kept for a row other than `key`, or held by a
+    /// record of the core's registry.
+    fn taken(&self, table: &str, row: &str, key: &str, id: i64) -> bool;
+
+    /// Keeps `id` for `key`, which it got as `from` says.
+    fn keep(&self, table: &str, row: &str, key: &str, id: i64, from: IdFrom);
+
+    /// The lowest id kept for a row of an addon this build leaves out that no record of the core's registry
+    /// holds and `free` accepts, moved to `key`, and the key that held it.
+    fn reclaim(&self, table: &str, row: &str, key: &str, free: &dyn Fn(i64) -> bool)
+    -> Option<(i64, String)>;
+}
+
+/// A row's claimed key, its kept id, and the id the profile's last build gave a row with its label.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Claimed {
+    pub key: String,
+    pub kept: Option<i64>,
+    pub seed: Option<i64>,
+}
+
+/// How a row got the id the install keeps for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IdFrom {
+    /// The profile's last build before the store gave its row that id.
+    Seeded,
+    /// The hash of its key, or the next id after it that was free (1.6.10 and 1.6.11 builds).
+    Hashed,
+    /// The next free id above the table's rows in load order, as builds before 1.6.10 gave it.
+    Next,
+    /// The kept id was taken, and the row took a new one.
+    Moved,
+    /// The table was full, and the row took an id kept for an addon the build left out.
+    Reused,
 }
 
 /// Stock record keys and no field names.
@@ -526,6 +607,10 @@ impl FieldNames for Schema<'_> {
     fn reserved(&self, table: &str, row: &str, id: i64) -> bool {
         self.names.reserved(table, row, id)
     }
+
+    fn row_ids(&self) -> Option<&dyn RowIds> {
+        self.names.row_ids()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -576,6 +661,94 @@ struct Db<'a> {
     removed: Vec<usize>,
     added_rows: HashSet<String>,
     moved: HashMap<(String, String), String>,
+    ties: std::cell::RefCell<Vec<String>>,
+    // Bumped by every write, so a cached read of the records knows when it is stale.
+    generation: u64,
+    stat_ids: std::cell::RefCell<HashMap<(String, String), StatIds>>,
+}
+
+// The stat_ids of a table's rows, read once and kept up to date by add-row until any other write.
+struct StatIds {
+    table: String,
+    row: String,
+    generation: u64,
+    ids: Vec<Option<i64>>,
+    used: HashSet<i64>,
+    max: Option<i64>,
+    // The highest id of a stock or track row.
+    stock: i64,
+    // The ids of the rows this apply didn't add, as a count and a set, to tell whether they are all distinct.
+    kept: usize,
+    kept_distinct: HashSet<i64>,
+    // A start and the lowest id from it that no row holds and the game can read.
+    lowest_free: Option<(i64, i64)>,
+}
+
+impl StatIds {
+    fn read(db: &Db, names: &dyn FieldNames, table: &str, row: &str, rows: usize) -> Self {
+        let field = stat_id_field(table, row);
+        let mut ids = Self {
+            table: table.to_owned(),
+            row: row.to_owned(),
+            generation: db.generation,
+            ids: Vec::with_capacity(rows),
+            used: HashSet::with_capacity(rows),
+            max: None,
+            stock: -1,
+            kept: 0,
+            kept_distinct: HashSet::new(),
+            lowest_free: None,
+        };
+        for i in 0..rows {
+            let name = format!("{table}.{row}_{i}");
+            let key = fnv1a64(format!("{name}.{field}"));
+            let id = db.text(key).and_then(|v| v.trim().parse::<i64>().ok());
+            ids.push(names, key, id, db.added_rows.contains(&name));
+        }
+        ids
+    }
+
+    fn push(&mut self, names: &dyn FieldNames, key: u64, id: Option<i64>, added: bool) {
+        self.ids.push(id);
+        let Some(id) = id else {
+            return;
+        };
+        if names.stock(key) || names.track(key) {
+            self.stock = self.stock.max(id);
+        }
+        if !added {
+            self.kept += 1;
+            self.kept_distinct.insert(id);
+        }
+        self.used.insert(id);
+        self.max = Some(self.max.map_or(id, |m| m.max(id)));
+        if let Some((_, low)) = &mut self.lowest_free
+            && *low == id
+        {
+            while self.used.contains(low) || stat_id_unusable(&self.table, &self.row, *low) {
+                *low += 1;
+            }
+        }
+    }
+
+    // Whether the rows this apply didn't add have ids, all different.
+    fn indexed(&self) -> bool {
+        self.kept > 0 && self.kept_distinct.len() == self.kept
+    }
+
+    fn lowest_free(&mut self, from: i64) -> i64 {
+        if let Some((start, low)) = self.lowest_free
+            && start == from
+        {
+            return low;
+        }
+        let mut low = from;
+        while self.used.contains(&low) || stat_id_unusable(&self.table, &self.row, low) {
+            low += 1;
+        }
+        self.lowest_free = Some((from, low));
+        low
+    }
 }
 
 impl<'a> Db<'a> {
@@ -590,10 +763,68 @@ impl<'a> Db<'a> {
             removed: Vec::new(),
             added_rows: HashSet::new(),
             moved: HashMap::new(),
+            ties: std::cell::RefCell::new(Vec::new()),
+            generation: 0,
+            stat_ids: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
+    fn stat_ids(
+        &self,
+        names: &dyn FieldNames,
+        table: &str,
+        row: &str,
+        rows: usize,
+    ) -> std::cell::RefMut<'_, StatIds> {
+        std::cell::RefMut::map(self.stat_ids.borrow_mut(), |all| {
+            let ids = all
+                .entry((table.to_owned(), row.to_owned()))
+                .or_insert_with(|| StatIds::read(self, names, table, row, rows));
+            if ids.generation != self.generation || ids.ids.len() != rows {
+                *ids = StatIds::read(self, names, table, row, rows);
+            }
+            ids
+        })
+    }
+
+    // Adds the row `name`, the table's `rows`th, to its cached ids, when nothing but that row's writes
+    // came since generation `before`.
+    fn row_added(
+        &self,
+        names: &dyn FieldNames,
+        table: &str,
+        row: &str,
+        rows: usize,
+        name: &str,
+        before: u64,
+    ) {
+        let mut all = self.stat_ids.borrow_mut();
+        let Some(ids) = all.get_mut(&(table.to_owned(), row.to_owned())) else {
+            return;
+        };
+        if ids.generation != before || ids.ids.len() != rows {
+            return;
+        }
+        let key = fnv1a64(format!("{name}.{}", stat_id_field(table, row)));
+        let id = self.text(key).and_then(|v| v.trim().parse::<i64>().ok());
+        ids.push(names, key, id, true);
+        ids.generation = self.generation;
+    }
+
+    fn drain_ties(&self, cx: &mut Cx) -> Result<()> {
+        for tie in self.ties.take() {
+            if cx.strict {
+                return Err(Error::Resolve(format!("{tie} (strict)")));
+            }
+            if !cx.report.warnings.contains(&tie) {
+                cx.report.warnings.push(tie);
+            }
+        }
+        Ok(())
+    }
+
     fn remove(&mut self, key: u64) -> bool {
+        self.generation += 1;
         match self.index.remove(&key) {
             Some(i) => {
                 self.removed.push(i);
@@ -620,6 +851,7 @@ impl<'a> Db<'a> {
     }
 
     fn get_mut(&mut self, key: u64) -> Option<&mut Record> {
+        self.generation += 1;
         self.index.get(&key).map(|&i| &mut self.gvdb.records[i])
     }
 
@@ -628,6 +860,7 @@ impl<'a> Db<'a> {
     }
 
     fn push(&mut self, record: Record) {
+        self.generation += 1;
         self.index.insert(record.key, self.gvdb.records.len());
         self.gvdb.records.push(record);
     }
@@ -692,7 +925,14 @@ pub fn first_segment(path: &str) -> Result<(Segment<'_>, Option<&str>)> {
     Ok((segment, inner[close + 1..].strip_prefix('.')))
 }
 
-fn select_row(db: &Db, table: &Base, row: &str, field: &str, want: &str) -> std::result::Result<Base, usize> {
+fn select_row(
+    db: &Db,
+    table: &Base,
+    row: &str,
+    field: &str,
+    want: &str,
+    first_wins: bool,
+) -> std::result::Result<(Base, usize), usize> {
     let count = match table {
         Base::Path(t) if !row.is_empty() => db.instance_count(t, row),
         _ => None,
@@ -717,12 +957,25 @@ fn select_row(db: &Db, table: &Base, row: &str, field: &str, want: &str) -> std:
         }
     }
     match hits.len() {
-        1 => Ok(hits.remove(0)),
+        0 => Err(0),
+        1 => Ok((hits.remove(0), 1)),
+        n if first_wins => Ok((hits.remove(0), n)),
         n => Err(n),
     }
 }
 
+const NO_ROW: &str = "no row matches";
+
+/// Whether `e` is a selector that matched no row, which a row added later can fix.
+pub fn no_row(e: &Error) -> bool {
+    matches!(e, Error::Resolve(m) if m.contains(&format!(": {NO_ROW}")))
+}
+
 fn resolve_path(db: &Db, path: &str) -> Result<Base> {
+    resolve_path_with(db, path, true)
+}
+
+fn resolve_path_with(db: &Db, path: &str, first_wins: bool) -> Result<Base> {
     if !path.contains('[') {
         return parse_base(path);
     }
@@ -742,15 +995,22 @@ fn resolve_path(db: &Db, path: &str) -> Result<Base> {
                     Some(b) => (b, seg.name),
                     None => (parse_base(seg.name)?, ""),
                 };
-                match select_row(db, &table, row, field, want) {
-                    Ok(b) => {
+                match select_row(db, &table, row, field, want, first_wins) {
+                    Ok((b, matched)) => {
                         nested = true;
+                        if matched > 1 {
+                            let upto = &path[..path.len() - tail.map_or(0, |t| t.len() + 1)];
+                            db.ties.borrow_mut().push(format!(
+                                "{upto}: {matched} rows match; using the first, {}",
+                                b.key("")
+                            ));
+                        }
                         b
                     }
                     Err(n) => {
                         let upto = &path[..path.len() - tail.map_or(0, |t| t.len() + 1)];
                         let what = match n {
-                            0 => "no row matches".to_owned(),
+                            0 => NO_ROW.to_owned(),
                             n => format!("{n} rows match"),
                         };
                         let scope = match (nested, row) {
@@ -786,7 +1046,7 @@ fn resolve_value(db: &Db, path: &str) -> Result<String> {
 fn resolve_key(db: &Db, key: &str) -> Result<u64> {
     match key.starts_with("0x") || !key.contains('[') {
         true => record_key(key),
-        false => Ok(resolve_path(db, key)?.key("")),
+        false => Ok(resolve_path_with(db, key, false)?.key("")),
     }
 }
 
@@ -811,7 +1071,9 @@ pub fn apply_db_ops_report(
     };
     let mut replaced = Vec::new();
     for op in &ops.ops {
-        replaced.extend(apply(&mut db, op, &schema, &mut cx)?);
+        let applied = apply(&mut db, op, &schema, &mut cx);
+        db.drain_ties(&mut cx)?;
+        replaced.extend(applied?);
     }
     db.finish();
     Ok(replaced)
@@ -837,7 +1099,9 @@ pub fn apply_db_ops_lenient(
     let mut replaced = Vec::new();
     let mut failed = Vec::new();
     for (i, op) in ops.ops.iter().enumerate() {
-        match apply(&mut db, op, &schema, &mut cx) {
+        let applied = apply(&mut db, op, &schema, &mut cx);
+        let ties = db.drain_ties(&mut cx);
+        match applied.and_then(|key| ties.map(|()| key)) {
             Ok(key) => replaced.extend(key),
             Err(e) => failed.push((i, e)),
         }
@@ -854,6 +1118,7 @@ pub fn apply_db_op(db: &mut Gvdb, op: &DbOp, names: &dyn FieldNames) -> Result<O
         report: &mut report,
     };
     let replaced = apply(&mut db, op, names, &mut cx)?;
+    db.drain_ties(&mut cx)?;
     db.finish();
     Ok(replaced)
 }
@@ -1163,16 +1428,6 @@ fn preview(keys: &[&String]) -> String {
     }
 }
 
-fn stat_ids(db: &Db, table: &str, row: &str, rows: usize, skip: &HashSet<String>) -> Vec<i64> {
-    let field = stat_id_field(table, row);
-    (0..rows)
-        .map(|i| format!("{table}.{row}_{i}"))
-        .filter(|r| !skip.contains(r))
-        .filter_map(|r| db.text(fnv1a64(format!("{r}.{field}"))))
-        .filter_map(|v| v.trim().parse::<i64>().ok())
-        .collect()
-}
-
 // The row added earlier that holds `id`, unless a stock row holds it too.
 fn added_holder(
     db: &Db,
@@ -1207,20 +1462,12 @@ fn free_stat_id(
     ceiling: StatIdCeiling,
     skip: &dyn Fn(i64) -> bool,
 ) -> Option<i64> {
-    let field = stat_id_field(table, row);
-    let mut used = HashSet::new();
-    let mut stock = -1;
-    for i in 0..rows {
-        let key = fnv1a64(format!("{table}.{row}_{i}.{field}"));
-        let Some(id) = db.text(key).and_then(|v| v.trim().parse::<i64>().ok()) else {
-            continue;
-        };
-        if names.stock(key) || names.track(key) {
-            stock = stock.max(id);
-        }
-        used.insert(id);
-    }
-    (ceiling.from.unwrap_or(stock + 1)..=ceiling.max).find(|id| !used.contains(id) && !skip(*id))
+    let skip = |id: i64| skip(id) || stat_id_unusable(table, row, id);
+    let mut ids = db.stat_ids(names, table, row, rows);
+    let from = ceiling.from.unwrap_or(ids.stock + 1);
+    // Every id below the lowest free one is held or unreadable, so the search starts there.
+    let low = ids.lowest_free(from);
+    (low..=ceiling.max).find(|id| !ids.used.contains(id) && !skip(*id))
 }
 
 fn add_row(db: &mut Db, names: &dyn FieldNames, cx: &mut Cx, op: AddRow) -> Result<()> {
@@ -1327,11 +1574,7 @@ fn add_row(db: &mut Db, names: &dyn FieldNames, cx: &mut Cx, op: AddRow) -> Resu
         });
     }
     let stat_key = dst.field("stat_id");
-    let indexed = || {
-        let ids = stat_ids(db, &path, row, n, &db.added_rows);
-        let unique: HashSet<i64> = ids.iter().copied().collect();
-        !ids.is_empty() && unique.len() == ids.len()
-    };
+    let indexed = || db.stat_ids(names, &path, row, n).indexed();
     let top_level = row_shape(&dst_path).matches("_N").count() == 1;
     let fresh = match (stat_id, set.contains_key("stat_id")) {
         (_, true) | (Some(StatIdMode::Keep), _) => false,
@@ -1351,23 +1594,34 @@ fn add_row(db: &mut Db, names: &dyn FieldNames, cx: &mut Cx, op: AddRow) -> Resu
         }
     };
     let ceiling = stat_id_ceiling(&path, row).filter(|_| top_level);
+    let field = stat_id_field(&path, row);
+    let kept = names.row_ids().filter(|_| top_level);
+    let label = rows
+        .iter()
+        .find(|r| r.key == dst.field("_metadata_"))
+        .map(|r| r.text().into_owned());
+    let later = |id: i64| names.reserved(&path, row, id) || stat_id_unusable(&path, row, id);
+    let held = |id: i64| {
+        (0..n).map(|i| format!("{path}.{row}_{i}")).find(|r| {
+            db.text(fnv1a64(format!("{r}.{field}")))
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                == Some(id)
+        })
+    };
     // The next id above the table's highest, or the lowest free one when that passes the ceiling.
     // A moved id, and any id under the ceiling, passes over the ids later addons set on their rows.
     let next = |moving: bool| -> Result<(i64, Option<String>)> {
-        let later = |id: i64| names.reserved(&path, row, id);
-        let mut top = stat_ids(db, &path, row, n, &HashSet::new())
-            .into_iter()
-            .max()
-            .map_or(0, |m| m + 1);
-        while moving && later(top) {
+        let mut top = db.stat_ids(names, &path, row, n).max.map_or(0, |m| m + 1);
+        while (moving && later(top)) || stat_id_unusable(&path, row, top) {
             top += 1;
         }
         match ceiling {
-            Some(c) if top > c.max => free_stat_id(db, names, &path, row, n, c, &later)
+            Some(c) if top > c.max || c.from.is_some() => free_stat_id(db, names, &path, row, n, c, &later)
                 .map(|id| {
                     (
                         id,
-                        Some(format!("{top} is above {}, the highest the game reads", c.max)),
+                        (top > c.max)
+                            .then(|| format!("{top} is above {}, the highest the game reads", c.max)),
                     )
                 })
                 .ok_or_else(|| {
@@ -1380,16 +1634,99 @@ fn add_row(db: &mut Db, names: &dyn FieldNames, cx: &mut Cx, op: AddRow) -> Resu
             _ => Ok((top, None)),
         }
     };
-    if fresh && let Some(r) = rows.iter_mut().find(|r| r.key == stat_key) {
-        let old = String::from_utf8_lossy(&r.value).into_owned();
-        let (next, passed) = next(false)?;
-        r.value = next.to_string().into_bytes();
+    // The id kept for the row when it's still free, else the id the profile's last build gave a row with
+    // its label, else the next free id above the table's rows in load order as builds before 1.6.10 gave
+    // it (so a fresh install gives a save from then its ids back); a full table takes back an id kept for
+    // an addon the build leaves out.
+    let give = |moving: bool| -> Result<(i64, Option<String>)> {
+        let Some((k, label)) = kept.zip(label.as_deref()) else {
+            return next(moving);
+        };
+        let claimed = k.claim(&path, row, label);
+        let key = claimed.key.as_str();
+        let unfit = |id: i64| -> Option<String> {
+            if let Some(c) = ceiling.filter(|c| id > c.max || id < 0) {
+                return Some(format!("is above {}, the highest the game reads", c.max));
+            }
+            if stat_id_unusable(&path, row, id) {
+                return Some("is an id the game reads as another driver or none".to_owned());
+            }
+            let r = held(id)?;
+            let label = db.text(fnv1a64(format!("{r}._metadata_")));
+            Some(format!(
+                "is held by {r} ({})",
+                label.as_deref().unwrap_or("no label")
+            ))
+        };
+        let blocked = |id: i64| -> Option<String> {
+            unfit(id).or_else(|| {
+                k.taken(&path, row, key, id)
+                    .then(|| "is kept for another row or held by a record of the core's registry".to_owned())
+            })
+        };
+        let mut notes = Vec::new();
+        let mut from = IdFrom::Next;
+        match claimed.kept {
+            Some(id) => match blocked(id) {
+                None => return Ok((id, Some("kept from row-ids.json".to_owned()))),
+                Some(why) => {
+                    notes.push(format!("{id}, kept for it, {why}"));
+                    from = IdFrom::Moved;
+                }
+            },
+            None => {
+                if let Some(id) = claimed.seed.filter(|id| blocked(*id).is_none()) {
+                    k.keep(&path, row, key, id, IdFrom::Seeded);
+                    return Ok((id, Some("as the last build gave it".to_owned())));
+                }
+            }
+        }
+        let top = db.stat_ids(names, &path, row, n).max.map_or(0, |m| m + 1);
+        let picked = (top..=ceiling.map_or(i64::MAX, |c| c.max))
+            .find(|id| blocked(*id).is_none() && !(moving && later(*id)))
+            .or_else(|| {
+                ceiling.and_then(|c| {
+                    free_stat_id(db, names, &path, row, n, c, &|id| {
+                        later(id) || blocked(id).is_some()
+                    })
+                })
+            })
+            .map(|id| (id, IdFrom::Next));
+        let id = match picked {
+            Some((id, how)) => {
+                if from != IdFrom::Moved {
+                    from = how;
+                }
+                id
+            }
+            None => {
+                let free = |id: i64| unfit(id).is_none() && !later(id);
+                let Some((id, held_by)) = k.reclaim(&path, row, key, &free) else {
+                    return Err(Error::Resolve(format!(
+                        "{what}: {path} has no free {field} up to {}, the highest the game reads",
+                        ceiling.map_or(i64::MAX, |c| c.max)
+                    )));
+                };
+                let max = ceiling.map_or(String::new(), |c| format!(" up to {}", c.max));
+                notes.push(format!(
+                    "no other id{max} is free; reused from {held_by}, which this build leaves out"
+                ));
+                from = IdFrom::Reused;
+                id
+            }
+        };
+        k.keep(&path, row, key, id, from);
+        Ok((id, (!notes.is_empty()).then(|| notes.join("; "))))
+    };
+    if fresh && let Some(i) = rows.iter().position(|r| r.key == stat_key) {
+        let old = String::from_utf8_lossy(&rows[i].value).into_owned();
+        let (next, passed) = give(false)?;
+        rows[i].value = next.to_string().into_bytes();
         cx.report.lines.push(match passed {
             Some(why) => format!("{what}: stat_id {next} (the source's is {old}; {why})"),
             None => format!("{what}: stat_id {next} (the source's is {old})"),
         });
     }
-    let field = stat_id_field(&path, row);
     let id_key = dst.field(field);
     let asked = set.get(field).and_then(|v| v.trim().parse::<i64>().ok());
     let moved = match (asked, ceiling) {
@@ -1415,12 +1752,13 @@ fn add_row(db: &mut Db, names: &dyn FieldNames, cx: &mut Cx, op: AddRow) -> Resu
     if let Some((old, holder, holder_label, why)) = moved
         && let Some(r) = rows.iter_mut().find(|r| r.key == id_key)
     {
-        let (new, _) = next(true)?;
+        let (new, note) = give(true)?;
         r.value = new.to_string().into_bytes();
         let label = set.get("_metadata_").cloned();
-        cx.report
-            .lines
-            .push(format!("{what}: {field} {old} {why}; {field} {new}"));
+        cx.report.lines.push(match note {
+            Some(note) => format!("{what}: {field} {old} {why}; {field} {new} ({note})"),
+            None => format!("{what}: {field} {old} {why}; {field} {new}"),
+        });
         db.moved
             .insert((format!("{path}.{row}"), old.to_string()), new.to_string());
         cx.report.moved_stat_ids.push(MovedStatId {
@@ -1441,6 +1779,7 @@ fn add_row(db: &mut Db, names: &dyn FieldNames, cx: &mut Cx, op: AddRow) -> Resu
             "{what}: reuses {reused} stock key(s) of a row above the table's count"
         ));
     }
+    let before = db.generation;
     for r in rows {
         match db.get_mut(r.key) {
             Some(old) => *old = r,
@@ -1451,11 +1790,12 @@ fn add_row(db: &mut Db, names: &dyn FieldNames, cx: &mut Cx, op: AddRow) -> Resu
         from: src_path.clone(),
         row: dst_path.clone(),
     });
-    db.added_rows.insert(dst_path);
     let count = db
         .get_mut(fnv1a64(&count_path))
         .expect("instance_count read it above");
     count.value = (n + 1).to_string().into_bytes();
+    db.row_added(names, &path, row, n, &dst_path, before);
+    db.added_rows.insert(dst_path);
     Ok(())
 }
 
@@ -1713,6 +2053,60 @@ mod tests {
         apply_db_ops(&mut db(), &ops(&strict), &names()).unwrap();
     }
 
+    fn set_track_op(select: &str, value: &str) -> DbOp {
+        DbOp::Set {
+            select: select.to_owned(),
+            field: "track".into(),
+            value: Some(value.into()),
+            value_from: None,
+            datasets: Vec::new(),
+            create: false,
+            tag: None,
+        }
+    }
+
+    #[test]
+    fn duplicate_labels_resolve_to_the_earliest_row_with_a_warning() {
+        let select = "track_data.game_setup.TrackDataSet[_metadata_=f1].TrackData[_metadata_=okayama]";
+        let mut ops = ops(r#"{"schema_version": 1, "ops": []}"#);
+        ops.ops = vec![set_track_op(select, "first"), set_track_op(select, "again")];
+        let mut db = track_db();
+        let mut report = DbReport::default();
+        apply_db_ops_report(&mut db, &ops, &names(), &mut report).unwrap();
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        assert!(
+            report.warnings[0].starts_with(&format!("{select}: 2 rows match; using the first")),
+            "{:?}",
+            report.warnings
+        );
+        let value = |row: usize| {
+            let key = fnv1a64(format!("{SETS}.TrackDataSet_0.TrackData_{row}.track"));
+            db.records
+                .iter()
+                .find(|r| r.key == key)
+                .map(|r| String::from_utf8_lossy(&r.value).into_owned())
+        };
+        assert_eq!(value(1).as_deref(), Some("again"));
+        assert_eq!(value(2).as_deref(), Some("okayama"));
+    }
+
+    #[test]
+    fn duplicate_labels_still_fail_where_the_choice_changes_the_result() {
+        let key =
+            "track_data.game_setup.TrackDataSet[_metadata_=f1].TrackData[_metadata_=okayama]._metadata_";
+        let op = DbOp::RemoveRecord {
+            key: key.into(),
+            allow_stock_removal: true,
+        };
+        let err = apply_db_op(&mut track_db(), &op, &names())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.ends_with("2 rows match in track_data.game_setup.TrackDataSet_0.TrackData"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn remove_record_keeps_stock_records_unless_the_op_allows_it() {
         let mut db = db();
@@ -1868,11 +2262,6 @@ mod tests {
         assert_eq!(
             set("track_data.game_setup.TrackDataSet[_metadata_=f9].TrackData[_metadata_=suzuka]"),
             "track_data.game_setup.TrackDataSet[_metadata_=f9]: no row matches"
-        );
-        assert_eq!(
-            set("track_data.game_setup.TrackDataSet[_metadata_=f1].TrackData[_metadata_=okayama]"),
-            "track_data.game_setup.TrackDataSet[_metadata_=f1].TrackData[_metadata_=okayama]: \
-             2 rows match in track_data.game_setup.TrackDataSet_0.TrackData"
         );
         assert_eq!(
             set("track_data.game_setup.TrackDataSet[_metadata_=f1_2026].TrackData[_metadata_=okayama]"),
@@ -2470,16 +2859,41 @@ mod tests {
     }
 
     #[test]
-    fn driver_ids_fill_the_core_pool_under_254_and_fail_when_it_is_full() {
+    fn driver_ids_fill_208_to_253_then_256_up_and_skip_254_255_and_low_byte_0xff() {
         let mut db = table("entrants.drivers", "driver", &[254, 0, 207, 210]);
         let stock: HashSet<u64> = db.records.iter().map(|r| r.key).collect();
-        let labels: Vec<String> = (0..45).map(|i| format!("d_{i}")).collect();
+        let labels: Vec<String> = (0..300).map(|i| format!("d_{i}")).collect();
         let rows: Vec<(&str, Option<i64>)> = labels.iter().map(|l| (l.as_str(), None)).collect();
         apply_db_ops(&mut db, &add_rows("entrants.drivers", "driver", &rows), &stock).unwrap();
         let all = ids(&db, "entrants.drivers", "driver");
         assert_eq!(all[4..7], [208, 209, 211]);
-        assert_eq!(*all.last().unwrap(), 253);
-        assert!(all.iter().all(|id| *id <= 254));
+        let added = &all[4..];
+        assert_eq!(
+            added[..45],
+            (208..=253).filter(|id| *id != 210).collect::<Vec<_>>()[..45]
+        );
+        assert_eq!(added[45], 256);
+        assert_eq!(added[300 - 1], 510);
+        assert!(
+            added
+                .iter()
+                .all(|id| *id != 254 && *id != 255 && id & 0xff != 0xff && *id <= 16382)
+        );
+        assert_eq!(added.iter().filter(|id| **id > 255).count(), 300 - 45);
+    }
+
+    #[test]
+    fn driver_ids_stop_at_the_14_bit_ceiling() {
+        let mut db = table("entrants.drivers", "driver", &[254]);
+        let stock: HashSet<u64> = db.records.iter().map(|r| r.key).collect();
+        let usable = (208..=16382)
+            .filter(|id| !stat_id_unusable("entrants.drivers", "driver", *id))
+            .count();
+        let labels: Vec<String> = (0..usable).map(|i| format!("d_{i}")).collect();
+        let rows: Vec<(&str, Option<i64>)> = labels.iter().map(|l| (l.as_str(), None)).collect();
+        apply_db_ops(&mut db, &add_rows("entrants.drivers", "driver", &rows), &stock).unwrap();
+        let all = ids(&db, "entrants.drivers", "driver");
+        assert_eq!(*all.last().unwrap(), 16382);
         let e = apply_db_ops(
             &mut db,
             &add_rows("entrants.drivers", "driver", &[("full", None)]),
@@ -2488,7 +2902,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            e.contains("entrants.drivers has no free stat_id up to 254"),
+            e.contains("entrants.drivers has no free stat_id up to 16382"),
             "{e}"
         );
         let (_, failed) = apply_db_ops_lenient(
@@ -2498,7 +2912,99 @@ mod tests {
             &mut DbReport::default(),
         );
         assert_eq!(failed.len(), 1);
-        assert_eq!(db.instance_count("entrants.drivers", "driver"), Some(49));
+        assert_eq!(db.instance_count("entrants.drivers", "driver"), Some(1 + usable));
+    }
+
+    // The ids fresh rows took before 1.7.1, when each add-row read every row's id again: the next above
+    // the table's highest, or for a table with a ceiling the lowest free one from its `from` (or above
+    // the stock rows) that the game reads. None once nothing is free.
+    fn ids_before_the_cache(stock: &[i64], path: &str, row: &str, adds: usize) -> Vec<Option<i64>> {
+        let ceiling = stat_id_ceiling(path, row);
+        let stock_max = stock.iter().copied().max().unwrap_or(-1);
+        let mut all = stock.to_vec();
+        (0..adds)
+            .map(|_| {
+                let mut top = all.iter().copied().max().map_or(0, |m| m + 1);
+                while stat_id_unusable(path, row, top) {
+                    top += 1;
+                }
+                let id = match ceiling {
+                    Some(c) if top > c.max || c.from.is_some() => {
+                        let used: HashSet<i64> = all.iter().copied().collect();
+                        (c.from.unwrap_or(stock_max + 1)..=c.max)
+                            .find(|id| !used.contains(id) && !stat_id_unusable(path, row, *id))
+                    }
+                    _ => Some(top),
+                };
+                all.extend(id);
+                id
+            })
+            .collect()
+    }
+
+    fn added_ids(stock: &[i64], path: &str, row: &str, adds: usize) -> Vec<Option<i64>> {
+        let mut db = table(path, row, stock);
+        let names: HashSet<u64> = db.records.iter().map(|r| r.key).collect();
+        let labels: Vec<String> = (0..adds).map(|i| format!("added_{i}")).collect();
+        let rows: Vec<(&str, Option<i64>)> = labels.iter().map(|l| (l.as_str(), None)).collect();
+        let (_, failed) = apply_db_ops_lenient(
+            &mut db,
+            &add_rows(path, row, &rows),
+            &names,
+            &mut DbReport::default(),
+        );
+        let mut got: Vec<Option<i64>> = ids(&db, path, row)[stock.len()..]
+            .iter()
+            .copied()
+            .map(Some)
+            .collect();
+        got.extend(failed.iter().map(|_| None));
+        got
+    }
+
+    #[test]
+    fn fresh_driver_ids_match_the_search_before_the_cache() {
+        let stock = [1, 7, 30, 207, 254];
+        assert_eq!(
+            added_ids(&stock, "entrants.drivers", "driver", 400),
+            ids_before_the_cache(&stock, "entrants.drivers", "driver", 400)
+        );
+    }
+
+    #[test]
+    fn fresh_driver_ids_up_to_the_14_bit_ceiling_match_the_search_before_the_cache() {
+        let mut stock: Vec<i64> = (208..=16100)
+            .filter(|id| !stat_id_unusable("entrants.drivers", "driver", *id) && id % 97 != 0)
+            .collect();
+        stock.push(254);
+        let before = ids_before_the_cache(&stock, "entrants.drivers", "driver", 450);
+        assert_eq!(before.iter().flatten().max(), Some(&16382));
+        assert!(before.last().unwrap().is_none());
+        assert_eq!(added_ids(&stock, "entrants.drivers", "driver", 450), before);
+    }
+
+    #[test]
+    fn fresh_package_ids_past_the_byte_ceiling_match_the_search_before_the_cache() {
+        let stock = [2, 5, 58];
+        let before = ids_before_the_cache(&stock, PACKAGES, "vehicle_package", 300);
+        assert!(before.last().unwrap().is_none());
+        assert_eq!(added_ids(&stock, PACKAGES, "vehicle_package", 300), before);
+    }
+
+    #[test]
+    fn an_id_set_between_add_rows_frees_the_one_it_replaced() {
+        let mut db = table("entrants.drivers", "driver", &[1, 7]);
+        let names: HashSet<u64> = db.records.iter().map(|r| r.key).collect();
+        let ops = self::ops(
+            r#"{"schema_version":1,"fields":{"entrants.drivers.driver":["_metadata_","stat_id"]},"ops":[
+            {"op":"add-row","table":"entrants.drivers","from":"entrants.drivers.driver_0","set":{"_metadata_":"a"}},
+            {"op":"add-row","table":"entrants.drivers","from":"entrants.drivers.driver_0","set":{"_metadata_":"b"}},
+            {"op":"set","select":"entrants.drivers.driver_2","field":"stat_id","value":"300"},
+            {"op":"add-row","table":"entrants.drivers","from":"entrants.drivers.driver_0","set":{"_metadata_":"c"}},
+            {"op":"add-row","table":"entrants.drivers","from":"entrants.drivers.driver_0","set":{"_metadata_":"d"}}]}"#,
+        );
+        apply_db_ops(&mut db, &ops, &names).unwrap();
+        assert_eq!(ids(&db, "entrants.drivers", "driver"), [1, 7, 300, 209, 208, 210]);
     }
 
     #[test]

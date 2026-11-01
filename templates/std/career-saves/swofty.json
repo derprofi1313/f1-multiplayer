@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "mod.career-notes",
+  "name": "Career Notes",
+  "description": "Counts how often each career is loaded and remembers its last round, in the core's per-career addon data, and lists a career in the index as needing this addon.",
+  "version": "1.0.0",
+  "author": "you",
+  "license": "MIT",
+  "kind": ["native"],
+  "category": "career",
+  "compat": { "game": "f1_25", "launcher": ">=1.7.0" },
+  "operations": { "native": [ { "dll": "native/notes.dll" } ] }
+}

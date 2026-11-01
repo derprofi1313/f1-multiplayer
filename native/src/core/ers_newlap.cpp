@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include "ers_newlap_logic.hpp"
+
 #include <swofty/mem.hpp>
 #include <swofty/mixin.hpp>
 
@@ -26,7 +28,11 @@
 // site_Game_ErsNewLap_NextVehicle, the handler's own path for an entry that does not match. Every other entry
 // runs the game's code unchanged.
 //
-// SWOFTY_ERS_GUARD=0 turns it off.
+// The same site fires session.lap: the search stops at the participant whose vehicle id is the message's,
+// once per vehicle_newlap, and the core fires the 1.x "lap" event there (a = the car), which the events
+// bridge turns into session.lap, before the game's compare. Participants without a vehicle never fire it.
+//
+// SWOFTY_ERS_GUARD=0 turns it off, and session.lap with it.
 
 namespace {
 
@@ -45,7 +51,13 @@ std::atomic<int> skipped{0};
 void lookup_entry(SwoftyContext *c)
 {
     uintptr_t vehicle = 0;
-    if (c->r9 && mem::read(c->r9 + ENTRY_VEHICLE, vehicle) && vehicle && mem::readable(vehicle + VEHICLE_ID, 1))
+    uint8_t id = 0;
+    bool known = c->r9 && mem::read(c->r9 + ENTRY_VEHICLE, vehicle) && vehicle && mem::read(vehicle + VEHICLE_ID, id);
+    uint8_t car = uint8_t(c->rdx & 0xff);
+    auto step = runtime::ers::step(c->r9, vehicle, known ? int(id) : -1, car);
+    if (step == runtime::ers::Step::lap)
+        runtime::events_fire(SWOFTY_EVENT_LAP, car, 0, nullptr);
+    if (step != runtime::ers::Step::skip)
         return;
     c->rip = next_vehicle;
     int n = ++skipped;

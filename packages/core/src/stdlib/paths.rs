@@ -24,8 +24,12 @@ const SCHEMAS: &[(&str, &str)] = &[
         include_str!("../../../sdk/std/registries/addon.option/1.0.json"),
     ),
     (
+        "car.profile",
+        include_str!("../../../sdk/std/registries/car.profile/1.0.json"),
+    ),
+    (
         "career.calendar",
-        include_str!("../../../sdk/std/registries/career.calendar/1.0.json"),
+        include_str!("../../../sdk/std/registries/career.calendar/1.1.json"),
     ),
     (
         "career.character",
@@ -33,7 +37,7 @@ const SCHEMAS: &[(&str, &str)] = &[
     ),
     (
         "career.content",
-        include_str!("../../../sdk/std/registries/career.content/1.0.json"),
+        include_str!("../../../sdk/std/registries/career.content/1.1.json"),
     ),
     (
         "career.driver_ratings",
@@ -61,7 +65,7 @@ const SCHEMAS: &[(&str, &str)] = &[
     ),
     (
         "content.package",
-        include_str!("../../../sdk/std/registries/content.package/1.0.json"),
+        include_str!("../../../sdk/std/registries/content.package/1.1.json"),
     ),
     (
         "driver.head",
@@ -121,6 +125,10 @@ const SCHEMAS: &[(&str, &str)] = &[
         include_str!("../../../sdk/std/registries/team.constructor/1.0.json"),
     ),
     (
+        "team.garage",
+        include_str!("../../../sdk/std/registries/team.garage/1.0.json"),
+    ),
+    (
         "team.identity",
         include_str!("../../../sdk/std/registries/team.identity/1.1.json"),
     ),
@@ -150,11 +158,11 @@ const SCHEMAS: &[(&str, &str)] = &[
     ),
     (
         "vehicle",
-        include_str!("../../../sdk/std/registries/vehicle/1.0.json"),
+        include_str!("../../../sdk/std/registries/vehicle/1.1.json"),
     ),
     (
         "vehicle.handling",
-        include_str!("../../../sdk/std/registries/vehicle.handling/1.0.json"),
+        include_str!("../../../sdk/std/registries/vehicle.handling/1.1.json"),
     ),
     (
         "vehicle.package",
@@ -393,6 +401,7 @@ mod tests {
               "team.logo": { "williams_2017": { "images": { "hud": "logos/williams_hud.png", "hub": { "stock": "ui/hub.png" } } } },
               "helmet": { "hamilton_2017": { "archive": "helmets/hamilton_2017.erp", "colours": null } },
               "driver.head": { "senna": { "archive": "heads/senna/", "rig_from": "game/male_ls222" } },
+              "team.garage": { "renault_2020": { "package": "swofty.classic-seasons-2020/f1_2020", "entry": "lotus", "textures": "garage/renault_2020" } },
               "someone.own": { "x": { "file": "not/a/schema/path.bin" } },
               "career.season": { "y": { "name": "sounds/v10_screamer.bdl" } }
             }"#,
@@ -404,6 +413,7 @@ mod tests {
             [
                 "cars/ferrari.erp",
                 "cars/ferrari/",
+                "garage/renault_2020",
                 "heads/senna/",
                 "helmets/hamilton_2017.erp",
                 "logos/williams_hud.png",

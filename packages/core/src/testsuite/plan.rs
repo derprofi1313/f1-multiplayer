@@ -63,6 +63,12 @@ pub fn label(env: &Env) -> String {
                 out.extend(s(k));
             }
         }
+        Kind::Session => {
+            out.push(super::session::mode(env).to_owned());
+            for k in ["box", "track", "session"] {
+                out.extend(s(k));
+            }
+        }
     }
     out.join(" ")
 }

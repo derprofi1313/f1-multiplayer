@@ -545,6 +545,13 @@ void session_load(const char *source)
     write_reports(from.c_str());
 }
 
+std::pair<std::string, std::string> session_mode_track()
+{
+    attach();
+    SessionFacts f = game::at_session_load();
+    return {f.mode, f.track};
+}
+
 void session_end(const char *source)
 {
     attach();

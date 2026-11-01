@@ -18,6 +18,15 @@ const SETTINGS_ICON: &str = "ui_package/art/textures/options/o_category/";
 /// Columns of tiles ADDON SETTINGS keeps on screen; past them the row
 /// scrolls by hiding the column at the other edge, which the stacker closes up.
 const VISIBLE_COLUMNS: usize = 3;
+/// Rows an addon's page keeps on screen: what fits the settings page's clipping window. Past
+/// them the page scrolls by hiding the row at the other edge, which the list's stacker closes up.
+const VISIBLE_ROWS: usize = 18;
+/// Tiles one ADDON SETTINGS home screen holds; more go on further home screens, which a NEXT PAGE
+/// tile opens. No addon page has opened from a home of 60 tiles or more.
+pub const HOME_PAGE_TILES: usize = 24;
+pub const NEXT_PAGE: &str = "page_next";
+pub const PREV_PAGE: &str = "page_prev";
+const PAGE_FIRST: &str = "page_first";
 
 pub struct TileStyle {
     pub rows: usize,
@@ -113,6 +122,67 @@ impl Entry<'_> {
     fn upper(&self) -> String {
         self.name.to_uppercase()
     }
+}
+
+pub fn home_screen(page: usize) -> String {
+    match page {
+        0 => HOME.to_owned(),
+        p => format!("{HOME}_{}", p + 1),
+    }
+}
+
+pub fn home_of(index: usize) -> String {
+    home_screen(index / HOME_PAGE_TILES)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomePage {
+    pub page: usize,
+    pub pages: usize,
+    pub screen: String,
+    pub tiles: std::ops::Range<usize>,
+    pub prev: Option<String>,
+    pub next: Option<String>,
+}
+
+pub fn home_plan(tiles: usize) -> Vec<HomePage> {
+    let pages = tiles.div_ceil(HOME_PAGE_TILES).max(1);
+    (0..pages)
+        .map(|page| HomePage {
+            page,
+            pages,
+            screen: home_screen(page),
+            tiles: page * HOME_PAGE_TILES..((page + 1) * HOME_PAGE_TILES).min(tiles),
+            prev: (page > 0).then(|| home_screen(page - 1)),
+            next: (page + 1 < pages).then(|| home_screen(page + 1)),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Slot {
+    Entry(usize),
+    Next,
+    Prev,
+}
+
+fn home_columns(page: &HomePage, rows: usize) -> Vec<Vec<Slot>> {
+    let ids: Vec<usize> = page.tiles.clone().collect();
+    let mut cols: Vec<Vec<Slot>> = ids
+        .chunks(rows)
+        .map(|c| c.iter().map(|&i| Slot::Entry(i)).collect())
+        .collect();
+    let nav: Vec<Slot> = [
+        (page.next.is_some(), Slot::Next),
+        (page.prev.is_some(), Slot::Prev),
+    ]
+    .into_iter()
+    .filter_map(|(on, s)| on.then_some(s))
+    .collect();
+    if !nav.is_empty() {
+        cols.push(nav);
+    }
+    cols
 }
 
 pub fn entries<'a>(
@@ -593,8 +663,33 @@ fn build_page(src: &Sources, e: &Entry, rows: &[Row], adjustable: bool) -> Resul
         kids.push(t);
     }
     chain_focus(sname, &mut kids, &rows_at)?;
+    scroll_rows(sname, &mut kids, &rows_at)?;
     let first = kids[rows_at[0]].name().to_owned();
     finish(scr, fr, kids, &first)
+}
+
+fn scroll_rows(sname: &str, kids: &mut [Node], rows_at: &[usize]) -> Result<()> {
+    if rows_at.len() <= VISIBLE_ROWS {
+        return Ok(());
+    }
+    let paths: Vec<String> = rows_at
+        .iter()
+        .map(|&k| format!("{sname}.{}", kids[k].name()))
+        .collect();
+    for (i, &k) in rows_at.iter().enumerate() {
+        let mut evs = Vec::new();
+        if i + 1 < paths.len() && i + 1 >= VISIBLE_ROWS {
+            evs.push(event(
+                "navDown",
+                vec![sig(&paths[i + 1 - VISIBLE_ROWS], "hide", "navDown")],
+            ));
+        }
+        if i > 0 {
+            evs.push(event("navUp", vec![sig(&paths[i - 1], "show", "navUp")]));
+        }
+        add_events(&mut kids[k], evs)?;
+    }
+    Ok(())
 }
 
 fn retitle(scr: &mut Node, e: &Entry) -> Result<()> {
@@ -761,53 +856,145 @@ fn tile_with(
     Ok(t)
 }
 
-fn build_home(src: &Sources, style: &TileStyle, flow: &[Entry]) -> Result<Node> {
-    let scr = src.screen(HOME, HOME_LAYOUT)?;
-    let fr = src.frame(HOME)?;
-    let mut kids = vec![src.title(HOME, "settings_home_screen", "ADDON SETTINGS")?];
+struct HomeTile {
+    path: String,
+    name: String,
+    column: usize,
+    writes: Option<String>,
+}
+
+fn page_tile(
+    src: &Sources,
+    style: &TileStyle,
+    parent: &str,
+    row: usize,
+    flow: &[Entry],
+    page: &HomePage,
+    slot: Slot,
+) -> Result<Node> {
+    let (label, to) = match slot {
+        Slot::Next => ("NEXT PAGE", page.page + 1),
+        _ => ("PREVIOUS PAGE", page.page.saturating_sub(1)),
+    };
+    let name = if slot == Slot::Next { NEXT_PAGE } else { PREV_PAGE };
+    let title = tagged(label, &format!("{}/{}", to + 1, page.pages), TAG_STYLE);
+    let on = &flow[(to * HOME_PAGE_TILES).min(flow.len())..((to + 1) * HOME_PAGE_TILES).min(flow.len())];
+    let names: Vec<&str> = on.iter().take(3).map(|e| e.name).collect();
+    let description = match on.len().saturating_sub(names.len()) {
+        0 => names.join(", "),
+        more => format!("{} and {more} more", names.join(", ")),
+    };
+    let text = TileText {
+        title: &title,
+        by: &format!("Page {} of {}", to + 1, page.pages),
+        description: &description,
+    };
+    tile_with(src, style, parent, name, row, (style.icon)(Kind::Addon), &text)
+}
+
+fn home_title(page: &HomePage) -> String {
+    match page.pages {
+        1 => "ADDON SETTINGS".to_owned(),
+        n => tagged(
+            "ADDON SETTINGS",
+            &format!("PAGE {}/{n}", page.page + 1),
+            LIGHT_TAG,
+        ),
+    }
+}
+
+fn build_home(src: &Sources, style: &TileStyle, flow: &[Entry], page: &HomePage) -> Result<Node> {
+    let home = page.screen.as_str();
+    let scr = src.screen(home, HOME_LAYOUT)?;
+    let mut fr = src.frame(home)?;
+    if page.prev.is_some() {
+        for ev in fr.back.slot_mut(EVENTS)? {
+            let o = ev.o_mut()?;
+            if o.str_at("eventName")? == "pressed" {
+                o.at_mut("signals")?.a_mut()?.insert(
+                    1,
+                    sig(&format!("{home}.remember_{PREV_PAGE}"), "trigger", "pressed"),
+                );
+            }
+        }
+    }
+    let mut kids = vec![src.title(home, "settings_home_screen", &home_title(page))?];
     for n in ["filter", "side_panel", "scroll_bar", "scroll_bar_panel"] {
         kids.push(hidden(&format!("hide_{n}"), &[n]));
     }
+    let layout = home_columns(page, style.rows);
     let mut cols: Vec<Vec<String>> = Vec::new();
     let mut keyed = Vec::new();
-    for (c, chunk) in flow.chunks(style.rows).enumerate() {
+    for (c, slots) in layout.iter().enumerate() {
         let bname = format!("col_{c}");
-        let mut block = instance(src.t("settings_home_block")?, HOME, &bname, &[], true)?;
-        let parent = format!("{HOME}.{bname}");
+        let mut block = instance(src.t("settings_home_block")?, home, &bname, &[], true)?;
+        let parent = format!("{home}.{bname}");
         let mut col = Vec::new();
-        for (r, e) in chunk.iter().enumerate() {
-            let n = c * style.rows + r;
-            let tname = format!("t{n}");
-            let mut t = tile(src, style, &parent, &tname, r, e)?;
+        for (r, slot) in slots.iter().enumerate() {
+            let (mut t, tname, route, writes) = match *slot {
+                Slot::Entry(i) => {
+                    let e = flow.get(i).ok_or_else(|| {
+                        err(format!(
+                            "{home} lists tile {i}, past the {} there are",
+                            flow.len()
+                        ))
+                    })?;
+                    let tname = format!("t{i}");
+                    let t = tile(src, style, &parent, &tname, r, e)?;
+                    (
+                        t,
+                        tname.clone(),
+                        format!("open_{}_{}", e.kind.key(), e.index),
+                        tname,
+                    )
+                }
+                Slot::Next => (
+                    page_tile(src, style, &parent, r, flow, page, *slot)?,
+                    NEXT_PAGE.to_owned(),
+                    NEXT_PAGE.to_owned(),
+                    PAGE_FIRST.to_owned(),
+                ),
+                Slot::Prev => (
+                    page_tile(src, style, &parent, r, flow, page, *slot)?,
+                    PREV_PAGE.to_owned(),
+                    PREV_PAGE.to_owned(),
+                    NEXT_PAGE.to_owned(),
+                ),
+            };
             let path = format!("{parent}.{tname}");
             add_events(
                 &mut t,
                 vec![event(
                     "pressed",
                     vec![
-                        sig(&format!("{HOME}.audio_theme_trigger"), "confirm", "pressed"),
-                        sig(&format!("{HOME}.remember_{tname}"), "trigger", "pressed"),
+                        sig(&format!("{home}.audio_theme_trigger"), "confirm", "pressed"),
+                        sig(&format!("{home}.remember_{tname}"), "trigger", "pressed"),
                         sig_with(
-                            &format!("{HOME}.Action"),
+                            &format!("{home}.Action"),
                             "route",
                             "pressed",
-                            &[("key", format!("open_{}_{}", e.kind.key(), e.index).into())],
+                            &[("key", route.into())],
                         ),
                     ],
                 )],
             )?;
             block.slot_mut(CHILDREN)?.push(t);
             col.push(path.clone());
-            keyed.push((path, tname, c));
+            keyed.push(HomeTile {
+                path,
+                name: tname,
+                column: c,
+                writes: Some(writes),
+            });
         }
         cols.push(col);
         kids.push(block);
     }
     let first_block = kids.len() - cols.len();
     let scrolls = cols.len() > VISIBLE_COLUMNS;
-    let column = |c: usize| format!("{HOME}.col_{c}");
+    let column = |c: usize| format!("{home}.col_{c}");
     for (ci, col) in cols.iter().enumerate() {
-        for (ri, _) in col.iter().enumerate() {
+        for (ri, path) in col.iter().enumerate() {
             let mut evs = Vec::new();
             if ri > 0 {
                 evs.push(event("navUp", vec![sig(&col[ri - 1], "focus", "navUp")]));
@@ -831,8 +1018,8 @@ fn build_home(src: &Sources, style: &TileStyle, flow: &[Entry]) -> Result<Node> 
                 }
                 evs.push(event("navRight", sigs));
             }
+            let tname = &path[path.rfind('.').map_or(0, |d| d + 1)..];
             let t = &mut kids[first_block + ci].slot_mut(CHILDREN)?;
-            let tname = format!("t{}", ci * style.rows + ri);
             let tile = t
                 .iter_mut()
                 .find(|x| x.is_node() && x.name() == tname)
@@ -840,30 +1027,42 @@ fn build_home(src: &Sources, style: &TileStyle, flow: &[Entry]) -> Result<Node> 
             add_events(tile, evs)?;
         }
     }
-    let first = keyed
+    let first_path = keyed
         .first()
-        .map(|(p, _, _)| p[HOME.len() + 1..].to_owned())
+        .map(|k| k.path.clone())
         .ok_or_else(|| err("ADDON SETTINGS has nothing to list"))?;
+    if page.prev.is_some() {
+        keyed.push(HomeTile {
+            path: first_path.clone(),
+            name: PAGE_FIRST.to_owned(),
+            column: 0,
+            writes: None,
+        });
+    }
+    let first = first_path[home.len() + 1..].to_owned();
     finish_home(scr, fr, kids, &keyed, cols.len(), &first)
 }
 
-/// The home screen's tiles are `keyed` as (path, name, column) in `columns`
-/// columns. Coming back to a tile scrolls the row so the tile is on screen.
+/// The home screen's tiles are `keyed` in `columns` columns. A tile press stores the tile's
+/// `writes` in the state's `last`, and an open of the screen focuses the tile whose name `last`
+/// holds, with the row scrolled to show it.
 fn finish_home(
     scr: Node,
     fr: Frame,
     mut kids: Vec<Node>,
-    keyed: &[(String, String, usize)],
+    keyed: &[HomeTile],
     columns: usize,
     first: &str,
 ) -> Result<Node> {
+    let home = scr.name().to_owned();
     let last = format!("{STATE}.last");
-    for (_, key, _) in keyed {
+    for k in keyed {
+        let Some(writes) = &k.writes else { continue };
         kids.push(node(
-            &format!("remember_{key}"),
+            &format!("remember_{}", k.name),
             "UIDS",
             vec![
-                ("source", prop(s(key), None)),
+                ("source", prop(s(writes), None)),
                 ("target", prop(s(""), Some(&last))),
             ],
             vec![],
@@ -877,17 +1076,17 @@ fn finish_home(
         vec![("dbEntry", prop(s(&last), None))],
         keyed
             .iter()
-            .map(|(path, key, column)| {
+            .map(|k| {
                 let mut sigs = Vec::new();
                 if columns > VISIBLE_COLUMNS {
-                    let shown = column.saturating_sub(VISIBLE_COLUMNS - 1);
+                    let shown = k.column.saturating_sub(VISIBLE_COLUMNS - 1);
                     sigs.extend((0..columns).map(|c| {
                         let pin = if c < shown { "hide" } else { "show" };
-                        sig(&format!("{HOME}.col_{c}"), pin, key)
+                        sig(&format!("{home}.col_{c}"), pin, &k.name)
                     }));
                 }
-                sigs.push(sig(path, "focus", key));
-                event(key, sigs)
+                sigs.push(sig(&k.path, "focus", &k.name));
+                event(&k.name, sigs)
             })
             .collect(),
         &[],
@@ -900,7 +1099,7 @@ fn finish_home(
         if matches!(nm.as_str(), "opened_screen" | "finishedTranIn") {
             o.at_mut("signals")?
                 .a_mut()?
-                .push(sig(&format!("{HOME}.restore_focus"), "query", &nm));
+                .push(sig(&format!("{home}.restore_focus"), "query", &nm));
         }
     }
     fix_ids(&mut scr, None);
@@ -1119,7 +1318,10 @@ pub fn build_setup_home(src: &Sources, e: &Entry, setup: &CareerSetup) -> Result
 }
 
 pub fn build_all(src: &Sources, style: &TileStyle, flow: &[Entry]) -> Result<Screens> {
-    let mut nodes = vec![(HOME.to_owned(), build_home(src, style, flow)?)];
+    let mut nodes = Vec::new();
+    for page in home_plan(flow.len()) {
+        nodes.push((page.screen.clone(), build_home(src, style, flow, &page)?));
+    }
     let mut view_models = Vec::new();
     for e in flow.iter().filter(|e| e.kind == Kind::Addon) {
         let rows = addon_rows(e);
@@ -1198,6 +1400,100 @@ mod tests {
             version: "2.0".into(),
             author: "b".into(),
             description: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_long_list_splits_into_home_screens_of_at_most_24_tiles() {
+        let plan = home_plan(70);
+        let page =
+            |s: &str, tiles: std::ops::Range<usize>, prev: Option<&str>, next: Option<&str>| HomePage {
+                page: 0,
+                pages: 3,
+                screen: s.to_owned(),
+                tiles,
+                prev: prev.map(str::to_owned),
+                next: next.map(str::to_owned),
+            };
+        let want = [
+            page("swofty_settings", 0..24, None, Some("swofty_settings_2")),
+            page(
+                "swofty_settings_2",
+                24..48,
+                Some("swofty_settings"),
+                Some("swofty_settings_3"),
+            ),
+            page("swofty_settings_3", 48..70, Some("swofty_settings_2"), None),
+        ];
+        for (i, (got, mut want)) in plan.iter().zip(want).enumerate() {
+            want.page = i;
+            assert_eq!(got, &want);
+        }
+        assert_eq!(plan.len(), 3);
+        assert!(plan.iter().all(|h| h.pages == 3));
+        for i in 0..70 {
+            assert_eq!(home_of(i), plan[i / HOME_PAGE_TILES].screen);
+            assert!(plan[i / HOME_PAGE_TILES].tiles.contains(&i));
+        }
+        assert_eq!(home_plan(24).len(), 1);
+        assert_eq!(home_plan(25).len(), 2);
+        assert_eq!(home_plan(0)[0].screen, HOME);
+    }
+
+    #[test]
+    fn a_short_list_keeps_one_home_screen_without_page_tiles() {
+        let plan = home_plan(24);
+        assert_eq!((plan[0].prev.as_ref(), plan[0].next.as_ref()), (None, None));
+        let cols = home_columns(&plan[0], TILES.rows);
+        assert_eq!(cols.len(), 8);
+        assert!(cols.iter().flatten().all(|s| matches!(s, Slot::Entry(_))));
+        let ids: Vec<usize> = cols
+            .iter()
+            .flatten()
+            .map(|s| match s {
+                Slot::Entry(i) => *i,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(ids, (0..24).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn page_tiles_take_a_column_after_the_page_s_tiles() {
+        let plan = home_plan(70);
+        let cols: Vec<Vec<Vec<Slot>>> = plan.iter().map(|h| home_columns(h, TILES.rows)).collect();
+        assert_eq!(cols[0].len(), 9);
+        assert_eq!(cols[0][8], [Slot::Next]);
+        assert_eq!(cols[1][8], [Slot::Next, Slot::Prev]);
+        assert_eq!(cols[2].len(), 9);
+        assert_eq!(cols[2][7], [Slot::Entry(69)]);
+        assert_eq!(cols[2][8], [Slot::Prev]);
+        assert_eq!(cols[1][0], [Slot::Entry(24), Slot::Entry(25), Slot::Entry(26)]);
+    }
+
+    #[test]
+    fn no_home_screen_grows_past_its_page_whatever_the_addon_count() {
+        for n in [1, 23, 24, 25, 60, 64, 72, 150, 500] {
+            let plan = home_plan(n);
+            assert_eq!(plan.len(), n.div_ceil(HOME_PAGE_TILES).max(1), "{n}");
+            assert_eq!(plan.iter().map(|h| h.tiles.len()).sum::<usize>(), n, "{n}");
+            for h in &plan {
+                let cols = home_columns(h, TILES.rows);
+                let tiles: usize = cols.iter().map(Vec::len).sum();
+                assert!(
+                    tiles <= HOME_PAGE_TILES + 2,
+                    "{n}: {} has {tiles} tiles",
+                    h.screen
+                );
+                assert!(
+                    cols.len() <= HOME_PAGE_TILES / TILES.rows + 1,
+                    "{n}: {} has {} columns",
+                    h.screen,
+                    cols.len()
+                );
+                let restore_signals = (tiles + 1) * (cols.len() + 1);
+                assert!(restore_signals <= 27 * 10, "{n}: {restore_signals}");
+            }
         }
     }
 

@@ -44,6 +44,9 @@ static_assert(offsetof(TeamRecord, team_wear_tertiary_colour) == 0x578);
 static_assert(offsetof(TeamRecord, ui_team_colour) == 0x57c);
 static_assert(sizeof(TeamRecord) == 0x768);
 
+inline constexpr address<"Team_Build_FanZoneStandings"> Team_Build_FanZoneStandings{}; // L2 experimental
+using Team_Insert_RecordByStatId_t = void *(void *slots, const uint32_t *record);
+inline constexpr fn<"Team_Insert_RecordByStatId", Team_Insert_RecordByStatId_t> Team_Insert_RecordByStatId{}; // L2 experimental
 inline constexpr call<"site_Team_LoadInsertCall"> site_Team_LoadInsertCall{}; // L2 experimental
 inline constexpr site<"site_Team_LoadInserted"> site_Team_LoadInserted{}; // L2 experimental
 inline constexpr site<"site_Team_SessionCarBadgeLabel"> site_Team_SessionCarBadgeLabel{}; // L2 experimental

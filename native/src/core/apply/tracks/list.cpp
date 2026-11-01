@@ -1,5 +1,6 @@
 #include "box.hpp"
 
+#include "../../era_logic.hpp"
 #include "../content/gvdb.hpp"
 #include "../../registry/store.hpp"
 #include "../../registry/table.hpp"
@@ -13,9 +14,14 @@
 #include <mutex>
 
 // The box track lists at runtime: track-facts.json (C2) read once from the core's registry folder, a box made from
-// its effective content.package record and the live database (box_from_package), its per_package entries along its
+// its effective content.package record and the live database (box_from_package), an addon's era box with no record
+// made from its entrant list in the live database (box_from_list), its per_package entries along its
 // variant chain, its list against the effective base (C4), catalog.json's "tracks" object rewritten at each box
 // press (with the build's profile and an id of its registry/index.json), and the guard's decision for a confirmed track.
+
+namespace runtime {
+std::vector<era::Box> era_boxes();
+}
 
 namespace swofty_core::apply::tracks {
 
@@ -66,6 +72,36 @@ TextRead db_read()
             return std::nullopt;
         return std::string(s);
     };
+}
+
+ListDb db_list()
+{
+    const SwoftyDb *db = runtime::db_table();
+    if (!db || !db->available || !db->row || !db->int_at || !db->available())
+        return {};
+    ListDb out;
+    out.text = db_read();
+    out.integer = [db](const std::string &key) -> std::optional<int64_t> {
+        int64_t v = 0;
+        if (db->int_at(key.c_str(), &v) != SWOFTY_ASSET_OK)
+            return std::nullopt;
+        return v;
+    };
+    out.row = [db](const std::string &table, const std::string &label) -> std::optional<uint64_t> {
+        SwoftyDbCursor c{};
+        if (db->row(table.c_str(), label.c_str(), &c) != SWOFTY_ASSET_OK)
+            return std::nullopt;
+        return c.index;
+    };
+    return out;
+}
+
+bool era_list(const std::string &list)
+{
+    for (auto &b : runtime::era_boxes())
+        if (b.entrant_list == list || b.time_trial == list)
+            return true;
+    return false;
 }
 
 CellRead db_cell_read()
@@ -124,8 +160,21 @@ BoxInfo box_info(registry::Store &store, const std::string &package, const std::
     BoxInfo b;
     b.package = package.empty() ? "game/" + entrant_list : package;
     b.entrant_list = entrant_list;
-    if (package.empty())
+    if (package.empty()) {
+        if (entrant_list.empty() || !era_list(entrant_list))
+            return b;
+        ListDb db = db_list();
+        if (!db.text)
+            return b;
+        b = box_from_list(entrant_list, db);
+        swofty::log("[tracks] box %s: no content.package record; from its entrant list: setup mode %s, %s teams, %s cars",
+                    b.package.c_str(), b.setup_mode.c_str(), b.teams < 0 ? "unknown" : std::to_string(b.teams).c_str(),
+                    b.cars < 0 ? "unknown" : std::to_string(b.cars).c_str());
+        if (!b.unread.empty())
+            swofty::log("[tracks] box %s: not fully read (%s); the garage and grid rules assume the grid's size", b.package.c_str(),
+                        b.unread.c_str());
         return b;
+    }
     registry::Record r = store.get("content.package", package);
     if (r.status != registry::Status::ok)
         return b;

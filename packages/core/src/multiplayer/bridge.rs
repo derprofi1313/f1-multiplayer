@@ -36,6 +36,9 @@ use super::transport::{MAX_DATAGRAM, Transport};
 pub const ENV: &str = "SWOFTY_NETPLAY";
 /// [`ENV`] for a game started before any room: the hooks go in and pass traffic through.
 pub const ARMED: &str = "armed";
+/// [`ENV`] for a game the launcher starts for a room: armed, and it passes the title and the notice by
+/// itself so it reaches the main menu without input.
+pub const ARMED_ROOM: &str = "armed;room";
 /// Whether a game started with [`ENV`] also gets the core's socket trace ([`TRACE_ENV`]).
 pub const TRACE_WHEN_ARMED: bool = true;
 /// The socket trace, capped at 16 MB, written to `<game>/swofty/net-trace.log`, and the game's own

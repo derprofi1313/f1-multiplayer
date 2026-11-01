@@ -175,6 +175,25 @@ fn ea_anticheat_launcher_files_drift_without_blocking() {
 }
 
 #[test]
+fn a_replaced_vr_runtime_is_reported_without_blocking() {
+    let f = Fixture::new("vr-runtime");
+    f.write("openvr_api.dll", b"opencomposite's openvr_api.dll");
+    f.write("F1_25.exe", b"stock exe bytes");
+    let d = depots(&[
+        ("openvr_api.dll", b"stock openvr"),
+        ("F1_25.exe", b"stock exe bytes"),
+    ]);
+    let c = stock::check(&f.data, &f.game, &d).unwrap();
+    assert!(c.foreign.is_empty(), "{:?}", c.foreign);
+    assert_eq!(c.vr.len(), 1, "the replaced vr runtime is reported, not blocked");
+    assert_eq!(c.vr[0].rel, "openvr_api.dll");
+    assert!(
+        f.baseline().stock_checked,
+        "a replaced vr runtime still lets the sweep finish"
+    );
+}
+
+#[test]
 fn a_stock_launcher_exe_with_a_stale_backup_is_not_foreign() {
     let f = Fixture::new("eac-stale-bak");
     f.write(EAC, b"stock exe");

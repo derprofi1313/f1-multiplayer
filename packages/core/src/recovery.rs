@@ -78,6 +78,7 @@ pub enum Scope {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Recovered {
     pub offline: bool,
+    pub relocated: Option<String>,
     pub journals: Vec<RolledBack>,
     pub swept: Vec<String>,
     pub cleared: Vec<String>,
@@ -98,6 +99,7 @@ impl Recovered {
 
     pub fn lines(&self) -> Vec<String> {
         let mut out = Vec::new();
+        out.extend(self.relocated.iter().cloned());
         if self.offline {
             out.push("rolled back the offline play staging".to_owned());
         }
@@ -139,8 +141,14 @@ impl Recovered {
 pub fn recover(lock: &SessionLock, data: &Path, game: &Game, scope: Scope) -> Result<Recovered> {
     let _ = lock;
     let mut r = Recovered::default();
-    match crate::offline::restore_pending(data) {
-        Ok(done) => r.offline = done,
+    match relocate_offline(data, &game.dir) {
+        Ok(note) => {
+            r.relocated = note;
+            match crate::offline::restore_pending(data) {
+                Ok(done) => r.offline = done,
+                Err(e) => r.problems.push(format!("offline play staging: {e}")),
+            }
+        }
         Err(e) => r.problems.push(format!("offline play staging: {e}")),
     }
     let inst = Installer::new(data, game);
@@ -283,6 +291,7 @@ pub const SESSION_HELD: &str = "a modded session is still running or rolling bac
 /// [`restore`] under a session lock the caller holds.
 pub fn restore_locked(_lock: &SessionLock, data: &Path, game: &Game) -> Result<Restored> {
     let mut out = Restored::default();
+    out.notes.extend(relocate_offline(data, &game.dir)?);
     if crate::offline::restore_pending(data)? {
         out.notes.push("offline play staging".into());
     }
@@ -294,6 +303,92 @@ pub fn restore_locked(_lock: &SessionLock, data: &Path, game: &Game) -> Result<R
     }
     out.left = Installer::new(data, game).restore()?;
     Ok(out)
+}
+
+/// Point offline play's record at `game` when the folder it names no
+/// longer has the game and `game` holds the files it placed, with the
+/// digests it recorded. A record whose files are not there is refused.
+pub fn relocate_offline(data: &Path, game: &Path) -> Result<Option<String>> {
+    let journal = crate::offline::journal_path(data);
+    let text = match std::fs::read_to_string(&journal) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(&journal)(e)),
+    };
+    let mut lines: Vec<serde_json::Value> = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        lines.push(
+            serde_json::from_str(line).map_err(|e| Error::Other(format!("{}: {e}", journal.display())))?,
+        );
+    }
+    let field = |l: &serde_json::Value, k: &str| l.get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
+    let Some(was) = lines
+        .iter()
+        .find(|l| field(l, "op") == "meta")
+        .map(|l| PathBuf::from(field(l, "game_dir")))
+        .filter(|d| !d.as_os_str().is_empty())
+    else {
+        return Ok(None);
+    };
+    if was.join(crate::GAME_EXE).is_file() || same_dir(&was, game) {
+        return Ok(None);
+    }
+    let moved = |p: &str| Path::new(p).strip_prefix(&was).ok().map(|rel| game.join(rel));
+    let slots: Vec<String> = lines
+        .iter()
+        .filter(|l| field(l, "op") == "rename")
+        .map(|l| field(l, "from"))
+        .collect();
+    let (mut found, mut changed) = (0, Vec::new());
+    for l in &lines {
+        let (op, to, want) = (field(l, "op"), field(l, "to"), field(l, "sha256"));
+        let Some(here) = moved(&to) else {
+            continue;
+        };
+        let Some(have) = crate::baseline::sha256_opt(&here)? else {
+            continue;
+        };
+        match op.as_str() {
+            "copy" if have == want => found += 1,
+            "copy" if slots.contains(&to) => {}
+            "rename" if want.is_empty() || have == want => found += 1,
+            "copy" | "rename" => changed.push(here.display().to_string()),
+            _ => {}
+        }
+    }
+    if found == 0 || !changed.is_empty() {
+        return Err(Error::Other(format!(
+            "offline play's record is for F1 25 in {}, which is gone, and {} doesn't hold the files it placed{}, so \
+             nothing was put back. Move the F1 25 folder back to {} and try again",
+            was.display(),
+            game.display(),
+            if changed.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} changed)", changed.join(", "))
+            },
+            was.display()
+        )));
+    }
+    for l in &mut lines {
+        for k in ["from", "to"] {
+            if let Some(here) = moved(&field(l, k)) {
+                l[k] = here.display().to_string().into();
+            }
+        }
+        if field(l, "op") == "meta" {
+            l["game_dir"] = game.display().to_string().into();
+        }
+    }
+    let out: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    let tmp = journal.with_extension("relocated.tmp");
+    std::fs::write(&tmp, out).map_err(io_err(&tmp))?;
+    std::fs::rename(&tmp, &journal).map_err(io_err(&journal))?;
+    Ok(Some(format!(
+        "offline play's record was for F1 25 in {}, which is gone; its files are in {}, so they are put back there",
+        was.display(),
+        game.display()
+    )))
 }
 
 fn set_aside(data: &Path, game: &Game, blocked: &Blocked) -> Result<Vec<PathBuf>> {

@@ -1,0 +1,1745 @@
+{
+ "schema": 1,
+ "build": {
+  "exe": "F1_25.exe",
+  "sha256": "cc506879c1c834aa54d3478b2f2133d2ec243f2f2d313397631145ea618ff7f4",
+  "size": 342936448,
+  "pe_timestamp": 1789128892,
+  "image_base": "0x140000000",
+  "distribution": "EA App",
+  "packed": true
+ },
+ "note": "EA App build. Every pattern, expect and hint was checked against the decrypted image dump ai-fix/dumps/F1_25.1789128892.110548.mem from 2026-10-22, where each pattern matches exactly once in its mapped section. The live run at 13:16 found the same match addresses in its init scans. Steam .data1 maps to EA .xcode (RWX). The dump has .xcode decrypted, and every .data1 pattern matches once there.",
+ "sections": {
+  ".xtls": ".rdata",
+  ".data1": ".xcode"
+ },
+ "overrides": {
+  "Career_Get_CareerLengthDays_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? A0 0F 81 63 BB CD 00 B9 0F",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk is the target that 5 mapped Steam callers reach; the filler is from the EA dump."
+  },
+  "Career_Set_EntrantData_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? 77 DB 02 6E 3B 0F A3 F9 ED",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk is the target that 10 mapped Steam callers reach; the filler is from the EA dump."
+  },
+  "FeTile_CareerDlcItem_Populate": {
+   "pattern": "03 8B 42 04 89 05 ?? ?? ?? ?? 48 89 F2 E8 ?? ?? ?? ?? 48 89 F0 48 83 C4 20 5E C3 CC CC CC CC CC 56 57 53 48 83 EC 50",
+   "note": "The base pattern fixes the low bytes of the previous function's disp32 (D8 05), which differ on EA. They are wildcarded and anchor 32 is unchanged. This pattern also matches Steam once."
+  },
+  "Game_SeasonLength_ApplyPreset": {
+   "pattern": "E9 ?? ?? ?? ?? 78 19 18 8F CC CC 6E F2 7A",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk is the target that all 6 Steam callers (4 in .xtls, 2 in .data1 bodies) reach once mapped; the filler is from the EA dump."
+  },
+  "Game_SeasonLength_PushCalendarEntry": {
+   "pattern": "E9 ?? ?? ?? ?? 04 C4 5C E9 28 C5 A5 FC 63",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk is the target that all 4 Steam callers (2 in .xtls, 2 in .data1 bodies) reach once mapped; the filler is from the EA dump."
+  },
+  "Ne_Detach_ChildNode": {
+   "pattern": "E9 ?? ?? ?? ?? 0F 87 B1 E0 9A 01 65 ED E9",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk is the target that 7 mapped Steam callers reach; the filler is from the EA dump."
+  },
+  "Sess_Tod_BuildSessionDataset_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? E9 F5 48 72 02 AD 72 7A B6",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk is the target that all 3 Steam callers reach once mapped; the filler is from the EA dump."
+  },
+  "Vm_Set_TabEnabled": {
+   "pattern": "E9 ?? ?? ?? ?? E9 F5 B7 D3 FF 60 15 35 F4",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk is the target that 2 mapped Steam callers reach; the filler is from the EA dump."
+  },
+  "site_Career_ApplyUpgradeBlockNameDefault": {
+   "pattern": "41 80 7A 19 00 74 F3 EB A1 48 8D 15",
+   "expect": "48 8D 15 DA EB 64 F7",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_ApplyUpgradeKeyCall": {
+   "pattern": "0F B6 53 20 8D 42 F5 3C 06 77 08 48 89 F1 E8",
+   "expect": "48 89 F1 E8 A5 92 E8 F4",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_DeserialiseUpgradesEnd": {
+   "pattern": "85 C0 74 B6 E9 ?? ?? ?? ?? 48 8D 15",
+   "expect": "48 8D 15 8B 25 43 02",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_LoadUpgradeRows_DeptPath": {
+   "pattern": "48 8D 8C 24 98 06 00 00 48 8D 15 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 8C 24 A8 06 00 00",
+   "note": "The base pattern fixes a lea disp32 that differs on EA. It is wildcarded here, and this pattern also matches Steam once."
+  },
+  "site_Career_RnDBoxGridNameIndex": {
+   "pattern": "48 0F BE C0 48 8D 0D ?? ?? ?? ?? 48 8B 14 C1 48 C7 44 24 50 00 00 00 00",
+   "expect": "48 0F BE C0 48 8D 0D E1 6A BE 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardArtImage0": {
+   "pattern": "4C 8B 40 10 4C 89 7C 24 20 48 8D 15 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D AE 80 01 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardArtImage1": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 48 89 E9 E8 ?? ?? ?? ?? 48 8B 44 24 50 48 8D 50 09 48 85 C0 48 0F 44 D7",
+   "expect": "4C 8D 0D 00 2D 01 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardArtImage2": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 4C 89 F9 E8 ?? ?? ?? ?? 48 8B 84 24 C0 00 00 00 48 8D 50 09 48 85 C0 48 0F 44 D5 4C 8D 05 ?? ?? ?? ?? 4C 89 F1 45 31 C9 E8 ?? ?? ?? ?? 48 8D 8E 40 02 00 00 48 89 C2",
+   "expect": "4C 8D 0D 74 FD 00 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardArtMask0": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 4C 89 F9 E8 ?? ?? ?? ?? 48 8B 44 24 28 48 8D 50 09 48 85 C0 49 0F 44 D5 4C 8D 05 ?? ?? ?? ?? 4C 89 F1 45 31 C9 E8 ?? ?? ?? ?? 48 8D 8F 28 01 00 00",
+   "expect": "4C 8D 0D 49 7E 01 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardArtMask1": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 48 89 E9 E8 ?? ?? ?? ?? 48 8B 44 24 50 48 8D 50 09 48 85 C0 48 8D 05 ?? ?? ?? ?? 48 0F 44 D0 4C 8D 05 ?? ?? ?? ?? 4C 89 E9 45 31 C9 E8 ?? ?? ?? ?? 48 8D 8E A0 02 00 00",
+   "expect": "4C 8D 0D 5C 2C 01 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardArtMask2": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 4C 89 F9 E8 ?? ?? ?? ?? 48 8B 84 24 C0 00 00 00 48 8D 50 09 48 85 C0 48 0F 44 D5 4C 8D 05 ?? ?? ?? ?? 4C 89 F1 45 31 C9 E8 ?? ?? ?? ?? 48 8D 8E A0 02 00 00",
+   "expect": "4C 8D 0D BD FC 00 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardDeptIcon0": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 4C 89 F9 E8 ?? ?? ?? ?? 48 8B 44 24 28 48 8D 50 09 48 85 C0 49 0F 44 D5 4C 8D 05 ?? ?? ?? ?? 4C 89 F1 45 31 C9 E8 ?? ?? ?? ?? 48 8D 8F C8 01 00 00",
+   "expect": "4C 8D 0D 8B 31 01 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardDeptIcon1": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 48 89 E9 E8 ?? ?? ?? ?? 48 8B 44 24 50 48 8D 50 09 48 85 C0 48 8D 05 ?? ?? ?? ?? 48 0F 44 D0 4C 8D 05 ?? ?? ?? ?? 4C 89 E9 45 31 C9 E8 ?? ?? ?? ?? 48 8D 8E 40 04 00 00",
+   "expect": "4C 8D 0D 9D DF 00 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDCardDeptIcon2": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 4C 89 F9 E8 ?? ?? ?? ?? 48 8B 84 24 C0 00 00 00 48 8D 50 09 48 85 C0 48 0F 44 D5 4C 8D 05 ?? ?? ?? ?? 4C 89 F1 45 31 C9 E8 ?? ?? ?? ?? 48 8D 8E 40 04 00 00",
+   "expect": "4C 8D 0D F2 AF 00 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDDeptRowCategoryIcon": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 4C 89 F1 E8 ?? ?? ?? ?? 48 8B 44 24 60 48 8D 50 09",
+   "expect": "4C 8D 0D B8 DE BA 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDDeptRowTypeIcon": {
+   "pattern": "48 8B 8C 24 B0 00 00 00 48 63 0C 88 48 01 C1 4C 8D 0D ?? ?? ?? ?? FF E1 4C 8D 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D 37 17 D1 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDDeptRowTypeLabel": {
+   "pattern": "4A 63 0C 88 48 01 C1 FF E1 4C 8D 05 ?? ?? ?? ?? E9 ?? ?? ?? ?? 4C 8D 05",
+   "expect": "4C 8D 05 72 27 D1 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDDeptRowTypeLabelJoin": {
+   "pattern": "48 8D 15 ?? ?? ?? ?? 48 8D 8C 24 90 00 00 00 E8 ?? ?? ?? ?? 49 8B 5C 24 08",
+   "expect": "48 8D 15 67 28 D1 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDInProgressPartIcon": {
+   "pattern": "4C 89 74 24 20 48 89 D9 48 8D 15 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D EF 4E 8F 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDInProgressStrip": {
+   "pattern": "4C 89 F9 48 8D 15 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D 05 91 93 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDInProgressTypeIcon": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? EB 50 4C 8D 0D",
+   "expect": "4C 8D 0D 08 86 A5 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDInProgressTypeIconJoin": {
+   "pattern": "48 89 DE 4C 8D 05 ?? ?? ?? ?? 3C 03",
+   "expect": "48 89 DE 4C 8D 05 23 87 A5 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDInProgressTypeLabel": {
+   "pattern": "4C 8D 05 ?? ?? ?? ?? EB 4B 4C 8D 05",
+   "expect": "4C 8D 05 E3 8D A5 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDInProgressTypeLabelJoin": {
+   "pattern": "0F 1F 44 00 00 4C 89 F1 48 8D 15 ?? ?? ?? ?? E8",
+   "expect": "4C 89 F1 48 8D 15 3F 8F A5 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDListRowDeptIcon": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 84 24 A0 0C 00 00",
+   "expect": "4C 8D 0D DE 48 0D 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPerfViewModelSlotDtor": {
+   "pattern": "48 8B 9E 68 06 00 00 48 85 DB 0F 84 ?? ?? ?? ?? 4C 8D B7 80 00 00 00 48 8D 8F E0 06 00 00 E8 ?? ?? ?? ?? 48 8D 8F C0 04 00 00",
+   "expect": "E8 7A 45 DD FF",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPerksTitleDeptIcon": {
+   "pattern": "4C 89 64 24 20 48 8D 15 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D 24 B0 B9 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPieMoveAssignSlotDtor": {
+   "pattern": "4C 8B 36 4D 85 F6 0F 84 ?? ?? ?? ?? 4C 8D BB 80 00 00 00 48 8D 8B E0 06 00 00 E8 ?? ?? ?? ?? 48 8D 8B C0 04 00 00",
+   "expect": "E8 81 E8 E2 FF",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPiePopulateNextCode": {
+   "pattern": "EB 1B 0F 1F 84 00 00 00 00 00 48 8D 05",
+   "expect": "48 8D 05 0F 67 90 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPieSliceDescFormat": {
+   "pattern": "E8 ?? ?? ?? ?? B8 FF FF FF FF 48 8D B4 24 B0 01 00 00",
+   "expect": "E8 B0 5A 21 02",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPieSliceIconArgs": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 84 24 60 01 00 00",
+   "expect": "4C 8D 0D 95 E2 92 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPopupCategoryIcon": {
+   "pattern": "4C 89 74 24 20 48 8D 15 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 D9",
+   "expect": "4C 8D 0D A8 20 E7 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPurchasePanelTypeLabelJoin": {
+   "pattern": "4C 8D 05 ?? ?? ?? ?? EB 07 4C 8D 05 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 58",
+   "expect": "48 8D 15 E2 65 D0 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDPurchaseScreenTypeLabelJoin": {
+   "pattern": "4C 8D 05 ?? ?? ?? ?? EB 07 4C 8D 05 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 48 8D 8C 24 C0 00 00 00",
+   "expect": "48 8D 15 57 3A D4 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDResearchRowCategoryIcon": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 4C 89 F1 E8 ?? ?? ?? ?? 48 8B 44 24 50 48 8D 50 09",
+   "expect": "4C 8D 0D C0 97 BB 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDResearchRowTypeIcon": {
+   "pattern": "48 8B 8C 24 08 01 00 00 48 63 0C 88 48 01 C1 4C 8D 0D ?? ?? ?? ?? FF E1 4C 8D 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D 30 D0 D1 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDResearchRowTypeLabel": {
+   "pattern": "48 63 0C 90 48 01 C1 FF E1 4C 8D 05 ?? ?? ?? ?? E9 ?? ?? ?? ?? 4C 8D 05",
+   "expect": "4C 8D 05 79 E0 D1 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDResearchRowTypeLabelJoin": {
+   "pattern": "48 8D 15 ?? ?? ?? ?? 48 8D 8C 24 88 00 00 00 E8 ?? ?? ?? ?? 49 8B 75 08",
+   "expect": "48 8D 15 6E E1 D1 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDResultTypeIcon": {
+   "pattern": "4D 89 E0 E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D 66 3F 0E 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDResultTypeIconJoin": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 66 90 4C 8D 05",
+   "expect": "4C 8D 05 26 40 0E 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDResultTypeLabel": {
+   "pattern": "45 84 C9 75 E4 E9 ?? ?? ?? ?? 4C 8D 05",
+   "expect": "4C 8D 05 87 41 0E 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDTodoTypeLabelJoin": {
+   "pattern": "48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 48 E8 ?? ?? ?? ?? 48 8B 9F 38 03 00 00",
+   "expect": "48 8D 15 17 43 D1 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDUpgradeInfoTypeLabelJoin": {
+   "pattern": "48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 48 E8 ?? ?? ?? ?? 48 8B 86 50 03 00 00 48 8B B8 F8 00 00 00",
+   "expect": "48 8D 15 A1 4E D2 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_RnDUpgradeListDeptIcon": {
+   "pattern": "48 89 7C 24 20 48 89 E9 48 8D 15 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D 7F 5B 0D 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_TeamHqIsMyTeamResult": {
+   "pattern": "75 20 48 89 F9 E8 ?? ?? ?? ?? 89 C3 E8",
+   "expect": "89 C3 E8 FC 45 CD FD",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_TeamHqRnDPopupTypeIcon": {
+   "pattern": "48 01 D1 FF E1 4C 8D 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? 4C 8D 0D",
+   "expect": "4C 8D 0D 4A 58 FD 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_TeamHqRnDPopupTypeIconJoin": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 3C 03 77 0D 48 8D 0D",
+   "expect": "3C 03 77 0D 48 8D 0D FA E8 E8 03",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_TeleFailedTypeNameJoin": {
+   "pattern": "0F B6 40 70 48 8B 54 C5 00 48 89 D9 E8",
+   "expect": "48 89 D9 E8 56 06 E7 FF",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_TeleRecordTypeName": {
+   "pattern": "0F B6 43 70 48 8D 15 ?? ?? ?? ?? 48 8B 14 C2",
+   "expect": "48 8D 15 4A 36 FE 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_TeleRecordTypeNameCall": {
+   "pattern": "E8 ?? ?? ?? ?? 48 8B 0E 0F B6 43 72",
+   "expect": "E8 01 82 E1 FF",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_TeleResearchTypeName": {
+   "pattern": "0F B6 40 70 48 8D 0D ?? ?? ?? ?? 48 8B 14 C1",
+   "expect": "48 8D 0D EF D1 03 05",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_TeleResearchTypeNameCall": {
+   "pattern": "E8 ?? ?? ?? ?? 48 8B 47 10 0F B6 40 72",
+   "expect": "E8 E3 08 E7 FF",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_Unk141814320TypeLabelJoin": {
+   "pattern": "48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 40 E8 ?? ?? ?? ?? 48 8B 9E A8 00 00 00",
+   "expect": "48 8D 15 33 07 18 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_Unk1418169f0TypeLabelJoin": {
+   "pattern": "48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 40 E8 ?? ?? ?? ?? 4C 8B A6 A8 00 00 00",
+   "expect": "48 8D 15 7C DF 17 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_UpgradeCardDeptIcon": {
+   "pattern": "4C 8D 0D ?? ?? ?? ?? 4C 89 F9 E8 ?? ?? ?? ?? 48 8B 44 24 58",
+   "expect": "4C 8D 0D 54 AE 02 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_UpgradeCardTypeLabel": {
+   "pattern": "4A 63 0C B0 48 01 C1 FF E1 4C 8D 05 ?? ?? ?? ?? E9 ?? ?? ?? ?? 4C 8D 05",
+   "expect": "4C 8D 05 7B C9 19 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_UpgradeCardTypeLabelJoin": {
+   "pattern": "48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 68 E8 ?? ?? ?? ?? C6 44 24 45 00",
+   "expect": "48 8D 15 70 CA 19 04",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Career_UpgradeInitNormal": {
+   "pattern": "48 83 86 C8 00 00 00 10 E9 ?? ?? ?? ?? 8B 15",
+   "expect": "8B 15 DE 9E D2 02",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Game_CareerContinue_DriverSlotTitle": {
+   "pattern": "4C 69 EE 40 05 00 00 F6 82 71 01 00 00 20 4A 8D 8C 29 B8 03 00 00 44 88 44 24 37 0F 85 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? E8 ?? ?? ?? ?? C6 84 24 08 04 00 00 01",
+   "expect": "E8 2F 65 DA FE",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once. The call is Vm_Holder_SetCStr (EA 0x1407b01d0) with rdx \"lng_homescreen_driver_career\". Game_CareerContinue_FillSlot (EA 0x141a09c50) has the same instructions, registers and frame as Steam's, so rcx, rdx, rbx, rdi and sil hold the same values at the site."
+  },
+  "site_Game_DriverSelectHeader_BuildTabs": {
+   "pattern": "E8 ?? ?? ?? ?? C6 86 10 03 00 00 01 48 8B 86 C0 02 00 00",
+   "expect": "E8 09 29 7F 02",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once."
+  },
+  "site_Game_DriverSelect_BadgeFormat": {
+   "pattern": "E8 ?? ?? ?? ?? 48 8D 8E 58 FF FF FF",
+   "expect": "E8 EB 76 AB 02",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once. The call is Ne_Format_String (EA 0x1441572e0) with the same format string and the same rcx, rdx, r8 setup; the containing function (EA 0x14169f810) has the same instructions as Steam's."
+  },
+  "site_Game_DriverSelect_TeamLogoFormat": {
+   "pattern": "48 8D 4C 24 60 E8 ?? ?? ?? ?? 48 8B 97 B0 00 00 00",
+   "expect": "E8 1D 94 AB 02",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once. The call is Ne_Format_String (EA 0x1441572e0) with the same format string and the same rcx, rdx, r8 setup; the containing function (EA 0x14169da00) has the same instructions as Steam's."
+  },
+  "site_Game_SaveData_ContainersChildren": {
+   "pattern": "41 89 04 24 85 C0 0F 85 ?? ?? ?? ?? 48 8D 2D",
+   "expect": "48 8D 2D DD D8 C1 02",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once. Game_SaveData_SerialiseContainer_2 (EA 0x143641230) has the same instructions, registers and frame as Steam's, so r12, r15 and the [rsp+0x30/0x38/0x50/0x58/0x90] slots the save splice reads hold the same values. The lea rbp target is the string64 type record, at the same 0x135c70 data shift as g_Ne_StringTable and k_Ne_PropertyType_Bag."
+  },
+  "site_Game_SaveData_ContainersDone": {
+   "pattern": "80 3D ?? ?? ?? ?? 01 4C 8B 4C 24 30",
+   "expect": "80 3D 41 F9 B3 02 01",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once. Same function and frame as Steam's (EA 0x143641230), so the splice's redirect here after a failed write finds [rsp+0x30], [rsp+0x38] and r12 as on Steam. The cmp reads the flag at the same 0x135d40 data shift as g_Ne_LogGate."
+  },
+  "site_Game_TeamSelect_TeamLogoFormat": {
+   "pattern": "E8 ?? ?? ?? ?? 48 8D 8F 58 FF FF FF",
+   "expect": "E8 E6 34 8E 02",
+   "note": "expect holds a Steam rel32/disp32. It is the same instruction on EA with EA's displacement, read from the dump. The base pattern matches EA once. The call is Ne_Format_String (EA 0x1441572e0) with the same format string and the same rcx, rdx, r8 setup; the containing function (EA 0x141873860) has the same instructions as Steam's."
+  },
+  "site_Ne_HwBool_CrowdInShadows": {
+   "pattern": "49 8B 4C 24 50 48 8D 15 ?? ?? ?? ?? E8 ?? ?? ?? ?? 85 C0 40 0F 94 D7",
+   "note": "The base pattern ends on Steam .data1 protector filler (66). EA's .xcode copy has the real test/sete there instead (found through its crowdInShadows string xref)."
+  },
+  "site_Ne_HwBool_NightShadowCharCast": {
+   "pattern": "E8 ?? ?? ?? ?? 85 C0 0F 94 96 C1 05 00 00 4C 8B B6 18 06 00 00 4C 2B B6 10 06 00 00",
+   "note": "The base pattern ends on Steam .data1 protector filler (40 8A 3D, 31 3D). On EA it still matches once, but at a call to __security_check_cookie. EA's real site calls Ne_Compare_StringNoCase like Steam's and is followed by the same sete [rsi+0x5c1] and this+0x610 list loads."
+  },
+  "site_Ne_HwInt_NightShadowMapSize": {
+   "pattern": "49 8B 4C 24 50 31 D2 45 31 C0 E8 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 89 86 A8 05 00 00",
+   "note": "The base pattern ends on Steam .data1 protector filler (66). EA's .xcode copy has 10 other filler bytes after the call. They are wildcarded up to the mov [rsi+0x5a8], eax that both builds share (found through its nightShadowMapSize string xref)."
+  },
+  "core.save_system2_win_start": {
+   "pattern": "56 57 53 48 81 EC 50 02 00 00 C5 F8 29 B4 24 40 02 00 00 48 89 CE 48 8B 49 08",
+   "note": "EA's save device is a different build of the same class (0x340 bytes, no Steam helper): Start is at 0x14413f690 and its frame is 0x250 bytes. From the decrypted dump; one match."
+  },
+  "core.save_system2_win_mount": {
+   "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 B8 18 13 00 00 E8 ?? ?? ?? ?? 48 29 C4 44 89 CD 4C 89 C3 48",
+   "note": "EA's Mount is at 0x144146f80 with a 0x1318-byte frame (Steam 0x1728). From the decrypted dump."
+  },
+  "core.save_system2_win": {
+   "pattern": "48 89 47 20 48 8D 05 ?? ?? ?? ?? 48 89 07 48 8D 47 48 48 C7 47 38 04 01 00 00",
+   "note": "The Steam pattern also matches a second site on EA. This one extends it into the next stores of the device constructor (vtable 0x145b6dbf0 on EA). From the decrypted dump."
+  },
+  "Car_Register_DetachablePart_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? 0D B5 EB 62 31 20 18 E9 3C",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x4656690: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Car_Systems_Reset_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? 0F 8E 75 07 FD FF DA 77 BC",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x4738910: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Game_Handle_GarageCrewEvent_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? 06 FB D0 0F 86 68 25 70 FB",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x38d3c0: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Game_SaveMgr_RequestProfileSave_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? 0F 8C D8 24 28 02 FB AC 0F",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x3649810: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Game_Set_VehicleController_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? A5 95 52 E9 DC 58 4C 02 F3",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x3889e60: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Sess_Invalidate_Lap_Thunk": {
+   "pattern": "E9 ?? ?? ?? ?? DB E9 26 FB 45 FE 47 FC 23",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x3562880: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Sess_Recordable_Register": {
+   "pattern": "E9 ?? ?? ?? ?? 55 0E 14 58 86 B5 E3 3E 9F",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x45c3110: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Sess_SafetyCarTether_UpdateTarget": {
+   "pattern": "E9 ?? ?? ?? ?? 59 46 0F 20 A0 0C 75 12 D0",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x35fb1f0: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Sess_SessionClock_SetTime": {
+   "pattern": "E9 ?? ?? ?? ?? DF 6D C9 56 C8 E9 10 72 26",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x2cde7b0: the rel32 target of the mapped Steam callers, taken from the EA dump."
+  },
+  "Sess_Flow_ParseXml": {
+   "pattern": "E9 ?? ?? ?? ?? CB BC BF 25 39 39 F4 E6 0F",
+   "note": "The bytes after the protector thunk's jmp are Steam-only filler. EA's thunk sits at 0x4416c40: the rel32 target of the mapped Steam caller at 0x15433f0e0, taken from the EA dump. Its jmp body matches the Steam body (flow reader setup, then the parser call)."
+  },
+  "Game_F1os_F1CGTask_Update": {
+   "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC 48 03 00 00 C5 F8 29 B4 24 30 03 00 00 48 89 CE 48 81 C1 98 00 00 00 4C 8B",
+   "note": "The function is at 0x2798ea0 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Game_FanZoneSeasonResults_Exit": {
+   "pattern": "41 56 56 57 53 48 81 EC A8 01 00 00 C5 F8 29 B4 24 90 01 00 00 48 8B 71",
+   "note": "The function is at 0x2386dc0 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Render_Gfx2Buffer_Construct": {
+   "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC 28 01 00 00 C5 F8 29 B4 24 10 01 00 00 48 89 D7 48 89 CE 48 8D 05 ?? ?? ?? ?? 48 89 01 4C",
+   "note": "The function is at 0x39c2800 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Game_Input_OnControlSchemeAdded": {
+   "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC 58 4C 89 C6 48 89 D3 49 89 CD 49 8B 90",
+   "note": "The function is at 0x2a576b0 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Game_NetworkReady_OnPauseSendSuperReady": {
+   "pattern": "56 48 83 EC 60 41 8B 40 10 83 E0 FE 83 F8 02 0F 85 ?? ?? ?? ?? 48 89 CE C5 FB 10 41 68 C5 F9 2E ?? ?? ?? ?? 02 0F 82 ?? ?? ?? ?? C6",
+   "note": "The function is at 0x321ce60 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Game_NetworkReady_OnUnpauseSendSuperReady": {
+   "pattern": "56 48 83 EC 60 41 8B 40 10 83 E0 FE 83 F8 02 0F 85 ?? ?? ?? ?? 48 89 CE C5 FB 10 41 68 C5 F9 2E ?? ?? ?? ?? 02 0F 82 ?? ?? ?? ?? C4",
+   "note": "The function is at 0x321cfc0 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Sess_RedFlagRaceStrategy_Update": {
+   "pattern": "56 57 53 48 83 EC 30 48 89 D6 8B 05 ?? ?? ?? ?? 89 81 90 0C 00 00 80 B9",
+   "note": "The function is at 0x2df0b00 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Ne_SaveSystem2Win_Mount": {
+   "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 B8 18 13 00 00 E8 ?? ?? ?? ?? 48 29 C4 44 89 CD 4C 89 C3 48 89",
+   "note": "The function is at 0x4146f80 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Ne_SaveSystem2Win_SaveSelected": {
+   "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC 78 04 00 00 44 89 CB 4D 89 C6 48 89 D7",
+   "note": "The function is at 0x4150830 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Ne_SaveSystem2Win_Start": {
+   "pattern": "56 57 53 48 81 EC 50 02 00 00 C5 F8 29 B4 24 40 02 00 00 48 89 CE 48 8B 49 08 48 8B",
+   "note": "The function is at 0x413f690 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Ne_SaveSystem_BuildSaveInfoList": {
+   "pattern": "41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC 98 04 00 00 4C 89 CB",
+   "note": "The function is at 0x413fee0 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Ne_SaveSystem_SelectAndDelete": {
+   "pattern": "41 57 41 56 41 54 56 57 55 53 48 81 EC A0 04 00 00 4C 89 CB",
+   "note": "The function is at 0x4144940 in the EA dump. The base pattern differs there in rip-relative displacements and frame constants; the pattern is the EA body, extended until it matches once."
+  },
+  "Game_CreateSessionDlcSelectTab_BuildTiles": {
+   "pattern": "07 3A 05 ?? ?? ?? ?? 10 48 8B 54 24 50 48 85 D2 74 06 48 8B 01 FF 50 38 48 8D BE 30 06 00 00 80 BE 70 07 00 00 00 74 0F 48 89 F9 E8 ?? ?? ?? ?? C6 86 70 07 00 00 00 48 8B 46 10 48 8D 50 08 48 85 C0 4C 8D 35 ?? ?? ?? ?? 49 0F 44 D6 4C 8D 05 ?? ?? ?? ?? 48 89 F9 E8 ?? ?? ?? ?? 48 8D 9E 50 06 00 00 48 89 F9 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 89 4C 24 20 4C 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 D9 48 89 C2 E8 ?? ?? ?? ?? 48 8D 9E D0 06 00 00 48 89 F9 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 89 4C 24 20 4C 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 D9 48 89 C2 E8 ?? ?? ?? ?? C6 44 24 30 00",
+   "anchor": -515,
+   "note": "The base pattern matches EA twice (0x1a3a76b and 0x1d48fcb); the override starts 24 bytes earlier so it matches once at 0x1a3a550+24, and the anchor and call offsets move by 24. EA call targets: BuildTiles 0x1a3a550, FillTile 0x1a3a9b0, Vm_List_AppendChild 0x42af880."
+  },
+  "Game_CreateSessionDlcSelectTab_FillTile": {
+   "pattern": "07 3A 05 ?? ?? ?? ?? 10 48 8B 54 24 50 48 85 D2 74 06 48 8B 01 FF 50 38 48 8D BE 30 06 00 00 80 BE 70 07 00 00 00 74 0F 48 89 F9 E8 ?? ?? ?? ?? C6 86 70 07 00 00 00 48 8B 46 10 48 8D 50 08 48 85 C0 4C 8D 35 ?? ?? ?? ?? 49 0F 44 D6 4C 8D 05 ?? ?? ?? ?? 48 89 F9 E8 ?? ?? ?? ?? 48 8D 9E 50 06 00 00 48 89 F9 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 89 4C 24 20 4C 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 D9 48 89 C2 E8 ?? ?? ?? ?? 48 8D 9E D0 06 00 00 48 89 F9 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 89 4C 24 20 4C 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 D9 48 89 C2 E8 ?? ?? ?? ?? C6 44 24 30 00",
+   "anchor": 140,
+   "resolve": {
+    "kind": "rel32",
+    "insn": 139
+   },
+   "note": "The base pattern matches EA twice (0x1a3a76b and 0x1d48fcb); the override starts 24 bytes earlier so it matches once at 0x1a3a550+24, and the anchor and call offsets move by 24. EA call targets: BuildTiles 0x1a3a550, FillTile 0x1a3a9b0, Vm_List_AppendChild 0x42af880."
+  },
+  "Vm_List_AppendChild": {
+   "pattern": "07 3A 05 ?? ?? ?? ?? 10 48 8B 54 24 50 48 85 D2 74 06 48 8B 01 FF 50 38 48 8D BE 30 06 00 00 80 BE 70 07 00 00 00 74 0F 48 89 F9 E8 ?? ?? ?? ?? C6 86 70 07 00 00 00 48 8B 46 10 48 8D 50 08 48 85 C0 4C 8D 35 ?? ?? ?? ?? 49 0F 44 D6 4C 8D 05 ?? ?? ?? ?? 48 89 F9 E8 ?? ?? ?? ?? 48 8D 9E 50 06 00 00 48 89 F9 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 89 4C 24 20 4C 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 D9 48 89 C2 E8 ?? ?? ?? ?? 48 8D 9E D0 06 00 00 48 89 F9 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 89 4C 24 20 4C 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 D9 48 89 C2 E8 ?? ?? ?? ?? C6 44 24 30 00",
+   "anchor": 103,
+   "resolve": {
+    "kind": "rel32",
+    "insn": 102
+   },
+   "note": "The base pattern matches EA twice (0x1a3a76b and 0x1d48fcb); the override starts 24 bytes earlier so it matches once at 0x1a3a550+24, and the anchor and call offsets move by 24. EA call targets: BuildTiles 0x1a3a550, FillTile 0x1a3a9b0, Vm_List_AppendChild 0x42af880."
+  },
+  "Vm_Release_Node": {
+   "pattern": "CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC 41 56 56 57 53 48 83 EC 28 48 89 CF 48 8D 71 08 48 89 F2 E8 ?? ?? ?? ?? 48 8D 1D ?? ?? ?? ?? 48 89 9F 20 01 00 00 48 8B 87 28 01 00 00 48 85 C0 74 57 48 8B 8F 30 01 00 00 48 8B 97 38 01 00 00 48 85 D2 74 04 48 89 4A 08 4C 8D B7 28 01 00 00 4C 8D 87 30 01 00 00 48 85 C9 74 04 48 89 51 10 C5 F8 57 C0 C4 C1 78 11 00 4C 39 70 28 75 04 48 89 48 28 48 8B 0D ?? ?? ?? ?? 49 8B 16 E8 ?? ?? ?? ?? 49 C7 06 00 00 00 00",
+   "anchor": 145,
+   "resolve": {
+    "kind": "rel32",
+    "insn": 144
+   },
+   "note": "The base pattern matches EA twice (0x1b65e99 and 0x1e675b9); the override starts 28 bytes earlier so it matches once, and the anchor and call offset move by 28. The call reaches EA 0x42a79e0."
+  },
+  "site_Car_VehicleTableRemove": {
+   "pattern": "74 07 41 88 89 E8 00 00 00 FE C8 88 05",
+   "expect": "88 05 43 AD 6E 02",
+   "note": "The pattern matches EA once at the Steam offset. The expected site bytes carry a rip-relative or call displacement that differs on EA; they are the EA dump's bytes."
+  },
+  "site_Sess_InGamePlayerFinishedAiCall": {
+   "pattern": "E8 ?? ?? ?? ?? 49 81 C6 A8 00 00 00 4C 89 F1 E8",
+   "expect": "E8 FA F3 B3 00",
+   "note": "The pattern matches EA once at the Steam offset. The expected site bytes carry a rip-relative or call displacement that differs on EA; they are the EA dump's bytes."
+  },
+  "site_Sess_InGameSessionCompleteAiCall": {
+   "pattern": "E8 ?? ?? ?? ?? FE C3 48 8B 87 A8 0D 00 00 8B 48 30 2B 48 28 C1 E9 03 38 CB 72 D0 EB 6C",
+   "expect": "E8 96 F9 B3 00",
+   "note": "The pattern matches EA once at the Steam offset. The expected site bytes carry a rip-relative or call displacement that differs on EA; they are the EA dump's bytes."
+  },
+  "site_Team_LoadInsertCall": {
+   "pattern": "E8 ?? ?? ?? ?? 8B 7C 24 4C 4C 8D 74 24 68",
+   "expect": "E8 57 34 87 FE",
+   "note": "The pattern matches EA once at the Steam offset. The expected site bytes carry a rip-relative or call displacement that differs on EA; they are the EA dump's bytes."
+  },
+  "site_Game_GarageSetups_EntryStep": {
+   "pattern": "4E 8B 0C C2 4A 8D 14 C2 4D 8B 41 38 4D 8B 80 60 02 00 00 41 39 80",
+   "expect": "4A 8D 14 C2 4D 8B 41 38",
+   "note": "EA's owner lookup is inlined into the setup-list builder (F1_25.exe+0xc1fe90) with the entry walk in rdx instead of rcx; the entry is still r9 and the lea sits at the same offset. The first 12 bytes also match two other hash-set walks (+0x2bf0c2f, +0x2bf0e8f), so the pattern runs on to the +0x260/+0x2a8 reads that only the setup walk has."
+  },
+  "site_Game_GarageSetups_NotFound": {
+   "pattern": "31 F6 48 8D 8C 24 D8 00 00 00 48 89 F2",
+   "expect": "31 F6 48 8D 8C",
+   "note": "The inlined lookup's not-found join (xor esi,esi, then the name node built from rsi) at F1_25.exe+0xc2076f; Steam's equivalent is the function exit that returns rsi."
+  }
+ },
+ "hints": {
+  "Car_Reset_LastFittedUpgrade": {
+   "match": "0x3507f80"
+  },
+  "Career_Add_SeasonWeekend": {
+   "match": "0xae4ad0"
+  },
+  "Career_Add_TeamModifier": {
+   "match": "0x34e8c00"
+  },
+  "Career_Adjust_RpDriverWallet": {
+   "match": "0x34ef1ca"
+  },
+  "Career_Adjust_RpTeamWallet": {
+   "match": "0x34f8740"
+  },
+  "Career_Build_DriverContract": {
+   "match": "0xd74020"
+  },
+  "Career_Build_LineupChanges": {
+   "match": "0x2450e10"
+  },
+  "Career_Calc_UpgradeCost": {
+   "match": "0x3515d60"
+  },
+  "Career_Cancel_UpgradeDevelopment": {
+   "match": "0x3522590"
+  },
+  "Career_Cancel_UpgradeResearch": {
+   "match": "0x35222f0"
+  },
+  "Career_Complete_PerkTreeNode": {
+   "match": "0x2e99be0"
+  },
+  "Career_Construct_RnDDeptCard": {
+   "match": "0x1c74e80"
+  },
+  "Career_ContractIntro_OnEnter": {
+   "match": "0x36b2860"
+  },
+  "Career_ContractIntro_OnUpdate": {
+   "match": "0x36b3000"
+  },
+  "Career_ContractOutro_OnEnter": {
+   "match": "0x36b3570"
+  },
+  "Career_ContractOutro_OnUpdate": {
+   "match": "0x36b3990"
+  },
+  "Career_ContractUpdate_OnEnter": {
+   "match": "0x36b19a0"
+  },
+  "Career_ContractUpdate_OnExit": {
+   "match": "0x36b2200"
+  },
+  "Career_ContractUpdate_OnUpdate": {
+   "match": "0x36b2040"
+  },
+  "Career_Create_SeasonWeekend": {
+   "match": "0xae49c0"
+  },
+  "Career_Decide_ContractNegotiation": {
+   "match": "0x2d4ba50"
+  },
+  "Career_DriverNumbers_CheckExisting": {
+   "match": "0xc005a0"
+  },
+  "Career_Eval_Curve": {
+   "match": "0x44fd860"
+  },
+  "Career_Get_CareerLengthDays_Thunk": {
+   "match": "0x1117f80"
+  },
+  "Career_Get_DriverOverallRating": {
+   "match": "0x1137370"
+  },
+  "Career_Get_RpWallet": {
+   "match": "0x34f88c0"
+  },
+  "Career_Get_TeamRenownData": {
+   "match": "0xf74760"
+  },
+  "Career_Needs_DriverContract": {
+   "match": "0xd7d2e0"
+  },
+  "Career_Post_UpgradeFittedRatio": {
+   "match": "0x3520000"
+  },
+  "Career_Rebuild_ChampionshipStandings": {
+   "match": "0xae6260"
+  },
+  "Career_Rebuild_SeasonStandings": {
+   "match": "0xae69b0"
+  },
+  "Career_Record_DriverMove": {
+   "match": "0xd89440"
+  },
+  "Career_Refresh_RnDDeptMode": {
+   "match": "0x1c819e0"
+  },
+  "Career_Refresh_UpgradeAvailability": {
+   "match": "0x351f500"
+  },
+  "Career_Set_DriverContractState": {
+   "match": "0xd98080"
+  },
+  "Career_Set_EntrantData_Thunk": {
+   "match": "0x7b63f0"
+  },
+  "Career_Set_UpgradeFacilityLocked": {
+   "match": "0x3513930"
+  },
+  "Career_Set_UpgradesOwner": {
+   "match": "0x351e820"
+  },
+  "Career_Sign_DriverContract": {
+   "match": "0xd74240"
+  },
+  "Career_Start_UpgradeDevelopment": {
+   "match": "0x35075e0"
+  },
+  "Career_Start_UpgradeResearch": {
+   "match": "0x3506ad0"
+  },
+  "Career_Teardown_Weekend": {
+   "match": "0xaeb760"
+  },
+  "FeFlow_Set_StateStatus": {
+   "match": "0x4418160"
+  },
+  "FeHome_Add_CareerTile": {
+   "match": "0x173d397",
+   "func_rva": "0x1738350"
+  },
+  "FeHome_Handle_Command": {
+   "match": "0x1bae090",
+   "func_rva": "0x1bae090"
+  },
+  "FeTile_Add_EraTile": {
+   "match": "0x1a675d0"
+  },
+  "FeTile_Build_List": {
+   "match": "0x1738350",
+   "func_rva": "0x1738350"
+  },
+  "FeTile_CareerDlcItem_Populate": {
+   "match": "0x1720a30"
+  },
+  "FeTile_Clear_EraTileSet_Thunk": {
+   "match": "0x1a69052"
+  },
+  "FeTile_Construct_CareerItem": {
+   "match": "0x171f750"
+  },
+  "FeTile_Is_EraScenarioAvailable_Thunk": {
+   "match": "0x1a690ec"
+  },
+  "FeTile_ItemBase_Populate": {
+   "match": "0x1691f60",
+   "func_rva": "0x1691f60"
+  },
+  "FeTile_Press_EraTile": {
+   "match": "0x1a68910"
+  },
+  "FeTile_Route_CareerItem": {
+   "match": "0x171f9f0"
+  },
+  "Game_CareerActivities_AddActivity": {
+   "match": "0x1261f40"
+  },
+  "Game_CareerActivities_RemoveActivity": {
+   "match": "0x1262080"
+  },
+  "Game_CareerSetup_ResetEntrants": {
+   "match": "0xc2ebf0"
+  },
+  "Game_CareerWizard_PushNextStep": {
+   "match": "0x385aa60"
+  },
+  "Game_CareerWizard_StartsInF1": {
+   "match": "0x78dfa0"
+  },
+  "Game_Career_IsDriverCareerMode": {
+   "match": "0xa8ee83"
+  },
+  "Game_ContractTeamSelect_OnEnter": {
+   "match": "0x36b4910"
+  },
+  "Game_ContractTeamSelect_OnExit": {
+   "match": "0x36b5a20"
+  },
+  "Game_ContractTeamSelect_OnUpdate": {
+   "match": "0x36b58e0"
+  },
+  "Game_DriverContracts_AdvanceSecretMeeting": {
+   "match": "0xd7a3e0"
+  },
+  "Game_DriverContracts_BuildOffers": {
+   "match": "0xd7b140"
+  },
+  "Game_DriverContracts_OfferSecretMeeting": {
+   "match": "0xd79780"
+  },
+  "Game_DriverSelectHeader_SetTabState": {
+   "match": "0x1a544d0"
+  },
+  "Game_EngineMgmt_AddGridPenalty": {
+   "match": "0x11ca990"
+  },
+  "Game_EngineMgmt_ApplySessionWear": {
+   "match": "0x11cb7b0"
+  },
+  "Game_EntrantsUi_BuildCharacterRef": {
+   "match": "0x24eb0f0"
+  },
+  "Game_EntrantsUi_OnCharacterListLoaded": {
+   "match": "0x24b4040"
+  },
+  "Game_F1WorldActivityContainer_SelectEntrantList": {
+   "match": "0x1a735f0"
+  },
+  "Game_PracticeTrackAcclimatisation_RefreshState": {
+   "match": "0x2997720"
+  },
+  "Game_Refresh_PerformanceComparison": {
+   "match": "0x188aee0"
+  },
+  "Game_Rnd_CalcUpgradeTypeProgress": {
+   "match": "0x3516460"
+  },
+  "Game_Rnd_FillVehicleUpgrades": {
+   "match": "0x1232f00"
+  },
+  "Game_SaveData_DeserialiseContainer": {
+   "match": "0x363f5a0"
+  },
+  "Game_SaveData_SerialiseContainer": {
+   "match": "0x363e200"
+  },
+  "Game_SaveData_WriteBag": {
+   "match": "0x3921150"
+  },
+  "Game_SeasonLength_ApplyPreset": {
+   "match": "0xbc8930"
+  },
+  "Game_SeasonLength_PushCalendarEntry": {
+   "match": "0xbc86f0"
+  },
+  "Game_SpeechSystem_PostLine": {
+   "match": "0xa2f4d0"
+  },
+  "Gdb_Lookup_Key": {
+   "match": "0x4598580"
+  },
+  "Ne_Compare_StringNoCase": {
+   "match": "0x5454aa4"
+  },
+  "Ne_Detach_ChildNode": {
+   "match": "0x36423b0"
+  },
+  "Ne_Entity_FindComponent": {
+   "match": "0x3f87c90"
+  },
+  "Ne_Format_String": {
+   "match": "0x41572e0"
+  },
+  "Ne_Get_SettingBool": {
+   "match": "0x3a30bb0"
+  },
+  "Ne_Get_SettingU32": {
+   "match": "0x3a30260"
+  },
+  "Ne_Log_Thunk": {
+   "match": "0xaeee4f",
+   "func_rva": "0xaeedd0"
+  },
+  "Ne_Make_StrFromCStr": {
+   "match": "0x418b6d0"
+  },
+  "Ne_Parse_Long": {
+   "match": "0x3db14f3"
+  },
+  "Ne_Play_FullscreenVideo": {
+   "match": "0x4162040"
+  },
+  "Ne_Post_BusMessage": {
+   "match": "0x39747b0"
+  },
+  "Ne_StringTable_Lookup": {
+   "match": "0x3917940"
+  },
+  "Sess_Build_GroupResult": {
+   "match": "0xaf8b90"
+  },
+  "Sess_Find_GroupRowPosition": {
+   "match": "0xaf7410"
+  },
+  "Sess_GameWeatherSystem_SetupSession": {
+   "match": "0x38a4520"
+  },
+  "Sess_GameWeatherSystem_UpdateRandomSeed": {
+   "match": "0x38b52b0"
+  },
+  "Sess_Record_GroupTimes": {
+   "match": "0xaf11f0"
+  },
+  "Sess_Tod_BuildSessionDataset_Thunk": {
+   "match": "0x4792960"
+  },
+  "Sess_TyreAllocation_OnSessionStart": {
+   "match": "0xbcab00"
+  },
+  "Sess_TyreClass_FromName": {
+   "match": "0x2e94be4"
+  },
+  "Sess_Tyres_ClosestAvailableCompound": {
+   "match": "0x2a34dcc"
+  },
+  "Sess_WeatherComponent_SetSystemRandomSeed": {
+   "match": "0xbdcd50"
+  },
+  "Sess_Weekend_Start": {
+   "match": "0xaeedd0"
+  },
+  "Vm_GetOrCreate_ListChild": {
+   "match": "0x42a6d50"
+  },
+  "Vm_Set_Bool": {
+   "match": "0x1691f60",
+   "func_rva": "0x1691f60"
+  },
+  "Vm_Set_NodeRef": {
+   "match": "0x1a693a9"
+  },
+  "Vm_Set_String": {
+   "match": "0x1691f60",
+   "func_rva": "0x1691f60"
+  },
+  "Vm_Set_TabEnabled": {
+   "match": "0x43133d0"
+  },
+  "g_Career_FlowLinkContinue": {
+   "match": "0x36b30b0"
+  },
+  "g_Career_RnDOverviewSelectedDept": {
+   "match": "0x1c81034"
+  },
+  "g_Career_UpgradeLifecycle": {
+   "match": "0x3513c58"
+  },
+  "g_FeTile_CustomisationSystem": {
+   "match": "0x17209f5"
+  },
+  "g_FeTile_SelectedCareerContent": {
+   "match": "0x1720a31"
+  },
+  "g_Game_FlowLinkStay": {
+   "match": "0x36b309a"
+  },
+  "g_Game_Manager": {
+   "match": "0xf9934"
+  },
+  "g_Game_MessageBus": {
+   "match": "0x152043"
+  },
+  "g_Game_Root": {
+   "match": "0x267270"
+  },
+  "g_Ne_DefaultAllocator": {
+   "match": "0x1c805d4"
+  },
+  "g_Ne_LogGate": {
+   "match": "0xaeedec",
+   "func_rva": "0xaeedd0"
+  },
+  "g_Ne_StringTable": {
+   "match": "0x3640182"
+  },
+  "g_Sess_TyreRulesActive": {
+   "match": "0x2e7c230"
+  },
+  "g_Sess_TyreRulesMode": {
+   "match": "0x2e7c23f"
+  },
+  "g_Sess_TyreRulesSessionType": {
+   "match": "0x2e7c274"
+  },
+  "g_Vm_Registry": {
+   "match": "0x1691f60",
+   "func_rva": "0x1691f60"
+  },
+  "k_Career_CareerBankComponentDesc": {
+   "match": "0xc2bda5"
+  },
+  "k_Career_CareerComponentDesc": {
+   "match": "0x1b1353"
+  },
+  "k_Career_CareerDriverContractRenewalComponentDesc": {
+   "match": "0x7c0285"
+  },
+  "k_Career_CareerDriverMarketComponentDesc": {
+   "match": "0xbff1ce"
+  },
+  "k_Career_CareerFacilitiesComponentDesc": {
+   "match": "0xa9a618"
+  },
+  "k_Career_CareerSetupComponentDesc": {
+   "match": "0x25a7fb"
+  },
+  "k_Career_CareerSponsorsComponentDesc": {
+   "match": "0xa909fc"
+  },
+  "k_Career_CareerTimeComponentDesc": {
+   "match": "0x7c3a9a"
+  },
+  "k_Career_ChampionshipComponentDesc": {
+   "match": "0xaea35e"
+  },
+  "k_Career_ChampionshipDesc": {
+   "match": "0xb7550e"
+  },
+  "k_Career_CostCapComponentDesc": {
+   "match": "0xa8e58f"
+  },
+  "k_Career_DriverCareerContractsManagerComponentDesc": {
+   "match": "0x261aeb"
+  },
+  "k_Career_DriverCareerPlayerDriverStatisticsComponentDesc": {
+   "match": "0x263277"
+  },
+  "k_Career_DriverContractsMyTeamComponentDesc": {
+   "match": "0x267a39"
+  },
+  "k_Career_DriverStatisticsComponentDesc": {
+   "match": "0xa7e9fc"
+  },
+  "k_Career_EngineSuppliersComponentDesc": {
+   "match": "0xc2bd6b"
+  },
+  "k_Career_MyTeamAttributesComponentDesc": {
+   "match": "0xc2bec7"
+  },
+  "k_Career_MyTeamFacilitiesComponentDesc": {
+   "match": "0x258e08"
+  },
+  "k_Career_MyTeamRFComponentDesc": {
+   "match": "0xcb28d9"
+  },
+  "k_Career_MyTeamStatsComponentDesc": {
+   "match": "0x10e8147"
+  },
+  "k_Career_OwnerPerksComponentDesc": {
+   "match": "0xc2bf3b"
+  },
+  "k_Career_OwnerSetupComponentDesc": {
+   "match": "0x24377a"
+  },
+  "k_Career_ResourcePointsComponentDesc": {
+   "match": "0xd66a96"
+  },
+  "k_Career_RnDCardColourTable": {
+   "match": "0x1811a26"
+  },
+  "k_Career_RnDDeptColourTable": {
+   "match": "0x1c400e0"
+  },
+  "k_Career_RnDErrorDeptName": {
+   "match": "0x1f414d1"
+  },
+  "k_Career_ScheduleComponentDesc": {
+   "match": "0x7bf2c6"
+  },
+  "k_Career_TeamHQControllerComponentDesc": {
+   "match": "0xaa4086"
+  },
+  "k_Career_UpgradeBlockNameTable": {
+   "match": "0xe0d5f67"
+  },
+  "k_Career_UpgradeTypeOrder": {
+   "match": "0x1233151"
+  },
+  "k_Career_UpgradesComponentDesc": {
+   "match": "0x9b8b00"
+  },
+  "k_Career_WeatherAndTimeOfDayComponentDesc": {
+   "match": "0xb9c77f"
+  },
+  "k_Game_TrackListComponentDesc": {
+   "match": "0x385aeba"
+  },
+  "k_Gdb_StringXorKey": {
+   "match": "0x20d520"
+  },
+  "k_Ne_BagCodecVtbl": {
+   "match": "0x29c7a89"
+  },
+  "k_Ne_CountingStreamVtbl": {
+   "match": "0x29c7a68"
+  },
+  "k_Ne_MemWriteStreamVtbl": {
+   "match": "0x29c7b3d"
+  },
+  "k_Ne_PropertyType_Bag": {
+   "match": "0x392134c"
+  },
+  "k_Ne_TypeChainEnd": {
+   "match": "0x3680072"
+  },
+  "k_Ne_TypeRoot": {
+   "match": "0x3680072"
+  },
+  "k_Sess_TyreComponentType": {
+   "match": "0x3680072"
+  },
+  "site_Car_ErsGearModifierLoad": {
+   "match": "0x46d8afc"
+  },
+  "site_Career_ApplyUpgradeBlockNameDefault": {
+   "match": "0xe0d5fd6"
+  },
+  "site_Career_ApplyUpgradeBlockNameJoin": {
+   "match": "0xe0d5fe6"
+  },
+  "site_Career_ApplyUpgradeKeyCall": {
+   "match": "0xe0cf588"
+  },
+  "site_Career_ApplyUpgradeKeyFilter": {
+   "match": "0xe0cf586"
+  },
+  "site_Career_DeserialiseUpgradesEnd": {
+   "match": "0x3526306"
+  },
+  "site_Career_LoadUpgradeRows_DeptPath": {
+   "match": "0x3529e84"
+  },
+  "site_Career_RnDBoxGridFirstTab": {
+   "match": "0x1c810bf"
+  },
+  "site_Career_RnDBoxGridNameClamp": {
+   "match": "0x1c81039"
+  },
+  "site_Career_RnDBoxGridNameIndex": {
+   "match": "0x1c8104c"
+  },
+  "site_Career_RnDBoxGridNameRead": {
+   "match": "0x1c81057"
+  },
+  "site_Career_RnDCardArtImage0": {
+   "match": "0x180a658"
+  },
+  "site_Career_RnDCardArtImage1": {
+   "match": "0x180fa16"
+  },
+  "site_Career_RnDCardArtImage2": {
+   "match": "0x18129a2"
+  },
+  "site_Career_RnDCardArtMask0": {
+   "match": "0x180a8e8"
+  },
+  "site_Career_RnDCardArtMask1": {
+   "match": "0x180fad5"
+  },
+  "site_Career_RnDCardArtMask2": {
+   "match": "0x1812a74"
+  },
+  "site_Career_RnDCardColourPick0": {
+   "match": "0x180908d"
+  },
+  "site_Career_RnDCardColourPick1": {
+   "match": "0x180a478"
+  },
+  "site_Career_RnDCardColourPick2": {
+   "match": "0x180f0fc"
+  },
+  "site_Career_RnDCardColourPick3": {
+   "match": "0x1811a30"
+  },
+  "site_Career_RnDCardColourPick4": {
+   "match": "0x18ab4ff"
+  },
+  "site_Career_RnDCardDeptIcon0": {
+   "match": "0x180a9c8"
+  },
+  "site_Career_RnDCardDeptIcon1": {
+   "match": "0x180fbb6"
+  },
+  "site_Career_RnDCardDeptIcon2": {
+   "match": "0x1812b61"
+  },
+  "site_Career_RnDCompareDept": {
+   "match": "0x1c8900c"
+  },
+  "site_Career_RnDContainerOpenMaint": {
+   "match": "0x1c8177c"
+  },
+  "site_Career_RnDContainerOpenTail": {
+   "match": "0x1c81965"
+  },
+  "site_Career_RnDDeptBoxGridEntry": {
+   "match": "0x1c80330"
+  },
+  "site_Career_RnDDeptBoxGridInject": {
+   "match": "0x1c8091f"
+  },
+  "site_Career_RnDDeptBoxLayoutProbe": {
+   "match": "0x1c81146"
+  },
+  "site_Career_RnDDeptPagePreQuery": {
+   "match": "0x1c77c72"
+  },
+  "site_Career_RnDDeptPageQueryDone": {
+   "match": "0x1c77c8f"
+  },
+  "site_Career_RnDDeptPageTypeLoop": {
+   "match": "0x1c788a6"
+  },
+  "site_Career_RnDDeptRowCategoryIcon": {
+   "match": "0x1c7dce0"
+  },
+  "site_Career_RnDDeptRowTypeIcon": {
+   "match": "0x1c7da8d"
+  },
+  "site_Career_RnDDeptRowTypeIconJoin": {
+   "match": "0x1c7db53"
+  },
+  "site_Career_RnDDeptRowTypeLabel": {
+   "match": "0x1c7ca61"
+  },
+  "site_Career_RnDDeptRowTypeLabelJoin": {
+   "match": "0x1c7cb2b"
+  },
+  "site_Career_RnDInProgressColourStore": {
+   "match": "0x1f36d4f"
+  },
+  "site_Career_RnDInProgressPartIcon": {
+   "match": "0x1f36c9a"
+  },
+  "site_Career_RnDInProgressStrip": {
+   "match": "0x1f36993"
+  },
+  "site_Career_RnDInProgressTypeIcon": {
+   "match": "0x1f36bd7"
+  },
+  "site_Career_RnDInProgressTypeIconJoin": {
+   "match": "0x1f36c30"
+  },
+  "site_Career_RnDInProgressTypeLabel": {
+   "match": "0x1f363fc"
+  },
+  "site_Career_RnDInProgressTypeLabelJoin": {
+   "match": "0x1f3644b"
+  },
+  "site_Career_RnDListRowColourStore": {
+   "match": "0x174895d"
+  },
+  "site_Career_RnDListRowDeptIcon": {
+   "match": "0x1749275"
+  },
+  "site_Career_RnDListRowLightColourStore": {
+   "match": "0x174897f"
+  },
+  "site_Career_RnDPageModifierList": {
+   "match": "0x1c7808a"
+  },
+  "site_Career_RnDPanelModifierList": {
+   "match": "0x1c88667"
+  },
+  "site_Career_RnDPanelResearchLimit": {
+   "match": "0x1c88b26"
+  },
+  "site_Career_RnDPerfChildName": {
+   "match": "0x188ec4e"
+  },
+  "site_Career_RnDPerfDeptColour": {
+   "match": "0x188f23a"
+  },
+  "site_Career_RnDPerfDeptLoopEnd": {
+   "match": "0x188eb00"
+  },
+  "site_Career_RnDPerfDeptName": {
+   "match": "0x188ec24"
+  },
+  "site_Career_RnDPerfGotoName": {
+   "match": "0x188f34f"
+  },
+  "site_Career_RnDPerfViewModelSlotDtor": {
+   "match": "0x216a333"
+  },
+  "site_Career_RnDPerksTitleDeptIcon": {
+   "match": "0x1c82b23"
+  },
+  "site_Career_RnDPieBufSize": {
+   "match": "0x1f401f5"
+  },
+  "site_Career_RnDPieCtorRet": {
+   "match": "0x1f40214"
+  },
+  "site_Career_RnDPieFocusJoin": {
+   "match": "0x1f43c4a"
+  },
+  "site_Career_RnDPieFocusNameCmp": {
+   "match": "0x1f43c4a"
+  },
+  "site_Career_RnDPieFocusRestore": {
+   "match": "0x1f416f6"
+  },
+  "site_Career_RnDPieMoveAssignSlotDtor": {
+   "match": "0x2110030"
+  },
+  "site_Career_RnDPieMovedFromSlotDtor": {
+   "match": "0x1f4024e"
+  },
+  "site_Career_RnDPiePopulateDeptGuard": {
+   "match": "0x1f41498"
+  },
+  "site_Career_RnDPiePopulateGate": {
+   "match": "0x1f414a8"
+  },
+  "site_Career_RnDPiePopulateNextCode": {
+   "match": "0x1f41476"
+  },
+  "site_Career_RnDPiePopulateSlotCap": {
+   "match": "0x1f41498"
+  },
+  "site_Career_RnDPieSliceDefaultColour": {
+   "match": "0x1f41830"
+  },
+  "site_Career_RnDPieSliceDescFormat": {
+   "match": "0x1f4182b"
+  },
+  "site_Career_RnDPieSliceIconArgs": {
+   "match": "0x1f41ce4"
+  },
+  "site_Career_RnDPieSliceNameJoin": {
+   "match": "0x1f41520"
+  },
+  "site_Career_RnDPieTeardownSlotDtor": {
+   "match": "0x1f3e251"
+  },
+  "site_Career_RnDPopupCategoryIcon": {
+   "match": "0x19b9ae4"
+  },
+  "site_Career_RnDPopupColourStore": {
+   "match": "0x19b9a9a"
+  },
+  "site_Career_RnDPotentialPieEntry": {
+   "match": "0x1f3afe0"
+  },
+  "site_Career_RnDPurchaseBackOpen": {
+   "match": "0x1c86529"
+  },
+  "site_Career_RnDPurchaseOptionsEntry": {
+   "match": "0x1c86f70"
+  },
+  "site_Career_RnDPurchasePanelTypeLabel": {
+   "match": "0x1c88cce"
+  },
+  "site_Career_RnDPurchasePanelTypeLabelJoin": {
+   "match": "0x1c88da0"
+  },
+  "site_Career_RnDPurchaseRequestEntry": {
+   "match": "0x123b710"
+  },
+  "site_Career_RnDPurchaseScreenTypeLabel": {
+   "match": "0x1c4b859"
+  },
+  "site_Career_RnDPurchaseScreenTypeLabelJoin": {
+   "match": "0x1c4b92b"
+  },
+  "site_Career_RnDResearchFocusNameCmp": {
+   "match": "0x1f3f2a9"
+  },
+  "site_Career_RnDResearchRowCategoryIcon": {
+   "match": "0x1c723d8"
+  },
+  "site_Career_RnDResearchRowTypeIcon": {
+   "match": "0x1c72194"
+  },
+  "site_Career_RnDResearchRowTypeIconJoin": {
+   "match": "0x1c72261"
+  },
+  "site_Career_RnDResearchRowTypeLabel": {
+   "match": "0x1c7115a"
+  },
+  "site_Career_RnDResearchRowTypeLabelJoin": {
+   "match": "0x1c71224"
+  },
+  "site_Career_RnDResearchTypeLoop": {
+   "match": "0x1c6fb0a"
+  },
+  "site_Career_RnDResultTypeIcon": {
+   "match": "0x18ab275"
+  },
+  "site_Career_RnDResultTypeIconJoin": {
+   "match": "0x18ab327"
+  },
+  "site_Career_RnDResultTypeLabel": {
+   "match": "0x18ab057"
+  },
+  "site_Career_RnDResultTypeLabelJoin": {
+   "match": "0x18ab110"
+  },
+  "site_Career_RnDTileCountBody": {
+   "match": "0x1f42eb1"
+  },
+  "site_Career_RnDTileCountExit": {
+   "match": "0x1f431d6"
+  },
+  "site_Career_RnDTileCountGuards": {
+   "match": "0x1f42e9e"
+  },
+  "site_Career_RnDTileCountIndexGuard": {
+   "match": "0x1f42e9e"
+  },
+  "site_Career_RnDTodoTypeLabel": {
+   "match": "0x1c7af99"
+  },
+  "site_Career_RnDTodoTypeLabelJoin": {
+   "match": "0x1c7b07b"
+  },
+  "site_Career_RnDTreeRowCountProbe": {
+   "match": "0x352b3af"
+  },
+  "site_Career_RnDUpgradeInfoTypeLabel": {
+   "match": "0x1c6a40f"
+  },
+  "site_Career_RnDUpgradeInfoTypeLabelJoin": {
+   "match": "0x1c6a4f1"
+  },
+  "site_Career_RnDUpgradeListDeptIcon": {
+   "match": "0x1747fc5"
+  },
+  "site_Career_StandingsWeekendTrackDone": {
+   "match": "0x1818a2c"
+  },
+  "site_Career_StandingsWeekendTrackLoad": {
+   "match": "0x18186eb"
+  },
+  "site_Career_TeamDeptEnumStore": {
+   "match": "0x276d5d0"
+  },
+  "site_Career_TeamHqIsMyTeamResult": {
+   "match": "0x36efd13"
+  },
+  "site_Career_TeamHqRnDPopupTypeIcon": {
+   "match": "0x19b998d"
+  },
+  "site_Career_TeamHqRnDPopupTypeIconJoin": {
+   "match": "0x19b9a4c"
+  },
+  "site_Career_TeleFailedTypeName": {
+   "match": "0x71f279"
+  },
+  "site_Career_TeleFailedTypeNameJoin": {
+   "match": "0x71f279"
+  },
+  "site_Career_TeleRecordTypeName": {
+   "match": "0x778b8b"
+  },
+  "site_Career_TeleRecordTypeNameCall": {
+   "match": "0x778b9a"
+  },
+  "site_Career_TeleResearchTypeName": {
+   "match": "0x71efe6"
+  },
+  "site_Career_TeleResearchTypeNameCall": {
+   "match": "0x71eff8"
+  },
+  "site_Career_Unk141814320TypeLabel": {
+   "match": "0x180eb83"
+  },
+  "site_Career_Unk141814320TypeLabelJoin": {
+   "match": "0x180ec5f"
+  },
+  "site_Career_Unk1418169f0TypeLabel": {
+   "match": "0x181133b"
+  },
+  "site_Career_Unk1418169f0TypeLabelJoin": {
+   "match": "0x1811416"
+  },
+  "site_Career_UpgradeAutoFitBody": {
+   "match": "0x1242908"
+  },
+  "site_Career_UpgradeAutoFitDeptGate": {
+   "match": "0x1242902"
+  },
+  "site_Career_UpgradeBlockReplayEntry": {
+   "match": "0x4738ec0"
+  },
+  "site_Career_UpgradeCardDeptIcon": {
+   "match": "0x17f2cff"
+  },
+  "site_Career_UpgradeCardTypeLabel": {
+   "match": "0x17f2858"
+  },
+  "site_Career_UpgradeCardTypeLabelJoin": {
+   "match": "0x17f2922"
+  },
+  "site_Career_UpgradeGraphHubTest": {
+   "match": "0x3518c05"
+  },
+  "site_Career_UpgradeGraphRegularNode": {
+   "match": "0x3518c09"
+  },
+  "site_Career_UpgradeInitFakeDeptBranch": {
+   "match": "0x3508005"
+  },
+  "site_Career_UpgradeInitNormal": {
+   "match": "0x350803f"
+  },
+  "site_Career_UpgradeMetaTypeJoin": {
+   "match": "0x352cabc"
+  },
+  "site_Career_UpgradePushStateBody": {
+   "match": "0x35132f7"
+  },
+  "site_Career_UpgradePushStateDeptGate": {
+   "match": "0x35132ec"
+  },
+  "site_Career_UpgradeRowTypeJoin": {
+   "match": "0x352a603"
+  },
+  "site_Career_UpgradeSetEnabledBody": {
+   "match": "0x351372a"
+  },
+  "site_Career_UpgradeSetEnabledDeptGate": {
+   "match": "0x3513720"
+  },
+  "site_Career_UpgradeSetFittedBody": {
+   "match": "0x35059e4"
+  },
+  "site_Career_UpgradeSetFittedDeptGate": {
+   "match": "0x35059e0"
+  },
+  "site_Career_UpgradeSetLockedBody": {
+   "match": "0x351394a"
+  },
+  "site_Career_UpgradeSetLockedDeptGate": {
+   "match": "0x3513940"
+  },
+  "site_Career_VehicleFillOrderEnd": {
+   "match": "0x12331d4"
+  },
+  "site_Career_VehicleFillOrderStart": {
+   "match": "0x1233161"
+  },
+  "site_Career_WeekendObjectiveNext": {
+   "match": "0x2955a10"
+  },
+  "site_Career_WeekendObjectiveType": {
+   "match": "0x2955a31"
+  },
+  "site_FeFlow_SetStateStatus": {
+   "match": "0x441816c"
+  },
+  "site_FeHome_AfterCareerCall": {
+   "match": "0x173d397",
+   "func_rva": "0x1738350"
+  },
+  "site_FeTile_CareerContentEnd": {
+   "match": "0x173bbf7"
+  },
+  "site_FeTile_EraTilesBuilt": {
+   "match": "0x1a69c18"
+  },
+  "site_Game_AcclimPenalty_Entry": {
+   "match": "0x29999a0"
+  },
+  "site_Game_AcclimPenalty_Return": {
+   "match": "0x29999a0"
+  },
+  "site_Game_CareerContinue_DriverSlotTitle": {
+   "match": "0x1a09c74"
+  },
+  "site_Game_CareerWizardConfirm_NextRoute": {
+   "match": "0x1a1e15d"
+  },
+  "site_Game_CareerWizard_BackRoute": {
+   "match": "0xae4ad0d"
+  },
+  "site_Game_DriverSelectHeader_BuildTabs": {
+   "match": "0x1a536e2"
+  },
+  "site_Game_DriverSelect_BackRoute": {
+   "match": "0x1a58dc4"
+  },
+  "site_Game_DriverSelect_BadgeFormat": {
+   "match": "0x169fbf0"
+  },
+  "site_Game_DriverSelect_NumberResult": {
+   "match": "0x169dc69"
+  },
+  "site_Game_DriverSelect_TeamLogoFormat": {
+   "match": "0x169deb9"
+  },
+  "site_Game_ErsNewLap_NextVehicle": {
+   "match": "0x2511450"
+  },
+  "site_Game_ErsNewLap_VehicleLookup": {
+   "match": "0x2511450"
+  },
+  "site_Game_SaveData_ContainersChildren": {
+   "match": "0x3641dd8"
+  },
+  "site_Game_SaveData_ContainersCount": {
+   "match": "0x3641db3"
+  },
+  "site_Game_SaveData_ContainersDone": {
+   "match": "0x3641ebc"
+  },
+  "site_Game_SaveData_UnclaimedChild": {
+   "match": "0x36400eb"
+  },
+  "site_Game_TeamSelect_NumberResult": {
+   "match": "0x1874242"
+  },
+  "site_Game_TeamSelect_TeamLogoFormat": {
+   "match": "0x1873df5"
+  },
+  "site_Game_TimeTrialLeaderboard_BoardRead": {
+   "match": "0x2fc29bd"
+  },
+  "site_Game_TimeTrialLeaderboard_BoardsDone": {
+   "match": "0x2fc2d72"
+  },
+  "site_Gdb_DeptCountStore": {
+   "match": "0x4598b6f"
+  },
+  "site_Ne_Format_String_Entry": {
+   "match": "0x41572e0"
+  },
+  "site_Ne_HwBool_CrowdInShadows": {
+   "match": "0x8396b1c"
+  },
+  "site_Ne_HwBool_GodRaysPost": {
+   "match": "0x2f75188"
+  },
+  "site_Ne_HwBool_GrassFlattening": {
+   "match": "0x3cd14e8"
+  },
+  "site_Ne_HwBool_GroundCoverEnabled": {
+   "match": "0x3cd1468"
+  },
+  "site_Ne_HwBool_GroundCoverMeshes": {
+   "match": "0x3cd156c"
+  },
+  "site_Ne_HwBool_LensStreak": {
+   "match": "0x2f75268"
+  },
+  "site_Ne_HwBool_MotionBlurV2": {
+   "match": "0x2f753b8"
+  },
+  "site_Ne_HwBool_NightShadowCharCast": {
+   "match": "0x7353b18"
+  },
+  "site_Ne_HwBool_RainBeads": {
+   "match": "0x15b28c"
+  },
+  "site_Ne_HwBool_RainHigh": {
+   "match": "0x15b48c"
+  },
+  "site_Ne_HwBool_RainSheets": {
+   "match": "0x1021559c"
+  },
+  "site_Ne_HwBool_RainSplashes": {
+   "match": "0x15b39c"
+  },
+  "site_Ne_HwBool_SkyShadowLowLod": {
+   "match": "0x3db1488"
+  },
+  "site_Ne_HwBool_SkyShadowMap32Bits": {
+   "match": "0x3db13a8"
+  },
+  "site_Ne_HwBool_TrackHeatHaze": {
+   "match": "0x15b57c"
+  },
+  "site_Ne_HwBool_VolumetricFog": {
+   "match": "0x3c92118"
+  },
+  "site_Ne_HwConfigParseCall": {
+   "match": "0x401826f"
+  },
+  "site_Ne_HwInt_CrowdBillboardDistance": {
+   "match": "0x3c4d313"
+  },
+  "site_Ne_HwInt_NightShadowMapSize": {
+   "match": "0x101f31bc"
+  },
+  "site_Ne_HwInt_NightShadowSourceCount": {
+   "match": "0x101f3233"
+  },
+  "site_Ne_HwInt_ShadowSampling": {
+   "match": "0x102acc71"
+  },
+  "site_Ne_HwInt_SkyShadowCascadeCount": {
+   "match": "0x3db1413"
+  },
+  "site_Ne_HwInt_SkyShadowMapSize": {
+   "match": "0x3db1333"
+  },
+  "site_Ne_HwInt_SpotShadowMapSize": {
+   "match": "0x3db1563"
+  },
+  "site_Ne_HwInt_SpotShadowSampling": {
+   "match": "0x3db15d6"
+  },
+  "site_Ne_HwInt_TexStreamSizeInMiB": {
+   "match": "0x72b5666"
+  },
+  "site_Ne_HwInt_VolFogMapHeight": {
+   "match": "0x3c92377"
+  },
+  "site_Ne_HwInt_VolFogMapWidth": {
+   "match": "0x3c92263"
+  },
+  "site_Ne_HwInt_WorldShadowMapSize": {
+   "match": "0x3db14f3"
+  },
+  "site_Ne_HwXmlParseCall": {
+   "match": "0x4018928"
+  },
+  "site_Ne_HwXmlWriteCall": {
+   "match": "0x4019d6e"
+  },
+  "site_Ne_ReplayAfterRecord": {
+   "match": "0x45c799f"
+  },
+  "site_Sess_AiVehicleRegisterCall": {
+   "match": "0x603b5d",
+   "func_rva": "0x600160"
+  },
+  "site_Sess_TimeTrialLeaderboard_TabChild": {
+   "match": "0x2fbfae9"
+  },
+  "site_Sess_TimeTrialLeaderboard_TabDone": {
+   "match": "0x2fbfaf9"
+  },
+  "vt_Career_BankTransactionMessage": {
+   "match": "0xc57216"
+  },
+  "vt_Career_Championship": {
+   "match": "0xae0c78"
+  },
+  "vt_Career_FacilityNode": {
+   "match": "0xf9f6d2"
+  },
+  "vt_Career_MessageDriverContractChanged": {
+   "match": "0xd980a5"
+  },
+  "vt_Career_MessageDriverMoveConfirmed": {
+   "match": "0xd895c6"
+  },
+  "vt_Career_MessageDriverMovesFinalised": {
+   "match": "0xd727f8"
+  },
+  "vt_Career_MessageDriverMovesFinalisedRecognition": {
+   "match": "0xd727de"
+  },
+  "vt_Career_MessageDriverMovesFinalisedUpgrades": {
+   "match": "0xd72772"
+  },
+  "vt_Career_RenownAwardedMessage": {
+   "match": "0xc358ff"
+  },
+  "vt_Career_RnDDeptCard": {
+   "match": "0x1c74ee2"
+  },
+  "vt_Career_Season": {
+   "match": "0xae38d6"
+  },
+  "vt_Career_SponsorLoyaltyXpMessage": {
+   "match": "0xfbef90"
+  },
+  "vt_Career_Weekend": {
+   "match": "0xaece3f"
+  },
+  "vt_Game_CareerDLCSelectViewModel": {
+   "match": "0x1646052"
+  },
+  "vt_Game_CareerWizardSettingsSelectViewModel": {
+   "match": "0x15da8e2"
+  },
+  "vt_Game_DriverCareerDriverSelectViewModel": {
+   "match": "0x15d9b6a"
+  },
+  "vt_Game_DriverCareerSlotPredicate": {
+   "match": "0x171fa6b"
+  },
+  "vt_Game_SaveDataRootContainer": {
+   "match": "0x3644b57"
+  },
+  "vt_Game_TrackListComponent": {
+   "match": "0xcfb775"
+  }
+ },
+ "unresolvable": {}
+}

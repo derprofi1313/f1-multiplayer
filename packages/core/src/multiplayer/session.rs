@@ -26,6 +26,7 @@ use super::diag;
 use super::direct::DirectUdp;
 use super::fingerprint::{self, Fingerprint, Mismatch, MismatchKind};
 use super::game::{self, Category, Command, GameStatus, Screen};
+use super::progress::{self, MemberStage};
 use super::rooms::{Api, ApiError, Lobby, RoomKey, RoomSettings, User};
 use super::transport::Transport;
 use super::turn::TurnTransport;
@@ -33,6 +34,7 @@ use super::ws::{self, ConnectError};
 use crate::baseline::Identity;
 use crate::catalog::{self, Addon};
 use crate::profile::Profile;
+use crate::row_ids::Overrides;
 use crate::store::Store;
 
 /// The host's virtual IP, which every joiner's game joins.
@@ -51,7 +53,12 @@ const WS_BACKOFF_MAX: Duration = Duration::from_secs(10);
 const RELAY_BACKOFF: Duration = Duration::from_secs(5);
 const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(60);
 const JOIN_SLOW: Duration = Duration::from_secs(30);
+/// How long a game that adopted its room configuration may sit on the main menu before the session
+/// treats its own start as failed.
+const ADOPT_DEADLINE: Duration = Duration::from_secs(120);
 const STATS_EVERY: Duration = Duration::from_secs(30);
+/// How long the launcher's build and the game's boot may take before the session asks again.
+const LAUNCH_WAIT: Duration = Duration::from_secs(600);
 
 static ACTIVE: Mutex<Option<std::sync::Weak<Inner>>> = Mutex::new(None);
 
@@ -239,7 +246,14 @@ pub struct Setup {
     pub game: Arc<dyn GameControl>,
     pub local: Local,
     pub relay: Relay,
+    /// The launcher can start F1 25 for the room: the session opens the room first, asks for the launch
+    /// ([`SessionState::launch`]) when the game isn't running, and waits for the game to come up.
+    pub room_launch: bool,
+    /// This player's fingerprint read afresh, for after the launcher's launch built the game.
+    pub refresh: Option<Refresh>,
 }
+
+pub type Refresh = Arc<dyn Fn() -> Option<Local> + Send + Sync>;
 
 impl Setup {
     /// A TURN-relayed session driving the game in `game_dir` through its mailbox.
@@ -250,6 +264,8 @@ impl Setup {
             game: Arc::new(Mailbox::new(game_dir)),
             local,
             relay: Relay::Turn,
+            room_launch: false,
+            refresh: None,
         }
     }
 }
@@ -330,8 +346,55 @@ pub struct MemberState {
     pub connected: bool,
     pub fingerprint: PrintMatch,
     pub relay: RelayStatus,
+    /// Where the member's game is, from the game itself; `None` before their launcher announces it.
+    pub stage: Option<MemberStage>,
     /// Game traffic with this member through the bridge.
     pub traffic: Option<MemberStats>,
+}
+
+/// What the session needs the launcher to do before it can go on: start F1 25 for the room. The
+/// launcher starts it with multiplayer armed (the room launch's [`super::bridge::ARMED_ROOM`]), the
+/// host's ids in `row_ids` for the build, then calls [`Session::launched`], or [`Session::launch_failed`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LaunchAsk {
+    /// Changes with each ask, so the launcher acts once on each.
+    pub seq: u32,
+    /// The host's ids for this player's rows, when they differ from the player's own.
+    #[serde(skip)]
+    pub row_ids: Option<Overrides>,
+    /// How many addons' ids `row_ids` carries.
+    pub id_addons: usize,
+    /// The game is running but isn't what the room needs: the launcher closes it first, and asks the
+    /// player before it does.
+    pub restart: bool,
+    pub why: String,
+    /// This player's member number, the bridge's base port and the signed-in name the game is
+    /// started with, in its direct start request.
+    #[serde(skip)]
+    pub self_member: u8,
+    #[serde(skip)]
+    pub base: u16,
+    #[serde(skip)]
+    pub name: Option<String>,
+}
+
+impl LaunchAsk {
+    /// The direct start request the game reads at boot (`swofty/direct_start.json`): the room target,
+    /// this player's role and the host's address, and the room configuration the game applies before
+    /// anything else (`self`, `base` and, when there is one, `name`).
+    pub fn direct_start(&self, host: bool) -> String {
+        let mut request = json!({
+            "target": "room",
+            "role": if host { "host" } else { "join" },
+            "host_ip": HOST_IP.to_string(),
+            "self": self.self_member,
+            "base": self.base,
+        });
+        if let Some(name) = &self.name {
+            request["name"] = json!(name);
+        }
+        request.to_string()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -353,10 +416,11 @@ pub struct SessionState {
     pub bridge: Option<Stats>,
     pub game: Option<GameStatus>,
     pub last_error: Option<String>,
+    pub launch: Option<LaunchAsk>,
 }
 
 impl SessionState {
-    fn new(host: bool) -> Self {
+    pub(super) fn new(host: bool) -> Self {
         Self {
             phase: Phase::Connecting("starting".into()),
             host,
@@ -370,6 +434,7 @@ impl SessionState {
             bridge: None,
             game: None,
             last_error: None,
+            launch: None,
         }
     }
 }
@@ -484,6 +549,8 @@ enum Action {
     Retry,
     Reconnect,
     Local(Box<Local>),
+    Launched,
+    LaunchFailed(String),
 }
 
 struct Inner {
@@ -579,6 +646,18 @@ impl Session {
         let _ = self.actions.send(Action::Local(Box::new(local)));
     }
 
+    /// The launcher started F1 25 for the room as [`SessionState::launch`] asked: the session waits for the
+    /// game's main menu, then drives it into the lobby.
+    pub fn launched(&self) {
+        let _ = self.actions.send(Action::Launched);
+    }
+
+    /// The launcher couldn't start F1 25 for the room, or its build failed; `why` is shown, and
+    /// [`Session::retry`] asks again.
+    pub fn launch_failed(&self, why: &str) {
+        let _ = self.actions.send(Action::LaunchFailed(why.to_owned()));
+    }
+
     /// The steps that would make this player match the host.
     pub fn fix_plan(&self) -> Vec<FixStep> {
         fix_plan(&self.state().mismatches)
@@ -667,6 +746,8 @@ struct Worker {
     stats: Option<Stats>,
     game_status: Option<GameStatus>,
     configured: bool,
+    adopted: bool,
+    take_over: bool,
     driven: Option<Instant>,
     entering: Option<mpsc::Receiver<Result<GameStatus, game::Error>>>,
     seen_in_session: bool,
@@ -685,6 +766,12 @@ struct Worker {
     prints_saved: String,
     next_stats: Instant,
     game_port: Option<u16>,
+    launch_seq: u32,
+    launch: Option<LaunchAsk>,
+    launched: Option<Instant>,
+    refreshed: bool,
+    stage_sent: Option<MemberStage>,
+    ready_sent: Option<(bool, Instant)>,
 }
 
 impl Worker {
@@ -714,6 +801,8 @@ impl Worker {
             stats: None,
             game_status: None,
             configured: false,
+            adopted: false,
+            take_over: false,
             driven: None,
             entering: None,
             seen_in_session: false,
@@ -732,6 +821,12 @@ impl Worker {
             prints_saved: String::new(),
             next_stats: now + STATS_EVERY,
             game_port: None,
+            launch_seq: 0,
+            launch: None,
+            launched: None,
+            refreshed: false,
+            stage_sent: None,
+            ready_sent: None,
         }
     }
 
@@ -777,7 +872,15 @@ impl Worker {
             Ok(()) => {
                 self.failures = 0;
                 let started = self.lobby.as_ref().is_some_and(Lobby::started);
-                self.phase = if started { Phase::Racing } else { Phase::InLobby };
+                let in_game_lobby =
+                    !self.setup.room_launch || self.game_status.as_ref().is_some_and(|g| g.in_session);
+                self.phase = if !in_game_lobby {
+                    Phase::WaitingForGame("loading F1 25 into the room's lobby".into())
+                } else if started {
+                    Phase::Racing
+                } else {
+                    Phase::InLobby
+                };
             }
             Err(Halt::Step(step, after)) => {
                 self.phase = Phase::Connecting(step);
@@ -811,7 +914,9 @@ impl Worker {
 
     fn advance(&mut self) -> Result<(), Halt> {
         if self.code.is_none() {
-            self.require_main_menu()?;
+            if !self.setup.room_launch {
+                self.require_main_menu()?;
+            }
             self.open_room()?;
         }
         if self.relay.is_none() {
@@ -825,9 +930,126 @@ impl Worker {
             if let Some(why) = &self.paused {
                 return Err(Halt::Game(why.clone()));
             }
-            self.drive_game()?;
+            self.ensure_game()?;
+            if self.setup.room_launch && self.launched.is_some() && !self.take_over {
+                self.adopt_direct_start();
+            } else {
+                self.drive_game()?;
+            }
         }
         Ok(())
+    }
+
+    /// With the launcher able to start the game: asks it to when the game isn't answering, waits while it
+    /// starts, reads the fingerprint afresh once it is up, and, for a joiner whose running game has other
+    /// row ids than the host's, asks to restart it with the host's.
+    fn ensure_game(&mut self) -> Result<(), Halt> {
+        if !self.setup.room_launch || self.entering.is_some() {
+            return Ok(());
+        }
+        let status = match self.setup.game.status() {
+            Ok(status) => status,
+            Err(e) => {
+                self.game_status = None;
+                if let Some(since) = self.launched {
+                    if since.elapsed() < LAUNCH_WAIT {
+                        return Err(Halt::Game("F1 25 is starting".into()));
+                    }
+                    self.launched = None;
+                    self.refreshed = false;
+                    diag::line(format!("launch: the game never answered ({e}); asking again"));
+                }
+                return self.ask_launch(false, &e.to_string());
+            }
+        };
+        self.game_status = Some(status);
+        self.launch = None;
+        if self.launched.is_some() && !self.refreshed {
+            self.refreshed = true;
+            if let Some(local) = self.setup.refresh.as_ref().and_then(|f| f()) {
+                diag::line("launch: the game is up; this player's fingerprint read afresh");
+                self.update_local(local);
+            }
+        }
+        if self.launched.is_none() {
+            return self.ask_launch(true, "F1 25 was already open; it starts again for the room");
+        }
+        Ok(())
+    }
+
+    fn host_ids(&self) -> Result<Option<Overrides>, Halt> {
+        if self.hosting() {
+            return Ok(None);
+        }
+        let host = self.lobby.as_ref().and_then(Lobby::host_member).cloned();
+        let Some(host) = host else {
+            return Err(Halt::Step(
+                "waiting for the host".into(),
+                Duration::from_millis(200),
+            ));
+        };
+        if host.digest.is_none() {
+            return Err(Halt::Game("waiting for the host's addon list".into()));
+        }
+        if host.digest.as_deref() == Some(self.setup.local.digest().as_str()) {
+            return Ok(None);
+        }
+        let print = self
+            .lobby
+            .as_ref()
+            .and_then(|l| self.prints.get(&l.host))
+            .and_then(|blob| serde_json::from_value::<Fingerprint>(blob.clone()).ok())
+            .ok_or_else(|| Halt::Game("waiting for the host's addon list".into()))?;
+        let ids = fingerprint::row_id_overrides(&self.setup.local.fingerprint, &print);
+        Ok(Some(ids).filter(|o| !o.is_empty()))
+    }
+
+    fn adopt_direct_start(&mut self) {
+        diag::line("launch: the game was started with its room configuration; it hosts or joins by itself");
+        self.configured = true;
+        self.adopted = true;
+        self.driven = Some(Instant::now());
+        self.seen_in_session = false;
+    }
+
+    fn ask_launch(&mut self, restart: bool, why: &str) -> Result<(), Halt> {
+        let row_ids = self.host_ids()?;
+        let self_member = self
+            .self_number()
+            .ok_or_else(|| Halt::Fail("the server gave this player no virtual IP".into()))?;
+        let base = self
+            .bridge
+            .as_ref()
+            .map(Bridge::base)
+            .ok_or_else(|| Halt::Step("starting the bridge".into(), Duration::from_millis(200)))?;
+        let name = self.driver_name();
+        let id_addons = row_ids.as_ref().map_or(0, |o| o.rows.len());
+        let same = self
+            .launch
+            .as_ref()
+            .is_some_and(|a| a.restart == restart && a.row_ids == row_ids);
+        if !same {
+            self.launch_seq += 1;
+            diag::line(format!(
+                "launch: asking the launcher to {} F1 25 for the room ({why}; host ids for {id_addons} addon(s))",
+                if restart { "restart" } else { "start" }
+            ));
+            self.launch = Some(LaunchAsk {
+                seq: self.launch_seq,
+                row_ids,
+                id_addons,
+                restart,
+                why: why.to_owned(),
+                self_member,
+                base,
+                name,
+            });
+        }
+        Err(Halt::Game(if restart {
+            "restart F1 25 for the room".into()
+        } else {
+            "starting F1 25 for the room".into()
+        }))
     }
 
     fn require_main_menu(&mut self) -> Result<GameStatus, Halt> {
@@ -847,7 +1069,11 @@ impl Worker {
             ));
         }
         if status.screen != Screen::MainMenu {
-            return Err(Halt::Game("go to the game's main menu".into()));
+            return Err(Halt::Game(if self.launched.is_some() {
+                "waiting for F1 25's main menu".into()
+            } else {
+                "go to the game's main menu".into()
+            }));
         }
         Ok(status)
     }
@@ -933,11 +1159,61 @@ impl Worker {
     }
 
     fn fingerprint_message(&self) -> Value {
+        let mut blob = self.setup.local.blob.clone();
+        if self.setup.room_launch
+            && let Some(doc) = blob.as_object_mut()
+        {
+            doc.insert("room_stage".into(), json!(self.own_stage().as_str()));
+        }
         json!({
             "type": "fingerprint",
             "digest": self.setup.local.digest(),
-            "blob": self.setup.local.blob,
+            "blob": blob,
         })
+    }
+
+    fn own_stage(&self) -> MemberStage {
+        progress::own_stage(self.game_status.as_ref())
+    }
+
+    fn ready_message(&self) -> Value {
+        json!({ "type": "ready", "ready": self.own_stage() == MemberStage::InLobby })
+    }
+
+    /// Tells the room where this player's game is: the stage in the fingerprint, the server's ready flag
+    /// once the game is in its lobby. Sent when the stage changes, and again when the server's flag for this
+    /// player disagrees (a reopened room clears it).
+    fn sync_stage(&mut self) {
+        if !self.setup.room_launch || self.socket.is_none() {
+            return;
+        }
+        let stage = self.own_stage();
+        let now = Instant::now();
+        if self.stage_sent != Some(stage) {
+            self.stage_sent = Some(stage);
+            diag::line(format!("stage: this player's game is {}", stage.as_str()));
+            self.announce(&self.fingerprint_message());
+            if let Some(socket) = &self.socket {
+                socket.send(&self.ready_message());
+            }
+            self.ready_sent = Some((stage == MemberStage::InLobby, now));
+            return;
+        }
+        let want = stage == MemberStage::InLobby;
+        let listed = self
+            .me
+            .as_ref()
+            .and_then(|me| self.lobby.as_ref()?.member(&me.id))
+            .map(|m| m.ready);
+        let stale = self
+            .ready_sent
+            .is_none_or(|(sent, at)| sent != want || now.duration_since(at) >= Duration::from_secs(5));
+        if listed.is_some_and(|l| l != want) && stale {
+            if let Some(socket) = &self.socket {
+                socket.send(&self.ready_message());
+            }
+            self.ready_sent = Some((want, now));
+        }
     }
 
     fn relay_message(&self) -> Option<Value> {
@@ -999,6 +1275,9 @@ impl Worker {
         if let Some(socket) = &self.socket {
             let mut hello = vec![self.fingerprint_message().to_string()];
             hello.extend(self.relay_message().map(|r| r.to_string()));
+            if self.setup.room_launch {
+                hello.push(self.ready_message().to_string());
+            }
             socket.set_hello(hello);
             socket.send(msg);
         }
@@ -1316,11 +1595,36 @@ impl Worker {
                     diag::line("session: retry requested");
                     self.paused = None;
                     self.driven = None;
+                    if self.adopted {
+                        diag::line(
+                            "session: the game's own room start failed; driving the join from the launcher",
+                        );
+                        self.take_over = true;
+                        self.adopted = false;
+                    }
                     self.next_step = Instant::now();
                 }
                 Action::Reconnect => {
                     diag::line("relay: reconnect requested");
                     self.reconnect_relay();
+                }
+                Action::Launched => {
+                    diag::line("launch: the launcher started F1 25");
+                    self.launch = None;
+                    self.launched = Some(Instant::now());
+                    self.take_over = false;
+                    self.adopted = false;
+                    self.refreshed = false;
+                    self.paused = None;
+                    self.next_step = Instant::now();
+                }
+                Action::LaunchFailed(why) => {
+                    diag::line(format!("launch: failed: {why}"));
+                    self.launch = None;
+                    self.launched = None;
+                    self.paused = Some(format!(
+                        "F1 25 didn't start for the room: {why}; retry or leave the room"
+                    ));
                 }
                 Action::Local(local) => {
                     diag::line(format!(
@@ -1414,7 +1718,7 @@ impl Worker {
             "closed" => {
                 let reason = msg.get("reason").and_then(Value::as_str).unwrap_or("");
                 let why = match reason {
-                    "host_left" => "the host closed the room",
+                    "host_left" => "the host left, so the room closed",
                     "host_gone" => "the host lost their connection",
                     "idle" => "the room closed after being idle",
                     "shutdown" => "the multiplayer server restarted",
@@ -1526,7 +1830,13 @@ impl Worker {
         if let Some(driven) = self.driven {
             match self.setup.game.status() {
                 Ok(status) => {
-                    if status.in_session {
+                    if let Some(why) = self.failed_start(&status, driven) {
+                        diag::line(format!("launch: the game's own room start failed: {why}"));
+                        self.driven = None;
+                        self.paused = Some(format!(
+                            "the game's own room start failed: {why}; retry or leave the room"
+                        ));
+                    } else if status.in_session {
                         self.seen_in_session = true;
                     } else if self.seen_in_session && !self.over {
                         self.driven = None;
@@ -1539,6 +1849,20 @@ impl Worker {
                 Err(e) => self.last_error = Some(format!("the game isn't answering: {e}")),
             }
         }
+        self.sync_stage();
+    }
+
+    /// For a game that was started with its room configuration: why that start failed, from the game's own
+    /// report or from sitting on the main menu past [`ADOPT_DEADLINE`].
+    fn failed_start(&self, status: &GameStatus, since: Instant) -> Option<String> {
+        if !self.adopted || status.in_session {
+            return None;
+        }
+        if let Some(why) = &status.room_failed {
+            return Some(why.clone());
+        }
+        (status.configured && status.screen == Screen::MainMenu && since.elapsed() > ADOPT_DEADLINE)
+            .then(|| "it stayed on the main menu".to_owned())
     }
 
     /// Mint fresh credentials, allocate a new relay, give it the members, swap it in under the
@@ -1615,6 +1939,21 @@ impl Worker {
         }
     }
 
+    fn member_stage(&self, m: &super::rooms::LobbyMember, is_me: bool) -> Option<MemberStage> {
+        if !self.setup.room_launch {
+            return None;
+        }
+        if is_me {
+            return Some(self.own_stage());
+        }
+        let announced = self
+            .prints
+            .get(&m.id)
+            .and_then(|blob| blob.get("room_stage"))
+            .and_then(Value::as_str);
+        progress::member_stage(m.ready, announced)
+    }
+
     fn publish(&self) {
         let me = self.me.as_ref().map(|u| u.id.as_str());
         let lobby = self.lobby.as_ref();
@@ -1647,6 +1986,7 @@ impl Worker {
                             connected: m.connected,
                             fingerprint,
                             relay,
+                            stage: self.member_stage(m, is_me),
                             traffic: self.stats.as_ref().and_then(|s| s.members.get(&number).copied()),
                         })
                     })
@@ -1667,7 +2007,10 @@ impl Worker {
             }),
             self_member: self.self_number(),
             members,
-            mismatches: self.mismatches.clone(),
+            mismatches: fingerprint::unresolved_by_launch(
+                &self.mismatches,
+                self.setup.room_launch && self.launched.is_none(),
+            ),
             lobby_connected: self.lobby_connected,
             relay: self
                 .relay
@@ -1677,6 +2020,7 @@ impl Worker {
             bridge: self.stats.clone(),
             game: self.game_status.clone(),
             last_error: self.last_error.clone(),
+            launch: self.launch.clone(),
         };
         let mut logged = self.logged.borrow_mut();
         if logged.as_ref() != Some(&state) {
@@ -2086,6 +2430,7 @@ mod tests {
         configure_fails: AtomicBool,
         cancelled: AtomicBool,
         host_attempts: std::sync::atomic::AtomicU32,
+        closed: AtomicBool,
     }
 
     impl FakeGame {
@@ -2105,6 +2450,8 @@ mod tests {
                     configured: false,
                     self_member: 0,
                     base: 0,
+                    cover: None,
+                    room_failed: None,
                 }),
                 log: Mutex::new(Vec::new()),
                 host_delay: Mutex::new(Duration::ZERO),
@@ -2112,6 +2459,7 @@ mod tests {
                 configure_fails: AtomicBool::new(false),
                 cancelled: AtomicBool::new(false),
                 host_attempts: std::sync::atomic::AtomicU32::new(0),
+                closed: AtomicBool::new(false),
             })
         }
 
@@ -2121,6 +2469,12 @@ mod tests {
 
         fn set_screen(&self, screen: Screen) {
             lock(&self.status).screen = screen;
+        }
+
+        fn reach_lobby(&self) {
+            let mut status = lock(&self.status);
+            status.screen = Screen::LanLobby;
+            status.in_session = true;
         }
 
         fn refuse(&self, op: &str, why: &str) -> game::Error {
@@ -2147,6 +2501,9 @@ mod tests {
 
     impl GameControl for FakeGame {
         fn status(&self) -> Result<GameStatus, game::Error> {
+            if self.closed.load(Ordering::Relaxed) {
+                return Err(game::Error::Timeout(Duration::from_secs(2)));
+            }
             Ok(lock(&self.status).clone())
         }
 
@@ -2246,7 +2603,37 @@ mod tests {
             game: game.clone(),
             local: Local::new(fingerprint, &categories, Vec::new()),
             relay: Relay::Direct("127.0.0.1:0".parse().unwrap()),
+            room_launch: false,
+            refresh: None,
         }
+    }
+
+    fn launching(mut setup: Setup, refresh: Option<Fingerprint>) -> Setup {
+        setup.room_launch = true;
+        setup.refresh = refresh.map(|f| -> Refresh {
+            let categories = BTreeMap::from([("okayama".to_owned(), "tracks".to_owned())]);
+            Arc::new(move || Some(Local::new(f.clone(), &categories, Vec::new())))
+        });
+        setup
+    }
+
+    fn built_print(digest: &str, ids: &[(&str, i64)]) -> Fingerprint {
+        let mut f = print(&[]);
+        let a = &mut f.addons[0];
+        a.source = Source::Built(digest.repeat(32));
+        a.detail = Some(fingerprint::Detail {
+            parts: BTreeMap::from([("Database".to_owned(), "d1".to_owned())]),
+            read_list: "r".into(),
+            read_count: 0,
+            reads: Vec::new(),
+            paths: Vec::new(),
+            row_ids: ids.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
+        });
+        Fingerprint::new(f.game_build.clone(), f.addons, BTreeMap::new(), None)
+    }
+
+    fn asked(s: &SessionState) -> bool {
+        s.launch.is_some()
     }
 
     fn server() -> FakeServer {
@@ -2606,6 +2993,242 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_game_is_started_for_the_room_then_driven_to_the_lobby() {
+        let server = server();
+        let game = FakeGame::new("launch-host");
+        game.closed.store(true, Ordering::Relaxed);
+        let host = create(
+            launching(setup(&server.url, "host-token", &game, print(&[])), None),
+            RoomSettings::default(),
+        );
+        let state = wait_until(&host, "the launch ask", asked);
+        let ask = state.launch.clone().unwrap();
+        assert!(!ask.restart && ask.row_ids.is_none(), "{ask:?}");
+        assert!(server.has_room(), "the room is open before the game is");
+        assert_eq!(
+            state.phase,
+            Phase::WaitingForGame("starting F1 25 for the room".into())
+        );
+        assert!(game.log().is_empty());
+        host.launched();
+        let state = wait_until(
+            &host,
+            "the starting wait",
+            |s| matches!(&s.phase, Phase::WaitingForGame(w) if w == "F1 25 is starting"),
+        );
+        assert!(state.launch.is_none());
+        let request: Value = serde_json::from_str(&ask.direct_start(true)).unwrap();
+        assert_eq!(
+            request,
+            json!({"target": "room", "role": "host", "host_ip": "10.77.0.1", "self": 1,
+                   "base": ask.base, "name": "Host"})
+        );
+        assert!(ask.base != 0);
+        game.closed.store(false, Ordering::Relaxed);
+        game.set_screen(Screen::Other);
+        let loading = wait_until(
+            &host,
+            "the game loading",
+            |s| matches!(&s.phase, Phase::WaitingForGame(w) if w.contains("loading")),
+        );
+        assert_eq!(loading.members[0].stage, Some(MemberStage::Loading));
+        game.reach_lobby();
+        let state = wait_until(&host, "the lobby without a main menu", in_lobby);
+        assert_eq!(state.members[0].stage, Some(MemberStage::InLobby));
+        assert!(
+            game.log().is_empty(),
+            "a game started with its room configuration is sent no commands: {:?}",
+            game.log()
+        );
+    }
+
+    #[test]
+    fn the_direct_start_request_names_the_room_configuration() {
+        let ask = |name: Option<&str>| LaunchAsk {
+            seq: 1,
+            row_ids: None,
+            id_addons: 0,
+            restart: false,
+            why: String::new(),
+            self_member: 3,
+            base: 41000,
+            name: name.map(str::to_owned),
+        };
+        let join: Value = serde_json::from_str(&ask(Some("Ana")).direct_start(false)).unwrap();
+        assert_eq!(
+            join,
+            json!({"target": "room", "role": "join", "host_ip": "10.77.0.1", "self": 3,
+                   "base": 41000, "name": "Ana"})
+        );
+        let nameless: Value = serde_json::from_str(&ask(None).direct_start(true)).unwrap();
+        assert_eq!(nameless["role"], "host");
+        assert!(nameless.get("name").is_none());
+    }
+
+    #[test]
+    fn a_joiner_asks_for_the_hosts_ids_and_matches_once_the_game_is_built_with_them() {
+        let server = server();
+        let (host_game, guest_game) = (FakeGame::new("launch-h"), FakeGame::new("launch-g"));
+        let host_print = built_print("aa", &[("t/x", 512), ("t/y", 513)]);
+        let host = create(
+            setup(&server.url, "host-token", &host_game, host_print.clone()),
+            RoomSettings::default(),
+        );
+        let code = wait_until(&host, "the host's lobby", in_lobby).room.unwrap().code;
+        guest_game.closed.store(true, Ordering::Relaxed);
+        let own = built_print("bb", &[("t/x", 513), ("t/y", 512)]);
+        let guest = join(
+            launching(
+                setup(&server.url, "guest-token", &guest_game, own),
+                Some(host_print.clone()),
+            ),
+            &code,
+        );
+        let state = wait_until(&guest, "the launch ask", asked);
+        let ask = state.launch.unwrap();
+        assert!(!ask.restart && ask.id_addons == 1, "{ask:?}");
+        assert_eq!(
+            ask.row_ids.unwrap().rows["okayama"],
+            BTreeMap::from([("t/x".to_owned(), 512), ("t/y".to_owned(), 513)])
+        );
+        guest.launched();
+        guest_game.closed.store(false, Ordering::Relaxed);
+        wait_until(
+            &guest,
+            "the guest loading",
+            |s| matches!(&s.phase, Phase::WaitingForGame(w) if w.contains("loading")),
+        );
+        guest_game.reach_lobby();
+        let state = wait_until(&guest, "the guest's lobby", in_lobby);
+        assert!(state.mismatches.is_empty(), "{:?}", state.mismatches);
+        assert!(guest_game.log().is_empty(), "{:?}", guest_game.log());
+        assert_eq!((ask.self_member, ask.name.as_deref()), (2, Some("Ana")));
+        assert_eq!(Some(ask.base), state.base);
+    }
+
+    #[test]
+    fn retry_after_the_games_own_room_start_failed_drives_the_join_from_the_launcher() {
+        let server = server();
+        let (host_game, guest_game) = (FakeGame::new("launch-h9"), FakeGame::new("launch-g9"));
+        let same = built_print("aa", &[("t/x", 512)]);
+        let host = create(
+            setup(&server.url, "host-token", &host_game, same.clone()),
+            RoomSettings::default(),
+        );
+        let code = wait_until(&host, "the host's lobby", in_lobby).room.unwrap().code;
+        guest_game.closed.store(true, Ordering::Relaxed);
+        let guest = join(
+            launching(setup(&server.url, "guest-token", &guest_game, same), None),
+            &code,
+        );
+        wait_until(&guest, "the launch ask", asked);
+        {
+            let mut s = lock(&guest_game.status);
+            s.configured = true;
+            s.room_failed = Some("no registry holds the join request owner".into());
+        }
+        guest.launched();
+        guest_game.closed.store(false, Ordering::Relaxed);
+        let state = wait_until(
+            &guest,
+            "the failed start",
+            |s| matches!(&s.phase, Phase::WaitingForGame(w) if w.contains("room start failed")),
+        );
+        assert_eq!(
+            super::super::progress::problem(&state).map(|p| (p.text, p.retry)),
+            Some((
+                "F1 25 couldn't join the room: no registry holds the join request owner.".to_owned(),
+                true
+            ))
+        );
+        assert!(guest_game.log().is_empty(), "nothing is driven before Retry");
+        guest.retry();
+        wait_until(&guest, "the guest's lobby", in_lobby);
+        assert!(
+            guest_game.log().iter().any(|l| l.starts_with("join ")),
+            "{:?}",
+            guest_game.log()
+        );
+    }
+
+    #[test]
+    fn a_joiner_whose_fingerprint_already_matches_starts_the_game_without_ids() {
+        let server = server();
+        let (host_game, guest_game) = (FakeGame::new("launch-h2"), FakeGame::new("launch-g2"));
+        let same = built_print("aa", &[("t/x", 512)]);
+        let host = create(
+            setup(&server.url, "host-token", &host_game, same.clone()),
+            RoomSettings::default(),
+        );
+        let code = wait_until(&host, "the host's lobby", in_lobby).room.unwrap().code;
+        guest_game.closed.store(true, Ordering::Relaxed);
+        let guest = join(
+            launching(setup(&server.url, "guest-token", &guest_game, same), None),
+            &code,
+        );
+        let ask = wait_until(&guest, "the launch ask", asked).launch.unwrap();
+        assert!(ask.row_ids.is_none() && !ask.restart, "{ask:?}");
+    }
+
+    #[test]
+    fn a_running_game_with_the_wrong_ids_is_offered_a_restart_and_not_driven() {
+        let server = server();
+        let (host_game, guest_game) = (FakeGame::new("launch-h3"), FakeGame::new("launch-g3"));
+        let host = create(
+            setup(
+                &server.url,
+                "host-token",
+                &host_game,
+                built_print("aa", &[("t/x", 512)]),
+            ),
+            RoomSettings::default(),
+        );
+        let code = wait_until(&host, "the host's lobby", in_lobby).room.unwrap().code;
+        let guest = join(
+            launching(
+                setup(
+                    &server.url,
+                    "guest-token",
+                    &guest_game,
+                    built_print("bb", &[("t/x", 600)]),
+                ),
+                None,
+            ),
+            &code,
+        );
+        let state = wait_until(&guest, "the restart offer", asked);
+        let ask = state.launch.unwrap();
+        assert!(ask.restart && ask.id_addons == 1, "{ask:?}");
+        assert_eq!(ask.row_ids.unwrap().rows["okayama"]["t/x"], 512);
+        assert!(guest_game.log().is_empty());
+        leave(&guest);
+    }
+
+    #[test]
+    fn a_launch_that_failed_waits_for_a_retry_and_asks_again() {
+        let server = server();
+        let game = FakeGame::new("launch-fail");
+        game.closed.store(true, Ordering::Relaxed);
+        let host = create(
+            launching(setup(&server.url, "host-token", &game, print(&[])), None),
+            RoomSettings::default(),
+        );
+        let first = wait_until(&host, "the launch ask", asked).launch.unwrap();
+        host.launch_failed("the build refused the host's ids");
+        let state = wait_until(
+            &host,
+            "the failure",
+            |s| matches!(&s.phase, Phase::WaitingForGame(w) if w.contains("the build refused")),
+        );
+        assert!(state.launch.is_none());
+        host.retry();
+        let again = wait_until(&host, "the second ask", |s| {
+            s.launch.as_ref().is_some_and(|a| a.seq > first.seq)
+        });
+        assert!(again.launch.is_some());
+    }
+
+    #[test]
     fn waits_for_the_main_menu_before_creating_the_room() {
         let server = server();
         let game = FakeGame::new("menu");
@@ -2664,7 +3287,10 @@ mod tests {
         wait_until(&guest, "the guest's lobby", in_lobby);
         leave(&host);
         let state = wait_until(&guest, "the end", |s| s.phase.is_over());
-        assert_eq!(state.phase, Phase::Ended("the host closed the room".into()));
+        assert_eq!(
+            state.phase,
+            Phase::Ended("the host left, so the room closed".into())
+        );
         leave(&guest);
         let log = guest_game.log();
         assert_eq!(&log[log.len() - 2..], ["leave", "clear"]);

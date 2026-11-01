@@ -157,7 +157,7 @@
               "select": { "$ref": "#/$defs/select" },
               "patch": { "type": "object" },
               "edit": { "$ref": "#/$defs/edit" },
-              "scope": { "enum": ["global", "profile", "career"] },
+              "scope": { "enum": ["global", "profile", "career", "automatic"] },
               "profile": { "type": "string" },
               "career": { "type": "string" },
               "in": { "type": "array", "items": { "$ref": "#/$defs/in" } },
@@ -188,7 +188,7 @@
             "required": ["target"],
             "properties": {
               "target": { "$ref": "#/$defs/id" },
-              "scope": { "enum": ["global", "profile", "career"] },
+              "scope": { "enum": ["global", "profile", "career", "automatic"] },
               "profile": { "type": "string" },
               "career": { "type": "string" }
             }

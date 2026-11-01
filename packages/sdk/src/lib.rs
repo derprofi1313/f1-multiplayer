@@ -51,6 +51,9 @@ pub const DB_ID: u8 = 4;
 pub const DB_BOOL: u8 = 5;
 
 pub const TELEMETRY_VERSION: u32 = 1;
+pub const CAREER_SAVES_VERSION: u32 = 1;
+pub const TOO_SMALL: c_int = 4;
+pub const REFUSED: c_int = 5;
 
 pub type LogFn = unsafe extern "C" fn(fmt: *const c_char, ...);
 pub type ModuleBaseFn = unsafe extern "C" fn() -> usize;
@@ -360,6 +363,46 @@ pub struct SwoftyDb {
         ) -> c_int,
     >,
     pub row_name: Option<unsafe extern "C" fn(cursor: *const SwoftyDbCursor) -> *const c_char>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SwoftyText {
+    pub data: *const c_char,
+    pub size: usize,
+}
+
+/// The core's career saves table (export `SwoftyCoreCareerSaves`, since 1.7.0).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SwoftyCareerSaves {
+    pub version: u32,
+    pub available: Option<unsafe extern "C" fn() -> c_int>,
+    pub index: Option<unsafe extern "C" fn(json: *mut c_char, cap: usize, len: *mut usize) -> c_int>,
+    pub current: Option<unsafe extern "C" fn(id: *mut c_char, cap: usize, len: *mut usize) -> c_int>,
+    pub describe: Option<unsafe extern "C" fn(request_json: SwoftyText) -> c_int>,
+    pub need:
+        Option<unsafe extern "C" fn(addon: *const c_char, range: *const c_char, why: *const c_char) -> c_int>,
+    pub data_get: Option<
+        unsafe extern "C" fn(
+            career: *const c_char,
+            addon: *const c_char,
+            json: *mut c_char,
+            cap: usize,
+            len: *mut usize,
+            version: *mut u32,
+        ) -> c_int,
+    >,
+    pub data_set: Option<
+        unsafe extern "C" fn(
+            career: *const c_char,
+            addon: *const c_char,
+            version: u32,
+            json: SwoftyText,
+        ) -> c_int,
+    >,
+    pub data_remove: Option<unsafe extern "C" fn(career: *const c_char, addon: *const c_char) -> c_int>,
+    pub missing: Option<unsafe extern "C" fn(json: *mut c_char, cap: usize, len: *mut usize) -> c_int>,
 }
 
 #[repr(C)]
@@ -698,6 +741,27 @@ impl Capability {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn career_saves_table_matches_header() {
+        assert_eq!(std::mem::size_of::<SwoftyCareerSaves>(), 80);
+        assert_eq!(std::mem::offset_of!(SwoftyCareerSaves, describe), 32);
+        assert_eq!(std::mem::offset_of!(SwoftyCareerSaves, missing), 72);
+        let header = include_str!("../include/swofty_api.h");
+        assert!(header.contains(&format!(
+            "#define SWOFTY_CAREER_SAVES_VERSION {CAREER_SAVES_VERSION}"
+        )));
+        for field in [
+            "int (*index)(char *json, size_t cap, size_t *len);",
+            "int (*describe)(SwoftyText request_json);",
+            "int (*need)(const char *addon, const char *range, const char *why);",
+            "int (*data_set)(const char *career, const char *addon, uint32_t version, SwoftyText json);",
+            "int (*missing)(char *json, size_t cap, size_t *len);",
+            "SWOFTY_EXPORT const SwoftyCareerSaves *SwoftyCoreCareerSaves(void);",
+        ] {
+            assert!(header.contains(field), "{field}");
+        }
+    }
 
     #[test]
     fn layout_matches_header() {

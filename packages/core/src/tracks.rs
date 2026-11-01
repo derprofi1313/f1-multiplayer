@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -529,6 +529,16 @@ pub fn write_older(
     crate::write_json(&path, &file)
 }
 
+/// The tracks the last build recorded in `older-tracks.json`, for `profile`: their stat ids seed the ids the store keeps.
+pub fn read_older(data: &Path, profile: &str) -> Vec<OlderTrack> {
+    let path = crate::stdlib::reports::path(data, OLDER_FILE);
+    crate::read_json::<OlderTracks>(&path)
+        .ok()
+        .filter(|f| f.profile == profile)
+        .map(|f| f.tracks)
+        .unwrap_or_default()
+}
+
 /// One venue of `packages/sdk/std/data/venues.json`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Venue {
@@ -722,6 +732,191 @@ pub(crate) fn restore_weekends(db: &mut Gvdb, shipped: &Gvdb, left_out: &[&str])
             None => out.push(format!(
                 "race weekend {weekend}: races at {code}, which is left out of this build; set its track in Race weekends"
             )),
+        }
+    }
+    out
+}
+
+const TRACK_DATA: &str = "track_data.game_setup.TrackDataSet";
+const GAME_MODES: &str = "game_setup.game_setup_modes.game_setup_mode";
+
+/// A track a build's database names that its tracks table doesn't hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MissingTrack {
+    /// The record that names it.
+    pub key: u64,
+    /// The row that names it, such as `race weekend bahrain`.
+    pub at: String,
+    pub track: String,
+    pub fix: MissingFix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MissingFix {
+    /// The record has its shipped track again.
+    Stock(String),
+    /// The track is out of the record's list.
+    Dropped,
+    /// The record is as it was: the game ships no track there the build holds.
+    Kept,
+}
+
+impl MissingTrack {
+    /// The build's warning, with the addon that set the record (`by`) and the addon
+    /// that adds the track and is off (`adds`) when they are known.
+    pub(crate) fn line(&self, by: Option<&str>, adds: Option<&str>) -> String {
+        let (at, track) = (&self.at, &self.track);
+        let head = match (by, &self.fix) {
+            (Some(by), MissingFix::Dropped) => format!("{by} adds {track} to {at}"),
+            (Some(by), _) => format!("{by} sets {at} to {track}"),
+            (None, MissingFix::Dropped) => format!("{at} lists {track}"),
+            (None, _) => format!("{at} is set to {track}"),
+        };
+        let fix = match adds {
+            Some(addon) => format!("which is off: turn {addon} on"),
+            None => "which isn't in this build".to_owned(),
+        };
+        match &self.fix {
+            MissingFix::Stock(stock) => format!("{head}, {fix}; until then this build puts back {stock}"),
+            MissingFix::Dropped => format!("{head}, {fix}; until then this build leaves it out"),
+            MissingFix::Kept if adds.is_some() => {
+                format!("{head}, {fix} or change it in DB Editor; the game won't start like this")
+            }
+            MissingFix::Kept => {
+                format!("{head}, {fix}: change it in DB Editor; the game won't start like this")
+            }
+        }
+    }
+}
+
+/// Points each record that names a track the build doesn't hold at its shipped track
+/// again, or takes the track out of a record's list; a record the game ships with no
+/// track the build holds is only named. The build holds its tracks table's tracks and
+/// `in_game`, the tracks whose rows the game adds. A track the game ships the record
+/// with is left as it is, and race weekends at a `left_out` track are
+/// [`restore_weekends`]'s.
+pub(crate) fn keep_track_refs(
+    db: &mut Gvdb,
+    shipped: &Gvdb,
+    in_game: &[&str],
+    left_out: &[&str],
+) -> Vec<MissingTrack> {
+    let at: HashMap<u64, usize> = db.records.iter().enumerate().map(|(i, r)| (r.key, i)).collect();
+    let stock: HashMap<u64, &Record> = shipped.records.iter().map(|r| (r.key, r)).collect();
+    let text = |db: &Gvdb, path: &str| {
+        at.get(&fnv1a64(path))
+            .map(|&i| db.records[i].text().trim().to_owned())
+    };
+    let count = |db: &Gvdb, table: &str| {
+        let (container, row) = table.rsplit_once('.').expect("a table path");
+        text(db, &swofty_formats::gvdb::instance_count_path(container, row))
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(0)
+    };
+    let label = |db: &Gvdb, table: &str, i: usize| {
+        text(db, &format!("{table}_{i}._metadata_")).unwrap_or_else(|| i.to_string())
+    };
+    let mut have: HashSet<String> = (0..count(db, TRACKS))
+        .filter_map(|i| text(db, &format!("{TRACKS}_{i}._metadata_")))
+        .collect();
+    if have.is_empty() {
+        return Vec::new();
+    }
+    have.extend(in_game.iter().map(|c| (*c).to_owned()));
+    let mut refs: Vec<(String, String, bool)> = Vec::new();
+    for i in 0..count(db, ACTIVITIES) {
+        let path = format!("{ACTIVITIES}_{i}.track");
+        if text(db, &path).is_some_and(|c| left_out.contains(&c.as_str())) {
+            continue;
+        }
+        refs.push((path, format!("race weekend {}", label(db, ACTIVITIES, i)), false));
+    }
+    for s in 0..count(db, TRACK_DATA) {
+        let rows = format!("{TRACK_DATA}_{s}.TrackData");
+        let set = label(db, TRACK_DATA, s);
+        for i in 0..count(db, &rows) {
+            let at = format!("track settings {set}/{}", label(db, &rows, i));
+            refs.push((format!("{rows}_{i}.track"), at, false));
+        }
+    }
+    for s in 0..count(db, CONTENT_SETS) {
+        let rows = format!("{CONTENT_SETS}_{s}.available_tracks");
+        let at = format!("content set {}", label(db, CONTENT_SETS, s));
+        for i in 0..count(db, &rows) {
+            refs.push((format!("{rows}_{i}.tracks"), at.clone(), true));
+        }
+    }
+    for i in 0..count(db, GAME_MODES) {
+        let at = format!("game mode {}", label(db, GAME_MODES, i));
+        refs.push((format!("{GAME_MODES}_{i}.restricted_tracks"), at, true));
+    }
+    let mut out = Vec::new();
+    for (path, row, list) in refs {
+        let key = fnv1a64(&path);
+        let Some(&i) = at.get(&key) else {
+            continue;
+        };
+        let now = db.records[i].text().trim().to_owned();
+        let shipped_text = stock
+            .get(&key)
+            .map(|r| r.text().trim().to_owned())
+            .unwrap_or_default();
+        if !list {
+            if now.is_empty() || have.contains(&now) || now == shipped_text {
+                continue;
+            }
+            let fix = match stock.get(&key).filter(|r| have.contains(r.text().trim())) {
+                Some(r) => {
+                    db.records[i].value = r.value.clone();
+                    db.records[i].tag = r.tag;
+                    MissingFix::Stock(r.text().trim().to_owned())
+                }
+                None => MissingFix::Kept,
+            };
+            out.push(MissingTrack {
+                key,
+                at: row,
+                track: now,
+                fix,
+            });
+            continue;
+        }
+        let codes: Vec<&str> = now.split(',').map(str::trim).filter(|c| !c.is_empty()).collect();
+        let (kept, gone): (Vec<&str>, Vec<&str>) = codes
+            .into_iter()
+            .partition(|c| have.contains(*c) || shipped_text.split(',').any(|s| s.trim() == *c));
+        if gone.is_empty() {
+            continue;
+        }
+        db.records[i].value = kept.join(",").into_bytes();
+        out.extend(gone.into_iter().map(|track| MissingTrack {
+            key,
+            at: row.clone(),
+            track: track.to_owned(),
+            fix: MissingFix::Dropped,
+        }));
+    }
+    out
+}
+
+/// The installed addons, by track code, whose `track.add` or `track` record adds each of
+/// `codes`, also where a build would leave the track out.
+pub(crate) fn adders(store: &Store, codes: &BTreeSet<String>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (id, m) in store.addons().unwrap_or_default() {
+        let dir = store.addons_dir().join(&id);
+        let added = added_dirs(store, &id, &m)
+            .iter()
+            .filter_map(|d| match crate::map::read_package(d) {
+                Ok(pkg) => Some(pkg.track_code),
+                Err(why) => why.code,
+            })
+            .collect::<Vec<_>>();
+        let recorded = record_tracks(&dir, &id, &crate::stdlib::data::files(&dir));
+        for code in added.into_iter().chain(recorded.into_iter().map(|t| t.code)) {
+            if codes.contains(&code) {
+                out.entry(code).or_insert_with(|| id.clone());
+            }
         }
     }
     out
@@ -1244,5 +1439,157 @@ mod tests {
         );
         let mut untouched = shipped.clone();
         assert!(restore_weekends(&mut untouched, &shipped, &["monza"]).is_empty());
+    }
+
+    #[test]
+    fn records_naming_a_track_not_in_the_build_get_their_shipped_track_back() {
+        let mut shipped = db();
+        shipped
+            .set(
+                "schedule.activities._activity_race_weekend_instancecount_",
+                "2",
+                None,
+            )
+            .unwrap();
+        shipped.records.extend([
+            rec(&format!("{ACTIVITIES}_1._metadata_"), "okayama"),
+            rec(&format!("{ACTIVITIES}_1.track"), "okayama"),
+            rec("track_data.game_setup._TrackDataSet_instancecount_", "1"),
+            rec(&format!("{TRACK_DATA}_0._metadata_"), "f1"),
+            rec(&format!("{TRACK_DATA}_0._TrackData_instancecount_"), "1"),
+            rec(&format!("{TRACK_DATA}_0.TrackData_0._metadata_"), "suzuka"),
+            rec(&format!("{TRACK_DATA}_0.TrackData_0.track"), "suzuka"),
+            rec("game_setup.game_setup_modes._game_setup_mode_instancecount_", "1"),
+            rec(&format!("{GAME_MODES}_0._metadata_"), "f1"),
+            rec(
+                &format!("{GAME_MODES}_0.restricted_tracks"),
+                "okayama,shipped_only",
+            ),
+        ]);
+        let mut untouched = shipped.clone();
+        assert!(keep_track_refs(&mut untouched, &shipped, &[], &[]).is_empty());
+        let mut built = shipped.clone();
+        let mut set = |path: &str, value: &str| built.set(path, value, None).unwrap();
+        set("schedule.activities._activity_race_weekend_instancecount_", "4");
+        set(&format!("{ACTIVITIES}_0.track"), "istanbul_park");
+        set(&format!("{TRACK_DATA}_0.TrackData_0.track"), "paul_ricard");
+        set(
+            "content_sets.content_set_1.available_tracks_0.tracks",
+            "suzuka,istanbul_park,okayama",
+        );
+        set(
+            &format!("{GAME_MODES}_0.restricted_tracks"),
+            "okayama,shipped_only,hockenheim,ring",
+        );
+        built.records.extend([
+            rec(&format!("{ACTIVITIES}_2._metadata_"), "rw_added"),
+            rec(&format!("{ACTIVITIES}_2.track"), "hockenheim"),
+            rec(&format!("{ACTIVITIES}_3._metadata_"), "rw_left"),
+            rec(&format!("{ACTIVITIES}_3.track"), "portimao"),
+        ]);
+        let missing = keep_track_refs(&mut built, &shipped, &["ring"], &["portimao"]);
+        let got: Vec<(&str, &str, &MissingFix)> = missing
+            .iter()
+            .map(|m| (m.at.as_str(), m.track.as_str(), &m.fix))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "race weekend suzuka",
+                    "istanbul_park",
+                    &MissingFix::Stock("suzuka".into())
+                ),
+                ("race weekend rw_added", "hockenheim", &MissingFix::Kept),
+                (
+                    "track settings f1/suzuka",
+                    "paul_ricard",
+                    &MissingFix::Stock("suzuka".into())
+                ),
+                ("content set 2026", "istanbul_park", &MissingFix::Dropped),
+                ("game mode f1", "hockenheim", &MissingFix::Dropped),
+            ]
+        );
+        assert_eq!(missing[0].key, fnv1a64(format!("{ACTIVITIES}_0.track")));
+        let text = |path: &str| built.get_text(path).unwrap();
+        assert_eq!(text(&format!("{ACTIVITIES}_0.track")), "suzuka");
+        assert_eq!(text(&format!("{ACTIVITIES}_2.track")), "hockenheim");
+        assert_eq!(text(&format!("{ACTIVITIES}_3.track")), "portimao");
+        assert_eq!(text(&format!("{TRACK_DATA}_0.TrackData_0.track")), "suzuka");
+        assert_eq!(
+            text("content_sets.content_set_1.available_tracks_0.tracks"),
+            "suzuka,okayama"
+        );
+        assert_eq!(
+            text(&format!("{GAME_MODES}_0.restricted_tracks")),
+            "okayama,shipped_only,ring"
+        );
+        let again = keep_track_refs(&mut built, &shipped, &["ring"], &["portimao"]);
+        assert_eq!(again, [missing[1].clone()]);
+        assert!(keep_track_refs(&mut Gvdb::default(), &shipped, &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn missing_track_lines_name_the_addon_that_set_it_and_the_one_to_turn_on() {
+        let missing = |at: &str, fix: MissingFix| MissingTrack {
+            key: 0,
+            at: at.into(),
+            track: "istanbul_park".into(),
+            fix,
+        };
+        let weekend = missing("race weekend bahrain", MissingFix::Stock("bahrain".into()));
+        assert_eq!(
+            weekend.line(Some("My Calendar"), Some("Istanbul Park")),
+            "My Calendar sets race weekend bahrain to istanbul_park, which is off: turn Istanbul Park on; \
+             until then this build puts back bahrain"
+        );
+        assert_eq!(
+            weekend.line(None, None),
+            "race weekend bahrain is set to istanbul_park, which isn't in this build; until then this build puts \
+             back bahrain"
+        );
+        assert_eq!(
+            missing("content set 2026", MissingFix::Dropped).line(Some("My Calendar"), Some("Istanbul Park")),
+            "My Calendar adds istanbul_park to content set 2026, which is off: turn Istanbul Park on; until then \
+             this build leaves it out"
+        );
+        let added = missing("race weekend rw_added", MissingFix::Kept);
+        assert_eq!(
+            added.line(Some("My Calendar"), Some("Istanbul Park")),
+            "My Calendar sets race weekend rw_added to istanbul_park, which is off: turn Istanbul Park on or \
+             change it in DB Editor; the game won't start like this"
+        );
+        assert_eq!(
+            added.line(Some("My Calendar"), None),
+            "My Calendar sets race weekend rw_added to istanbul_park, which isn't in this build: change it in DB \
+             Editor; the game won't start like this"
+        );
+    }
+
+    #[test]
+    fn adders_name_the_addon_whose_track_record_adds_a_track() {
+        let root = std::env::temp_dir().join(format!("swofty-track-adders-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let store = Store::new(&root);
+        let dir = store.addons_dir().join("track.testring");
+        std::fs::create_dir_all(dir.join("registry")).unwrap();
+        std::fs::write(
+            dir.join("swofty.json"),
+            r#"{"schema_version":1,"id":"track.testring","name":"Testring","version":"1.0.0","author":"t",
+            "compat":{"game":"f1_25"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("registry/track.json"),
+            r#"{"track":{"testring":{"code":"testring","name":"Testring","files":"track/"}}}"#,
+        )
+        .unwrap();
+        let codes: BTreeSet<String> = ["testring".to_owned(), "nowhere".to_owned()].into();
+        let got = adders(&store, &codes);
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(
+            got,
+            BTreeMap::from([("testring".to_owned(), "track.testring".to_owned())])
+        );
     }
 }

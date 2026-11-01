@@ -4,6 +4,7 @@
 #include <string>
 
 #include "json.hpp"
+#include "netplay_session.hpp"
 
 // Netplay command logic without the game: parsing a launcher command, deciding whether the game's
 // state allows it, and the JSON the reply and status file carry. netplay_drive.cpp feeds it the flow
@@ -266,6 +267,9 @@ struct State {
     bool home_screen = false;
     bool busy = false;
     Role role = Role::none;
+    std::string cover_step;
+    int cover_percent = -1;
+    std::string room_failed;
 
     Screen screen() const
     {
@@ -346,6 +350,15 @@ inline std::string status_json(const State &s)
     out += s.configured ? "true" : "false";
     out += ",\"self\":" + std::to_string(s.configured ? s.self : 0);
     out += ",\"base\":" + std::to_string(s.configured ? s.base : 0);
+    if (s.cover_percent >= 0) {
+        out += ",\"cover\":{\"step\":";
+        quote(out, s.cover_step);
+        out += ",\"percent\":" + std::to_string(s.cover_percent) + '}';
+    }
+    if (!s.room_failed.empty()) {
+        out += ",\"room_failed\":";
+        quote(out, s.room_failed);
+    }
     out += '}';
     return out;
 }
@@ -376,7 +389,7 @@ inline std::string reply_json(const Command &c, const State &s, const std::strin
 // ui_menu_data.lan_ip_address. The job then waits for StateOnlineLobby. Every wait has a deadline,
 // and a popup whose id names an error while the job runs ends it with that id.
 enum class Step { none, open_local_mp, wait_local_mp, switch_lan, check_lan, fire_lan, wait_dialog, answer_dialog,
-                  wait_ip_prompt, answer_ip, wait_lobby, finished };
+                  wait_ip_prompt, answer_ip, wait_lobby, headless, finished };
 enum class Do { nothing, fire_local_mp, mode_switch, fire_lan, answer_dialog, answer_ip };
 
 inline const char *do_name(Do d)
@@ -397,6 +410,8 @@ struct Facts {
     bool lan_mode = false;
     bool lobby = false;
     bool home = false;
+    bool room_failed = false;
+    std::string room_error;
 };
 
 constexpr const char *BACK_HOME = "the game went back to its main menu before the LAN lobby opened";
@@ -415,6 +430,15 @@ public:
         detail.clear();
         started = now;
         deadline = 0;
+    }
+
+    // Host or join through netplay_room (no screens): the room's own run does the steps and the job only
+    // waits for its end, the LAN lobby or its named failure.
+    void start_headless(const Command &c, uint64_t now)
+    {
+        start(c, now);
+        step = Step::headless;
+        detail = "set up without the front-end screens";
     }
 
     bool active() const { return step != Step::none && step != Step::finished; }
@@ -469,6 +493,12 @@ public:
             return true;
         };
         switch (step) {
+        case Step::headless:
+            if (f.lobby)
+                step = Step::finished;
+            else if (f.room_failed)
+                fail(f.room_error);
+            return Do::nothing;
         case Step::open_local_mp:
             step = Step::wait_local_mp;
             wait(OPEN_MS);
@@ -533,6 +563,138 @@ public:
     Step step = Step::none;
     std::string error, detail;
     uint64_t started = 0, deadline = 0;
+};
+
+// The launcher starts the game for a room with SWOFTY_NETPLAY=armed;room: the game then passes the title
+// and the core's notice by itself, so the player reaches the main menu without input.
+inline bool room_launch(const std::string &env)
+{
+    size_t at = 0;
+    while (at <= env.size()) {
+        size_t end = env.find(';', at);
+        if (end == std::string::npos)
+            end = env.size();
+        if (env.compare(at, end - at, "room") == 0)
+            return true;
+        at = end + 1;
+    }
+    return false;
+}
+
+// The direct start request a room launch carries (<game>/swofty/direct_start.json): the target, this player's
+// role and the host's address, and the room configuration, `self` (member number), `base` (bridge base port)
+// and the signed-in `name`. A request without `self` and `base` is an older launcher's; the room then comes
+// through the netplay mailbox.
+struct RoomRequest {
+    bool room = false;
+    std::string role, host_ip, error;
+    bool configured = false;
+    int self = 0, base = 0;
+    std::string name;
+};
+
+inline RoomRequest parse_room_request(const std::string &text)
+{
+    RoomRequest r;
+    json::Value v;
+    if (text.empty() || !json::parse(text, v) || v["target"].str() != "room")
+        return r;
+    r.room = true;
+    r.role = v["role"].str();
+    r.host_ip = v["host_ip"].str();
+    if (r.role != "host" && r.role != "join") {
+        r.error = "the direct start request has role '" + r.role + "' (host or join expected)";
+        return r;
+    }
+    const json::Value &self = v["self"], &base = v["base"];
+    if (self.type == json::Value::Null && base.type == json::Value::Null)
+        return r;
+    if (self.type != json::Value::Num || base.type != json::Value::Num) {
+        r.error = "the direct start request has a self or base that is not a number";
+        return r;
+    }
+    int s = static_cast<int>(self.n), b = static_cast<int>(base.n);
+    if (s != self.n || b != base.n || !runtime::netplay_session::valid(s, b)) {
+        r.error = "the direct start request's room was refused (self " + std::to_string(s) + ", base " +
+                  std::to_string(b) + ")";
+        return r;
+    }
+    r.configured = true;
+    r.self = s;
+    r.base = b;
+    r.name = driver_name(v["name"].str());
+    return r;
+}
+
+inline bool apply_room_config(const RoomRequest &r)
+{
+    if (!r.configured || !runtime::netplay_session::configure(r.self, r.base))
+        return false;
+    runtime::netplay_session::set_name(r.name);
+    return true;
+}
+
+// The core's own notice and the game's online services messages: for a room launch neither is shown, and
+// the game's response callback is answered for the player.
+inline bool room_notice(const std::string &id)
+{
+    return id.rfind("online_services_generic_exception_", 0) == 0 || id == "swofty_message";
+}
+
+struct SkipFacts {
+    bool frontend = false, home = false, transition = false, lobby = false, activity = false;
+};
+
+// Presses the virtual pad's a for the core's notice, which sits over the front end's frontend_transition
+// screen, from NOTICE_MS after that screen opened, until the main menu is up (the title is the direct
+// start's). Each press is held HOLD_MS and released for the rest of
+// CYCLE_MS, long enough for a frame to see it. It ends at the home screen, the LAN lobby, or GIVE_UP_MS.
+class TitleSkip {
+public:
+    static constexpr uint64_t NOTICE_MS = 4000, HOLD_MS = 250, CYCLE_MS = 2000,
+                              GIVE_UP_MS = 15 * 60 * 1000;
+
+    void start(uint64_t now)
+    {
+        started_ = now;
+        on_ = true;
+    }
+
+    bool done() const { return !on_; }
+    int presses() const { return presses_; }
+
+    bool tick(const SkipFacts &f, uint64_t now)
+    {
+        if (!on_)
+            return false;
+        if (f.home || f.lobby || f.activity || now - started_ >= GIVE_UP_MS) {
+            on_ = false;
+            return false;
+        }
+        if (!f.transition)
+            transition_ = 0;
+        else if (!transition_)
+            transition_ = now;
+        uint64_t from = 0;
+        if (f.frontend && transition_)
+            from = transition_ + NOTICE_MS;
+        if (!from || now < from) {
+            origin_ = 0;
+            return false;
+        }
+        if (!origin_)
+            origin_ = now;
+        bool press = (now - origin_) % CYCLE_MS < HOLD_MS;
+        if (press && !held_)
+            presses_++;
+        held_ = press;
+        return press;
+    }
+
+private:
+    uint64_t started_ = 0, transition_ = 0, origin_ = 0;
+    bool on_ = false, held_ = false;
+    int presses_ = 0;
 };
 
 // Names of inbox files the launcher writes: <digits>.json, written as .tmp and renamed.

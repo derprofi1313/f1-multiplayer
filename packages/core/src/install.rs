@@ -347,6 +347,7 @@ impl<'a> Installer<'a> {
             if sessions_only && !j.session {
                 continue;
             }
+            self.check_stranded(&j, hashes)?;
             let (id, profile, session) = (j.id.clone(), j.profile.clone(), j.session);
             let changes = j.entries.len();
             let (drift, kept) = self.rollback(j, hashes)?;
@@ -360,6 +361,46 @@ impl<'a> Installer<'a> {
             });
         }
         Ok(out)
+    }
+
+    /// A journal written for a game folder that is gone rolls back here only
+    /// when every file it finished holds what it wrote or the original, or
+    /// when none of them is here at all.
+    fn check_stranded(&self, j: &Journal, hashes: &mut Hashes) -> Result<()> {
+        let Some(was) = j.game.as_deref() else {
+            return Ok(());
+        };
+        if was.join(crate::GAME_EXE).is_file() || crate::copies::same_dir(was, &self.game.dir) {
+            return Ok(());
+        }
+        let (mut changed, mut here) = (0, 0);
+        for e in j.entries.iter().filter(|e| e.state == State::Done) {
+            if !matches!(e.op, Op::ReplaceFile | Op::CreateFile) {
+                continue;
+            }
+            let now = hashes.sha256_opt(&self.path(&e.path))?;
+            if now.is_some() && (now == e.after || e.op == Op::CreateFile) {
+                here += 1;
+            }
+            let fits = now == e.after
+                || match e.op {
+                    Op::ReplaceFile => now.is_some() && now == e.before,
+                    _ => now.is_none(),
+                };
+            if !fits {
+                changed += 1;
+            }
+        }
+        if changed == 0 || here == 0 {
+            return Ok(());
+        }
+        Err(Error::Other(format!(
+            "an earlier session's undo record is for F1 25 in {}, which is gone, and {changed} of its file(s) in {} \
+             don't match it, so nothing was rolled back. Move the F1 25 folder back to {} and try again",
+            was.display(),
+            self.game.dir.display(),
+            was.display()
+        )))
     }
 
     fn rollback(&self, j: Journal, hashes: &mut Hashes) -> Result<(Vec<Drift>, Vec<String>)> {
@@ -578,6 +619,10 @@ impl<'a> Installer<'a> {
             || self.baseline()?.files.keys().any(|k| k.starts_with(&prefix))
         {
             return Ok(0);
+        }
+        let status = self.path(crate::launcher_saves::STATUS_FILE);
+        if status.is_file() {
+            with_retry(&status, || std::fs::remove_file(&status))?;
         }
         let mut moved = 0;
         for e in std::fs::read_dir(&loader).map_err(io_err(&loader))?.flatten() {
@@ -851,6 +896,7 @@ impl<'a> Installer<'a> {
             &self.game.identity.build_id,
             self.session,
         )?;
+        j.game = Some(self.game.dir.clone());
         for rel in plan.data.keys() {
             placed.insert(rel, after[rel.as_str()].clone(), true);
         }

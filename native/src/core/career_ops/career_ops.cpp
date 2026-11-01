@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "driver_rows.hpp"
 #include "lineup_plan.hpp"
 #include "number_plan.hpp"
 #include "seat_plan.hpp"
@@ -755,14 +756,11 @@ bool read_lineup(const json::Value &j, Lineup &l, std::string &err)
 
 int row_index(const std::vector<Row> &rows, uint32_t stat)
 {
-    int hit = -1;
-    for (size_t i = 0; i < rows.size(); ++i)
-        if (stat_of(driver_of(rows[i].rec)) == stat && (driver_of(rows[i].rec) & 0xff) == 0) {
-            if (hit >= 0)
-                return -2;
-            hit = static_cast<int>(i);
-        }
-    return hit;
+    std::vector<career_ops::rows::Row> view;
+    view.reserve(rows.size());
+    for (auto &r : rows)
+        view.push_back({driver_of(r.rec), teamless(r.rec)});
+    return career_ops::rows::pick(view, stat);
 }
 
 int holder_of(const std::vector<Row> &rows, uint32_t team, int seat)

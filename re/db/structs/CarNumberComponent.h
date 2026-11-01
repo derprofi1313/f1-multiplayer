@@ -1,0 +1,7 @@
+// struct: CarNumberComponent
+// subsystem: career
+// size: 0x2b8 L2 decomp:re/decomp/140d00ba0.c (its factory allocates 0x2b8 bytes, align 0x10, then stores the vtable)
+// notes: CarNumberComponent (namespace game::championship by pattern: 0x140d69490 registers it with components attested there), the career's racing numbers: vtable 0x14567f4d0 (stored by the factory 0x140d00ba0 at 0x140d00dc8; its slot +0x28 0x140cd4900 returns the descriptor), descriptor 0x14605ade0 (class name 'CarNumberComponent' 0x14567f4b2 written to desc+8 at 0x140d6a70d). First argument of Career_DriverNumbers_CheckExisting, _AssignFree, _Add and _ApplyPlayerNumber. DriverCareerContractsManagerComponent +0x368 and DriverContractsMyTeamComponent +0x2e8 hold it. Raised by ce-swap-number (the lead authorised --force).
+struct CarNumberComponent {
+    /* 0x278 */ CareerEntity *entity; // L2 decomp:re/decomp/140aeb130.c;decomp:re/decomp/140d00ba0.c;decomp:re/decomp/140c01280.c;decomp:re/decomp/140c01550.c;xref:0x140aeb332,0x140c013e9,0x140c0148e the championship entity: the component base constructor 0x140aeb130 (called by the factory 0x140d00ba0) stores it (0x140aeb332); Career_DriverNumbers_AssignFree passes it to Career_Set_EntrantData_Thunk (read 0x140c013e9, call 0x140c01489) and calls its component registry (+0x1030) vtable +0xa8 for the current session (0x140c0148e); Career_DriverNumbers_Add gets CareerDriverMarketComponent from the same registry
+};

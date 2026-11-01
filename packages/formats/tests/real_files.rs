@@ -194,31 +194,44 @@ fn track_layers_round_trip_byte_identically() {
 #[test]
 fn zstd_recompression_matches_the_cli() {
     let Some(dir) = game_dir() else { return };
-    let rel = "2025_asset_groups/ui_package/screens/fe_home.erp";
-    let Some(data) = read(&dir, rel) else { return };
-    let erp = Erp::parse(&data).unwrap();
-    let Some(frag) = erp
-        .resources
-        .iter()
-        .flat_map(|r| &r.fragments)
-        .find(|f| f.compression == swofty_formats::erp::ZSTD)
-    else {
-        return;
-    };
-    let body = frag.data().unwrap();
-    let Ok(mut child) = Command::new("zstd")
-        .args(["-c", "-19", "-q"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-    else {
-        eprintln!("zstd not available; skipping");
-        return;
-    };
-    std::io::Write::write_all(&mut child.stdin.take().unwrap(), &body).unwrap();
-    let cli = child.wait_with_output().unwrap().stdout;
-    assert!(
-        swofty_formats::erp::compress(&body).unwrap() == cli,
-        "zstd output differs from the CLI"
-    );
+    let mut bodies = Vec::new();
+    for rel in [
+        "2025_asset_groups/ui_package/screens/fe_home.erp",
+        "2025_asset_groups/f1_2025_vehicle_package/teams/common.erp",
+    ] {
+        let Some(data) = read(&dir, rel) else { continue };
+        let erp = Erp::parse(&data).unwrap();
+        let zstd: Vec<_> = erp
+            .resources
+            .iter()
+            .flat_map(|r| &r.fragments)
+            .filter(|f| f.compression == swofty_formats::erp::ZSTD)
+            .collect();
+        let biggest = zstd.iter().max_by_key(|f| f.size);
+        for frag in zstd.first().into_iter().chain(biggest) {
+            bodies.push(frag.data().unwrap());
+        }
+    }
+    for body in bodies {
+        let stream_size = format!("--stream-size={}", body.len());
+        let Ok(mut child) = Command::new("zstd")
+            .args(["-c", "-19", "-q", "--zstd=wlog=20", &stream_size])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+        else {
+            eprintln!("zstd not available; skipping");
+            return;
+        };
+        let mut stdin = child.stdin.take().unwrap();
+        let feed = body.clone();
+        let writer = std::thread::spawn(move || std::io::Write::write_all(&mut stdin, &feed).unwrap());
+        let cli = child.wait_with_output().unwrap().stdout;
+        writer.join().unwrap();
+        assert!(
+            swofty_formats::erp::compress(&body).unwrap() == cli,
+            "zstd output differs from the CLI on a {}-byte fragment",
+            body.len()
+        );
+    }
 }

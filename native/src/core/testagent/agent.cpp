@@ -13,6 +13,9 @@
 #include <thread>
 #include <vector>
 
+#include "../apply/tracks/box.hpp"
+#include "../title_skip.hpp"
+#include "../virtual_pad.hpp"
 #include "agent_logic.hpp"
 
 // The test agent (docs/design/std-2/test-suite.md, "The test run" and "The agent's commands"). It arms
@@ -37,12 +40,6 @@ namespace ta = testagent;
 // The game addresses the agent uses, each resolved by its signature in re/db/signatures.json when the
 // agent arms; a build where one does not match only loses the commands that need it. Struct layouts
 // below are the KB build's, so the commands that read them also check runtime::same_build().
-const runtime::Sig SIG_INTRO_UPDATE{"fe_flow.state_intro_on_update", "41 57 41 56 56 57 53 48 83 EC 70 48 89 D6 48 89 CF 48 8B 89 F8 0B 00 00", 0x36da4d0};
-const runtime::Sig SIG_NODE_SET_BOOL{"vm.node_set_bool", "41 56 56 57 55 53 48 81 EC 20 03 00 00 F6 41 26 01 0F 85 ?? ?? ?? ?? 44 89 CB 44 89 C7 49 89 D6 48 89 CE 48 8B 49 58 48 8B 01 FF 50 38 84 DB 75 0E 0F B6 08", 0x973e20};
-const runtime::Sig SIG_SYNC_COMPLETE{"vm.sync_point_is_complete", "E9 ?? ?? ?? ?? 33 47 0F 84 F2 95 46 01 98 73 7B A4 A3", 0x42626c0};
-const runtime::Sig SIG_INTRO_VT{"session.intro", "48 8D 05 ?? ?? ?? ?? 48 89 01 48 81 C1 E0 0D 00 00", 0x585bff0, runtime::Sig::riprel, 0, 3, 7};
-const runtime::Sig SIG_BOOL_TYPE{"vm.bool_type_desc", "48 8D 0D ?? ?? ?? ?? FF 50 10 39 C3 75 17 48 8B 07", 0x6129dc0, runtime::Sig::riprel, 0, 3, 7};
-const runtime::Sig SIG_EMPTY_NODE{"vm.empty_node_handle", "0F 85 ?? ?? ?? ?? 48 8B 1D ?? ?? ?? ?? C5 F8 57 C0 C5 F8 29 44 24 30 48 C7 44 24 40 00 00 00 00 48 8D 15 ?? ?? ?? ?? 4C 8D 05", 0x6ca0e90, runtime::Sig::riprel, 39, 42, 7};
 const runtime::Sig SIG_FE_CAREER_VT{"game.fe_career_view_model", "48 8D 05 ?? ?? ?? ?? 49 89 07 48 8D 05 ?? ?? ?? ?? 49 89 87 60 02 00 00 48 8D 05 ?? ?? ?? ?? 49 89 87 68 02 00 00 48 8D 05 ?? ?? ?? ?? 49 89 87 98 02 00 00 66 41 C7 87 A8 03 00 00 00 01", 0x57385b0, runtime::Sig::riprel, 0, 3, 7};
 const runtime::Sig SIG_CAREER_ITEM_VT{"fe_tiles.career_kind_item", "48 8D 05 ?? ?? ?? ?? 48 89 06 48 8D 8E 78 01 00 00", 0x5703eb0, runtime::Sig::riprel, 0, 3, 7};
 const runtime::Sig SIG_CONTINUE_HANDLE{"game.career_continue_handle_command", "56 48 83 EC 20 48 8B 02 48 85 C0 74 38", 0x1a1db90};
@@ -59,17 +56,11 @@ const runtime::Sig SIG_VEHICLE_COUNT{"session.vehicle_count", "74 E5 38 1D ?? ??
 const runtime::Sig SIG_ADVANCE_VT{"game.message_set_advance_destination", "48 8D 0D ?? ?? ?? ?? 48 89 4C 24 50 48 C7 44 24 60 02 00 00 00", 0x57548b8, runtime::Sig::riprel, 0, 3, 7};
 
 struct Resolved {
-    uintptr_t intro_update = 0, node_set_bool = 0, sync_complete = 0, intro_vt = 0, bool_type = 0, empty_node = 0, fe_career_vt = 0, career_item_vt = 0, continue_handle = 0, continue_driver_vt = 0, continue_my_team_vt = 0, hq_update = 0, hq_command = 0, hq_vt = 0, game_manager = 0, save_key = 0, save_request = 0, vehicle_table = 0, vehicle_count = 0, advance_vt = 0;
+    uintptr_t node_set_bool = 0, fe_career_vt = 0, career_item_vt = 0, continue_handle = 0, continue_driver_vt = 0, continue_my_team_vt = 0, hq_update = 0, hq_command = 0, hq_vt = 0, game_manager = 0, save_key = 0, save_request = 0, vehicle_table = 0, vehicle_count = 0, advance_vt = 0;
 } ga;
 
 void resolve_game()
 {
-    ga.intro_update = runtime::find(SIG_INTRO_UPDATE, "test", "test");
-    ga.node_set_bool = runtime::find(SIG_NODE_SET_BOOL, "test", "test");
-    ga.sync_complete = runtime::find(SIG_SYNC_COMPLETE, "test", "test");
-    ga.intro_vt = runtime::find(SIG_INTRO_VT, "test", "test");
-    ga.bool_type = runtime::find(SIG_BOOL_TYPE, "test", "test");
-    ga.empty_node = runtime::find(SIG_EMPTY_NODE, "test", "test");
     ga.fe_career_vt = runtime::find(SIG_FE_CAREER_VT, "test", "test");
     ga.career_item_vt = runtime::find(SIG_CAREER_ITEM_VT, "test", "test");
     ga.continue_handle = runtime::find(SIG_CONTINUE_HANDLE, "test", "test");
@@ -195,6 +186,7 @@ std::mutex ran_lock;
 std::vector<std::string> ran_routes;
 
 std::atomic<uint64_t> screens_built{0};
+std::atomic<uint64_t> screen_seq{0};
 
 void set_screen(void *vm, size_t list_at)
 {
@@ -328,124 +320,12 @@ void routes_setup()
     route_why.clear();
 }
 
-// The title screen without input. StateIntro's onStateUpdate (FeFlow_StateIntro_OnUpdate 0x1436da4d0,
-// slot 9 of vt_Sess_Intro 0x14585bff0, L1, no signature: the KB build only) waits until the title's
-// sync point (state+0xcd0, sync_points.boot; Vm_SyncPoint_IsComplete 0x1442626c0) has both bool nodes
-// true: the request node +0x80 and the UI's node +0xa0, which the title's UI sets on a button. Then it
-// sends its own request (kind 0x2e) whose callback (FeFlow_StateIntro_OnEngaged) sets +0xef4, and the
-// next update returns the front-end link. The agent sets the two nodes with Vm_NodeSet_Bool
-// (0x140973e20, (node, &value, 0, 0) as the sync point's own writes do) once the title's view exists
-// ([[state+0xc88]+0x140]+0x198), so the game's own path runs from there.
-constexpr size_t INTRO_SYNC = 0xcd0, SYNC_REQUEST = 0x80, SYNC_UI = 0xa0, INTRO_SENT = 0xef3, INTRO_ENGAGED = 0xef4;
-
-using IntroUpdate_t = uint32_t *(void *state, uint32_t *link);
-using NodeSetBool_t = void(void *node, const uint8_t *value, int a3, int a4);
-using SyncComplete_t = bool(void *sync);
-
-safetyhook::InlineHook h_intro;
-std::atomic<void *> intro_state{nullptr};
-std::atomic<bool> title_wanted{false}, title_engaged{false}, title_set{false};
-std::atomic<uint32_t> title_view{0};
-std::string title_why = "not set up", continue_why = "not set up", hq_why = "not set up";
-
 uint8_t *addr_of(uintptr_t a)
 {
     return reinterpret_cast<uint8_t *>(a);
 }
 
-// A live bool node: not null, not the empty handle, not read-only (+0x26 bit 0), valid (vt+0x20) and
-// holding the bool type (as the sync point's own checks).
-bool bool_node(void *node)
-{
-    void *empty = *reinterpret_cast<void **>(ga.empty_node);
-    if (!node || node == empty || !runtime::readable(node, 0x60) || (static_cast<uint8_t *>(node)[0x26] & 1))
-        return false;
-    auto **vt = *static_cast<void ***>(node);
-    if (!runtime::readable(vt, 0x28) || !reinterpret_cast<bool (*)(void *)>(vt[4])(node))
-        return false;
-    void *holder = static_cast<void **>(node)[0xb];
-    if (!holder || !runtime::readable(holder, 8))
-        return false;
-    auto **hvt = *static_cast<void ***>(holder);
-    void *type = reinterpret_cast<void *(*)(void *)>(hvt[1])(holder);
-    auto *bool_type = addr_of(ga.bool_type);
-    auto **tvt = *reinterpret_cast<void ***>(type);
-    auto **bvt = *reinterpret_cast<void ***>(bool_type);
-    return reinterpret_cast<int (*)(void *)>(tvt[2])(type) == reinterpret_cast<int (*)(void *)>(bvt[2])(bool_type);
-}
-
-bool node_value(void *node)
-{
-    void *holder = static_cast<void **>(node)[0xb];
-    auto **hvt = *static_cast<void ***>(holder);
-    return *reinterpret_cast<const char *(*)(void *)>(hvt[7])(holder) != 0;
-}
-
-void title_nodes(uint8_t *state)
-{
-    void *view = nullptr;
-    void *a = *reinterpret_cast<void **>(state + 0xc88);
-    if (a && runtime::readable(a, 0x148)) {
-        void *b = *reinterpret_cast<void **>(static_cast<uint8_t *>(a) + 0x140);
-        if (b && runtime::readable(b, 0x1a0))
-            view = *reinterpret_cast<void **>(static_cast<uint8_t *>(b) + 0x198);
-    }
-    title_view = view ? 1 : 2;
-    if (!view)
-        return;
-    uint8_t *sync = state + INTRO_SYNC;
-    const uint8_t one = 1;
-    for (size_t off : {SYNC_REQUEST, SYNC_UI}) {
-        void *node = *reinterpret_cast<void **>(sync + off);
-        if (!bool_node(node) || node_value(node))
-            continue;
-        reinterpret_cast<NodeSetBool_t *>(ga.node_set_bool)(node, &one, 0, 0);
-        swofty::log("[test] title: set the sync point's %s node (sync_points.boot) to true",
-                    off == SYNC_REQUEST ? "request (+0x80)" : "ui (+0xa0)");
-    }
-    if (!title_set.exchange(true))
-        swofty::log("[test] title: sync point complete -> %d; the title sends its own request next",
-                    int(reinterpret_cast<SyncComplete_t *>(ga.sync_complete)(sync)));
-}
-
-uint32_t *intro_detour(void *state, uint32_t *link)
-{
-    auto *st = static_cast<uint8_t *>(state);
-    if (intro_state.exchange(state) != state)
-        swofty::log("[test] title: StateIntro %p", state);
-    if (title_wanted.load() && !st[INTRO_ENGAGED])
-        title_nodes(st);
-    uint32_t *r = h_intro.call<uint32_t *>(state, link);
-    if (st[INTRO_ENGAGED] && !title_engaged.exchange(true))
-        swofty::log("[test] title: engaged (StateIntro+0xef4 set by the title's request callback); the front end "
-                    "comes next");
-    return r;
-}
-
-void title_setup()
-{
-    if (!runtime::same_build()) {
-        title_why = "StateIntro's state layout (+0xcd0, +0xef3, +0xef4) is the KB build's and this is not that build";
-        return;
-    }
-    if (!ga.intro_update || !ga.intro_vt || !ga.node_set_bool || !ga.sync_complete || !ga.bool_type || !ga.empty_node) {
-        title_why = "FeFlow_StateIntro_OnUpdate, Vm_NodeSet_Bool, Vm_SyncPoint_IsComplete or the bool node type did not "
-                    "resolve on this build";
-        return;
-    }
-    auto **vt = reinterpret_cast<void **>(ga.intro_vt);
-    if (!runtime::readable(vt, 10 * 8) || vt[9] != addr_of(ga.intro_update)) {
-        title_why = "vt_Sess_Intro slot 9 is not FeFlow_StateIntro_OnUpdate";
-        return;
-    }
-    auto h = safetyhook::InlineHook::create(addr_of(ga.intro_update), reinterpret_cast<void *>(intro_detour));
-    if (!h) {
-        title_why = "the hook on FeFlow_StateIntro_OnUpdate failed";
-        return;
-    }
-    h_intro = std::move(*h);
-    title_why.clear();
-}
+std::string continue_why = "not set up", hq_why = "not set up";
 
 // The vehicle controller system, from the game's own calls of Game_Set_VehicleController_Thunk
 // (session start hands cars to their controllers).
@@ -477,79 +357,6 @@ void controller_setup()
     controller_why.clear();
 }
 
-// The virtual pad: XInputGetState and XInputGetCapabilities in xinput1_4.dll (the game imports them
-// by ordinal 2 and 4) report a connected pad in slot 0 while the agent is armed. A script's buttons
-// replace a real pad's state while they are held; otherwise a real pad passes through.
-struct XPad {
-    uint16_t buttons;
-    uint8_t lt, rt;
-    int16_t lx, ly, rx, ry;
-};
-struct XState {
-    DWORD packet;
-    XPad pad;
-};
-struct XCaps {
-    uint8_t type, subtype;
-    uint16_t flags;
-    XPad pad;
-    uint16_t vib_l, vib_r;
-};
-
-std::atomic<uint32_t> pad_word{0};
-std::atomic<bool> pad_held{false};
-std::atomic<DWORD> pad_packet{1};
-safetyhook::InlineHook h_xget, h_xcaps;
-std::string pad_why = "not set up";
-
-DWORD WINAPI x_get_state(DWORD user, XState *s)
-{
-    DWORD r = h_xget.call<DWORD>(user, s);
-    if (user != 0 || !s || !armed.load() || stopped.load())
-        return r;
-    if (pad_held.load() || r != ERROR_SUCCESS) {
-        uint32_t w = pad_word.load();
-        std::memset(s, 0, sizeof *s);
-        s->packet = pad_packet.load();
-        s->pad.buttons = uint16_t(w);
-        s->pad.lt = uint8_t(w >> 16);
-        s->pad.rt = uint8_t(w >> 24);
-    }
-    return ERROR_SUCCESS;
-}
-
-DWORD WINAPI x_get_caps(DWORD user, DWORD flags, XCaps *c)
-{
-    DWORD r = h_xcaps.call<DWORD>(user, flags, c);
-    if (user != 0 || !c || !armed.load() || stopped.load() || r == ERROR_SUCCESS)
-        return r;
-    std::memset(c, 0, sizeof *c);
-    c->type = 1;
-    c->subtype = 1;
-    c->pad.buttons = 0xf3ff;
-    c->pad.lt = c->pad.rt = 0xff;
-    return ERROR_SUCCESS;
-}
-
-void pad_setup()
-{
-    HMODULE x = LoadLibraryW(L"xinput1_4.dll");
-    void *get = x ? reinterpret_cast<void *>(GetProcAddress(x, MAKEINTRESOURCEA(2))) : nullptr;
-    void *caps = x ? reinterpret_cast<void *>(GetProcAddress(x, MAKEINTRESOURCEA(4))) : nullptr;
-    if (!get || !caps) {
-        pad_why = "xinput1_4.dll or its XInputGetState/XInputGetCapabilities exports were not found";
-        return;
-    }
-    auto g = safetyhook::InlineHook::create(get, reinterpret_cast<void *>(x_get_state));
-    auto c = safetyhook::InlineHook::create(caps, reinterpret_cast<void *>(x_get_caps));
-    if (!g || !c) {
-        pad_why = "hooking xinput1_4.dll's exports failed";
-        return;
-    }
-    h_xget = std::move(*g);
-    h_xcaps = std::move(*c);
-    pad_why.clear();
-}
 
 // Cars: g_Sess_VehicleTable (0x146ce86e0, L2, no signature) holds a CarLive per vehicle id, so it is
 // read only on the build the KB describes. The field table is the KB's L3 rows (re/db/structs/Car*.h);
@@ -805,10 +612,10 @@ struct InGame : ta::Game {
     ta::Outcome hello() override
     {
         std::string c = "{\"route\":" + ta::esc(route_why.empty() ? "ok" : route_why) +
-                        ",\"pad\":" + ta::esc(pad_why.empty() ? "ok" : pad_why) +
+                        ",\"pad\":" + ta::esc(runtime::pad::why().empty() ? "ok" : runtime::pad::why()) +
                         ",\"ai_drives_player\":" + ta::esc(controller_why.empty() ? "ok" : controller_why) +
                         ",\"car\":" + ta::esc(car_unbound().empty() ? "ok" : car_unbound()) +
-                        ",\"title\":" + ta::esc(title_why.empty() ? "ok" : title_why) +
+                        ",\"title\":" + ta::esc(runtime::title::why().empty() ? "ok" : runtime::title::why()) +
                         ",\"resume\":" + ta::esc(continue_why.empty() ? "ok" : continue_why) +
                         ",\"advance\":" + ta::esc(hq_why.empty() ? "ok" : hq_why) + "}";
         std::string names = "[";
@@ -875,6 +682,7 @@ struct InGame : ta::Game {
     bool home_ready() override { return live_home() != nullptr; }
 
     uint64_t tile_screens() override { return screens_built.load(); }
+    uint64_t screen_changes() override { return screen_seq.load(); }
 
     ta::Outcome tile_select(const std::string &id) override;
     ta::Outcome career_content() override;
@@ -1034,11 +842,9 @@ struct InGame : ta::Game {
 
     ta::Outcome pad(const ta::PadState &p) override
     {
-        if (!pad_why.empty())
-            return ta::Outcome::unavailable(pad_why);
-        pad_word = uint32_t(p.buttons) | uint32_t(p.lt) << 16 | uint32_t(p.rt) << 24;
-        pad_held = p.buttons || p.lt || p.rt;
-        pad_packet.fetch_add(1);
+        if (!runtime::pad::why().empty())
+            return ta::Outcome::unavailable(runtime::pad::why());
+        runtime::pad::set(p.buttons, p.lt, p.rt);
         return ta::Outcome::ok();
     }
 
@@ -1099,30 +905,21 @@ struct InGame : ta::Game {
 
     ta::Outcome title_press() override
     {
-        if (!title_why.empty())
-            return ta::Outcome::unavailable(title_why);
-        title_wanted = true;
+        if (!runtime::title::why().empty())
+            return ta::Outcome::unavailable(runtime::title::why());
+        runtime::title::want(true);
         return ta::Outcome::ok();
     }
 
     std::string title_state() override
     {
-        if (title_engaged.load())
-            return "engaged";
-        auto *st = static_cast<uint8_t *>(intro_state.load());
-        if (!st)
-            return "waiting: StateIntro has not updated since the agent armed";
-        if (title_view.load() != 1)
-            return "waiting: the title's view ([[StateIntro+0xc88]+0x140]+0x198) is not up";
-        if (st[INTRO_SENT])
-            return "waiting: the title's request (kind 0x2e) has not called back (StateIntro+0xef3 set, +0xef4 not)";
-        return title_set.load() ? "waiting: the sync point is set and StateIntro has not sent its request"
-                                : "waiting: the sync point's nodes are not set yet";
+        return runtime::title::state();
     }
 
     ta::Outcome career_tile(const std::string &mode) override;
     ta::Outcome resume_press(const std::string &slot) override;
     ta::Outcome session_start() override;
+    ta::Outcome session_begin(const ta::SessionPlan &plan) override;
 
     bool sandboxed() override { return runtime::save_sandbox_armed(); }
 
@@ -1625,6 +1422,51 @@ ta::Outcome InGame::session_start()
         "trace of goto_track in a practice session");
 }
 
+// session.start (docs/design/std-2/test-suite.md "The dev session"). The game's own settings-driven session setup
+// (DevSessionSetupChampionshipComponent, vt 0x1456bfed0) reads DevSessionDataContract.* keys with
+// Ne_Config_GetString and builds the championship's tracks and session from them, but retail clears its switch
+// (+0x350, Sess_DevSession_Enable). The command validates the plan against the track base and the box, builds the
+// keys (ta::session_fill) and starts only when every row below is verified, which the bindings export only after an
+// independent agree verify row; the first one missing is the answer. Nothing is written to the game before that.
+constexpr const char *SESSION_ROWS[] = {"Ne_Config_GetString",
+                                        "Sess_DevSession_Apply",
+                                        "Sess_DevSession_Enable",
+                                        "vt_Sess_DevSessionSetupComponent",
+                                        "Sess_DevSession_Init",
+                                        "Sess_TimeTrialMode_FillDescriptor"};
+constexpr const char *SESSION_OPEN =
+    "the call that starts the load from the front end (Sess_Request_SessionLoad, not found yet) and, for a Time Trial, "
+    "the Time Trial setup it fills (it has no championship, so no dev session)";
+
+ta::Outcome InGame::session_begin(const ta::SessionPlan &plan)
+{
+    namespace trk = swofty_core::apply::tracks;
+    const trk::Base &base = trk::base();
+    const trk::BaseTrack *track = nullptr;
+    std::string label = plan.track;
+    if (!plan.track.empty() && base.ready) {
+        track = base.by_code(plan.track);
+        if (!track)
+            track = base.resolve(plan.track);
+        if (!track)
+            return ta::Outcome::fail("session.start: '" + plan.track + "' is not a track in the track base");
+        label = track->name.empty() ? track->code : track->name;
+    }
+    if (!plan.box.empty() && track) {
+        trk::Decision d = trk::guard_package(plan.box, track,
+                                             plan.mode == "time_trial" ? trk::Mode::time_trial : trk::Mode::grand_prix, label);
+        if (!d.ok)
+            return ta::Outcome::fail("session.start: " + d.title + ": " + d.body);
+    }
+    for (const char *row : SESSION_ROWS)
+        if (!swofty::api->resolve(row))
+            return ta::Outcome::unavailable(std::string("session.start: needs ") + row);
+    std::string unfilled = ta::session_unfilled(plan);
+    if (!unfilled.empty())
+        return ta::Outcome::unavailable("session.start: the dev session has no setting for " + unfilled);
+    return ta::Outcome::unavailable(std::string("session.start: needs ") + SESSION_OPEN);
+}
+
 InGame *game;
 ta::Runner *runner;
 
@@ -1640,9 +1482,11 @@ void watch()
 {
     resolve_game();
     routes_setup();
-    pad_setup();
+    runtime::pad::setup();
+    runtime::pad::claim(true);
     controller_setup();
-    title_setup();
+    runtime::title::setup();
+    ga.node_set_bool = runtime::title::node_set_bool();
     continue_setup();
     hq_setup();
     load_dlls();
@@ -1652,8 +1496,8 @@ void watch()
     swofty::log("[test] agent armed for run %s: %zu test DLL(s); route %s, pad %s, ai_drives_player %s, title %s; save "
                 "sandbox %s",
                 session.run.c_str(), dlls.size(), route_why.empty() ? "ok" : route_why.c_str(),
-                pad_why.empty() ? "ok" : pad_why.c_str(), controller_why.empty() ? "ok" : controller_why.c_str(),
-                title_why.empty() ? "ok" : title_why.c_str(),
+                runtime::pad::why().empty() ? "ok" : runtime::pad::why().c_str(), controller_why.empty() ? "ok" : controller_why.c_str(),
+                runtime::title::why().empty() ? "ok" : runtime::title::why().c_str(),
                 runtime::save_sandbox_test_mode() ? "required" : "off (the player's own saves)");
     ta::Outcome h = game->hello();
     std::string hello = h.value;
@@ -1673,9 +1517,9 @@ void watch()
             checked = GetTickCount64();
             if (!runtime::test_run_live()) {
                 stopped = true;
-                pad_word = 0;
-                pad_held = false;
-                title_wanted = false;
+                runtime::pad::release();
+                runtime::pad::claim(false);
+                runtime::title::want(false);
                 swofty::log("[test] the run's token is gone from run.json: the agent stops and lets go of the pad");
                 return;
             }
@@ -1785,8 +1629,10 @@ void testagent_screen(const char *name)
     if (!armed.load() || !name || !std::strncmp(name, "render_", 7))
         return;
     std::lock_guard<std::mutex> g(phase_lock);
-    if (screen_name != name)
+    if (screen_name != name) {
         swofty::log("[test] screen %.64s", name);
+        ++screen_seq;
+    }
     screen_name = name;
 }
 

@@ -14,6 +14,7 @@
 #include <string>
 #include <utility>
 
+#include "save_diag_logic.hpp"
 #include "save_sandbox_logic.hpp"
 
 // Test save sandbox (re/db/subsystems/core.md#save-sandbox, docs/design/std-2/test-suite.md "The save
@@ -35,6 +36,12 @@
 // Ne_SaveSystem2Win_Mount, which every save load and save passes before any file is read, quits the
 // game if the sandbox has not armed by then.
 //
+// The EA copy (EA_BACKEND, off until its rows are verified) has no Steam storage: its save device opens
+// <title folder>\<save>\<file> in place, and the title folder is a wide string held inline in the save system
+// (device+0x18, buffer size at +0x68, string at +0x78). The core wraps Start, checks the vtable, the slot and that
+// layout, then overwrites that string with saves/<profile>/ea, whose profile folder holds the save. Mount quits
+// the game if this has not run, as on Steam.
+//
 // Fail closed: in test mode, any failure (a binding that does not resolve, a hook that does not
 // install, a device or interface that is not the expected one, an unusable run folder) logs why and
 // ends the process before the title screen can load a save. Outside test mode nothing here runs.
@@ -43,6 +50,7 @@ namespace {
 
 namespace mem = swofty::mem;
 namespace ss = runtime::save_sandbox;
+namespace sdg = runtime::save_diag;
 
 constexpr const char *MIXIN = "swofty_core.dll (test save sandbox)";
 constexpr const char *START = "Ne_SaveSystem2Win_Start";
@@ -52,16 +60,22 @@ constexpr size_t DEVICE_HELPER = 0x30;
 constexpr size_t DEVICE_STORE_IN_CLOUD = 0x3e8;
 constexpr size_t HELPER_USER_DATA = 0x00;
 constexpr size_t HELPER_REMOTE = 0x108;
-constexpr UINT EXIT_SANDBOX = 91;
+constexpr UINT EXIT_SANDBOX = ss::EXIT_TEST;
 
 enum class Mode { off, on };
+enum class Backend { steam_remote, ea_local };
+
+constexpr bool EA_BACKEND = false;
 
 Mode mode = Mode::off;
-bool offered = false, settled = false, read_once = false, test_on = false;
+Backend backend = Backend::steam_remote;
+bool offered = false, settled = false, read_once = false, test_on = false, launcher_on = false;
 ss::Run run_info;
-std::wstring run_dir, saves_dir;
-std::string run_id, remote_a;
+std::wstring run_dir, saves_dir, remote_w, status_w;
+std::string run_id, remote_a, remote_a_unix;
 std::mutex lock;
+std::string last_file;
+uint32_t file_reads = 0;
 std::unique_ptr<ss::RemoteDir> remote;
 std::atomic<bool> armed{false};
 std::atomic<uint32_t> calls[ss::SLOTS];
@@ -105,7 +119,7 @@ std::wstring dos_path(const std::string &p)
 
 void status(const char *state, const std::string &why)
 {
-    if (run_dir.empty())
+    if (status_w.empty())
         return;
     std::string text = std::string("{\"schema\":1,\"run\":\"") + run_id + "\",\"state\":\"" + state + "\",\"pid\":" +
                        std::to_string(GetCurrentProcessId()) + ",\"remote\":\"";
@@ -116,18 +130,21 @@ void status(const char *state, const std::string &why)
         return o;
     };
     text += esc(remote_a) + "\",\"why\":\"" + esc(why) + "\"}\n";
-    runtime::write_file(run_dir + L"\\sandbox.json", text);
+    runtime::write_file(status_w, text);
 }
 
 [[noreturn]] void fail_closed(const std::string &why)
 {
+    UINT code = launcher_on ? ss::EXIT_LAUNCHER : EXIT_SANDBOX;
     for (int i = 0; i < 3; i++)
-        swofty::log("[saves] TEST SANDBOX FAILED: %s. The game quits now, before the title screen can load a save "
-                    "(run %s)",
-                    why.c_str(), run_id.empty() ? "?" : run_id.c_str());
+        swofty::log("[saves] %s FAILED: %s. The game quits now (exit code %u), before the title screen can load a "
+                    "save (%s %s)%s",
+                    launcher_on ? "LAUNCHER SAVES" : "TEST SANDBOX", why.c_str(), code,
+                    launcher_on ? "profile" : "run", run_id.empty() ? "?" : run_id.c_str(),
+                    launcher_on ? "; the launcher offers to play once with your Steam saves" : "");
     status("failed", why);
-    TerminateProcess(GetCurrentProcess(), EXIT_SANDBOX);
-    ExitProcess(EXIT_SANDBOX);
+    TerminateProcess(GetCurrentProcess(), code);
+    ExitProcess(code);
 }
 
 void note(int slot, const char *what)
@@ -154,9 +171,15 @@ bool p_file_write(Proxy *, const char *name, const void *data, int32_t size)
 
 int32_t p_file_read(Proxy *, const char *name, void *data, int32_t size)
 {
+    runtime::direct_start_profile_read();
     std::lock_guard<std::mutex> g(lock);
     int32_t n = remote->read(named(name), data, size);
     note(ss::FileRead, (named(name) + " -> " + std::to_string(n) + " bytes").c_str());
+    if (n > 0) {
+        last_file = sdg::file_line(named(name), n, remote->timestamp(named(name)));
+        if (++file_reads <= 8)
+            swofty::log("[saves] %s", last_file.c_str());
+    }
     return n;
 }
 
@@ -365,7 +388,7 @@ ss::Device read_device(void *device)
     return d;
 }
 
-void arm(void *device)
+void arm_steam_remote(void *device)
 {
     ss::Device d = read_device(device);
     std::string why = ss::check_device(d);
@@ -378,17 +401,79 @@ void arm(void *device)
     std::string iface_module = module_of(d.iface_vtable);
     {
         std::lock_guard<std::mutex> g(lock);
-        remote = std::make_unique<ss::RemoteDir>(std::filesystem::path(saves_dir + L"\\" + runtime::wide(ss::REMOTE)));
+        remote = std::make_unique<ss::RemoteDir>(std::filesystem::path(remote_w));
     }
     *slot = &proxy;
     if (*slot != &proxy)
         fail_closed("the Steam helper did not take the sandbox's interface");
     armed = true;
-    swofty::log("[saves] test sandbox armed (run %s): the save device's Steam remote storage (vtable in %s) is replaced "
+    swofty::log("[saves] %s armed (%s %s): the save device's Steam remote storage (vtable in %s) is replaced "
                 "by the sandbox; saves are read and written in %s; nothing reaches Steam or Steam Cloud (user data "
                 "prefix %zu chars, m_storeInCloud %u)",
-                run_id.c_str(), iface_module.c_str(), remote_a.c_str(), d.user_data_len, d.store_in_cloud);
+                launcher_on ? "launcher saves" : "test sandbox", launcher_on ? "profile" : "run", run_id.c_str(),
+                iface_module.c_str(), remote_a.c_str(), d.user_data_len, d.store_in_cloud);
     status("armed", "");
+}
+
+bool make_dir(const std::wstring &p);
+
+ss::EaDevice read_ea_device(void *device)
+{
+    ss::EaDevice d;
+    auto at = reinterpret_cast<uintptr_t>(device);
+    d.start = start_addr;
+    d.readable = at && mem::read(at, d.vtable) && mem::readable(d.vtable, 0x10) && mem::read(d.vtable + 8, d.start_slot);
+    uintptr_t config = 0;
+    if (!d.readable || !mem::read(at + ss::EA_DEVICE_CONFIG, config) || !config ||
+        !mem::readable(config, ss::EA_CONFIG_INLINE + 2 * ss::EA_TITLE_CAP))
+        return d.readable = false, d;
+    mem::read(config + ss::EA_CONFIG_CAP, d.cap);
+    mem::read(config + ss::EA_CONFIG_PTR, d.ptr);
+    d.inline_at = config + ss::EA_CONFIG_INLINE;
+    if (d.ptr == d.inline_at) {
+        const wchar_t *w = reinterpret_cast<const wchar_t *>(d.inline_at);
+        size_t n = 0;
+        while (n < ss::EA_TITLE_CAP && w[n])
+            n++;
+        d.title.assign(w, n == ss::EA_TITLE_CAP ? 0 : n);
+    }
+    return d;
+}
+
+void arm_ea_local(void *device)
+{
+    ss::EaDevice d = read_ea_device(device);
+    std::string why = ss::check_ea_device(d, mem::detail::image().lo + (ss::EA_VTABLE - 0x140000000));
+    if (!why.empty())
+        fail_closed(why);
+    std::string title_a = ss::ea_title_dir(remote_a_unix, run_id);
+    if (title_a.empty())
+        fail_closed("the launcher saves folder " + remote_a_unix + " has no EA title folder that fits the save device");
+    std::wstring title = dos_path(title_a);
+    if (title.size() >= ss::EA_TITLE_CAP)
+        fail_closed("the EA title folder " + title_a + " does not fit the save device's 260 character buffer");
+    if (!make_dir(title + L"\\profile"))
+        fail_closed("the EA title folder " + title_a + " could not be created");
+    auto *buf = reinterpret_cast<wchar_t *>(d.inline_at);
+    std::wstring before = d.title;
+    memcpy(buf, title.c_str(), (title.size() + 1) * sizeof(wchar_t));
+    if (std::wstring(buf) != title)
+        fail_closed("the save device's title folder did not take the launcher's folder");
+    armed = true;
+    swofty::log("[saves] launcher saves armed (profile %s): the EA save device's title folder %s is replaced by %s; "
+                "saves are read and written there; the EA copy's own savegame folder is not opened",
+                run_id.c_str(), runtime::narrow(before).c_str(), title_a.c_str());
+    status("armed", "");
+}
+
+void arm(void *device)
+{
+    switch (backend) {
+    case Backend::steam_remote:
+        return arm_steam_remote(device);
+    case Backend::ea_local:
+        return arm_ea_local(device);
+    }
 }
 
 uint64_t start_entry(void *device)
@@ -410,9 +495,8 @@ int upload_entry(void *device, void *op, void *a3)
 {
     if (mode != Mode::on)
         return upload_orig(device, op, a3);
-    swofty::log("[saves] sandbox: the game's corrupt-save upload (#%u) is off in a test run; nothing is zipped or "
-                "uploaded",
-                ++uploads);
+    swofty::log("[saves] sandbox: the game's corrupt-save upload (#%u) is off in %s; nothing is zipped or uploaded",
+                ++uploads, launcher_on ? "a launcher saves session" : "a test run");
     return 0;
 }
 
@@ -424,6 +508,39 @@ bool make_dir(const std::wstring &p)
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+void read_launcher()
+{
+    ss::Launcher l = ss::parse_launcher(runtime::settings_json_text());
+    ss::Selection sel = ss::select_mode(false, l, env(ss::OFF_ENV) == "off", runtime::build_distribution(), EA_BACKEND);
+    status_w = runtime::swofty_root() + runtime::wide(ss::STATUS_FILE);
+    run_id = l.profile;
+    switch (sel.mode) {
+    case ss::Mode::off:
+        swofty::log("[saves] %s", sdg::off_line(l.present, l.profile, sel.why).c_str());
+        status_w.clear();
+        return;
+    case ss::Mode::fail:
+        launcher_on = true;
+        fail_closed(sel.why);
+    case ss::Mode::launcher:
+        break;
+    case ss::Mode::test:
+        return;
+    }
+    launcher_on = true;
+    mode = Mode::on;
+    backend = runtime::build_distribution() == "ea" ? Backend::ea_local : Backend::steam_remote;
+    remote_w = dos_path(l.remote);
+    remote_a = runtime::narrow(remote_w);
+    remote_a_unix = remote_a;
+    if (backend == Backend::steam_remote && !make_dir(remote_w))
+        fail_closed("the launcher saves folder " + remote_a + " could not be created");
+    if (backend == Backend::steam_remote)
+        build_proxy();
+    swofty::log("[saves] launcher saves are on for profile %s: the game's profile save is served from %s", l.profile.c_str(),
+                remote_a.c_str());
+}
+
 void read_run()
 {
     if (read_once)
@@ -431,7 +548,7 @@ void read_run()
     read_once = true;
     std::string dir = env(ss::RUN_ENV), token = env(ss::TOKEN_ENV);
     if (dir.empty() && token.empty())
-        return;
+        return read_launcher();
     test_on = true;
     mode = Mode::on;
     if (dir.empty())
@@ -451,6 +568,8 @@ void read_run()
     }
     saves_dir = run_dir + L"\\" + runtime::wide(r.saves);
     std::wstring rem = saves_dir + L"\\" + runtime::wide(ss::REMOTE);
+    status_w = run_dir + L"\\sandbox.json";
+    remote_w = rem;
     remote_a = runtime::narrow(rem);
     if (!make_dir(rem))
         fail_closed("the sandbox folder " + remote_a + " could not be created");
@@ -465,7 +584,27 @@ namespace runtime {
 
 bool save_sandbox_test_mode()
 {
-    return mode == Mode::on;
+    return mode == Mode::on && !launcher_on;
+}
+
+bool save_sandbox_launcher_mode()
+{
+    return mode == Mode::on && launcher_on;
+}
+
+std::string save_sandbox_source()
+{
+    if (test_on)
+        return "test sandbox (run " + run_id + ")";
+    if (launcher_on && mode == Mode::on)
+        return "launcher saves (profile " + run_id + ", " + remote_a + ")";
+    return "Steam native";
+}
+
+std::string save_sandbox_file()
+{
+    std::lock_guard<std::mutex> g(lock);
+    return last_file;
 }
 
 bool save_sandbox_armed()
@@ -511,14 +650,17 @@ std::vector<CoreMixins> save_sandbox_mixins()
     if (!code_ready())
         fail_closed("this build's game code still reads encrypted when the core commits; the sandbox installs only "
                     "where the save device's start can be hooked before it runs (the Steam build)");
+    const bool ea = backend == Backend::ea_local;
     for (const char *id : {START, MOUNT, UPLOAD})
-        if (!swofty::api->resolve(id))
+        if (!(ea && id == UPLOAD) && !swofty::api->resolve(id))
             fail_closed(std::string(id) + " does not resolve on this build (no verified binding for it in bindings.json)");
     start_addr = swofty::api->resolve(START);
-    out.push_back({MIXIN,
-                   {{START, SWOFTY_MIXIN_WRAP, 1000, (void *)&start_entry, (void **)&start_orig},
-                    {MOUNT, SWOFTY_MIXIN_WRAP, 1000, (void *)&mount_entry, (void **)&mount_orig},
-                    {UPLOAD, SWOFTY_MIXIN_WRAP, 1000, (void *)&upload_entry, (void **)&upload_orig}}});
+    CoreMixins m{MIXIN,
+                 {{START, SWOFTY_MIXIN_WRAP, 1000, (void *)&start_entry, (void **)&start_orig},
+                  {MOUNT, SWOFTY_MIXIN_WRAP, 1000, (void *)&mount_entry, (void **)&mount_orig}}};
+    if (!ea)
+        m.mixins.push_back({UPLOAD, SWOFTY_MIXIN_WRAP, 1000, (void *)&upload_entry, (void **)&upload_orig});
+    out.push_back(std::move(m));
     return out;
 }
 
@@ -527,12 +669,12 @@ void save_sandbox_commit()
     if (!offered || settled || mode != Mode::on)
         return;
     settled = true;
+    const bool ea = backend == Backend::ea_local;
+    const std::string wraps = ea ? std::string(START) + " and " + MOUNT : std::string(START) + ", " + MOUNT + " and " + UPLOAD;
     if (!core_mixins_active(MIXIN))
-        fail_closed(std::string("the wraps of ") + START + ", " + MOUNT + " and " + UPLOAD +
-                    " did not install (see the [core] lines above)");
-    swofty::log("[saves] test sandbox hooked: %s, %s and %s are wrapped; the sandbox arms when the game starts its "
-                "save device",
-                START, MOUNT, UPLOAD);
+        fail_closed("the wraps of " + wraps + " did not install (see the [core] lines above)");
+    swofty::log("[saves] %s hooked: %s are wrapped; the sandbox arms when the game starts its save device",
+                launcher_on ? "launcher saves" : "test sandbox", wraps.c_str());
 }
 
 }

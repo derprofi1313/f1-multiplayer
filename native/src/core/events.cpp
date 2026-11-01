@@ -6,7 +6,9 @@
 #include "apply/moments.hpp"
 #include "events_dispatch.hpp"
 #include "perf.hpp"
+#include "session_lifecycle_logic.hpp"
 
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -35,6 +37,8 @@ const runtime::Sig S_RACE_STARTED{"Game_ChampionshipFormationLapComponent_OnRace
                                   0xb808a0};
 
 runtime::ev::Dispatcher<perf::Scope> disp;
+runtime::session_life::Lifecycle lifecycle;
+std::mutex lifecycle_lock;
 safetyhook::MidHook h_flow, h_session_enter, h_race_started;
 std::mutex queued_lock;
 std::vector<std::pair<uint32_t, std::string>> queued_by;
@@ -78,6 +82,7 @@ void flow_mid(safetyhook::Context &)
     runtime::career_content_tick();
     runtime::hub_tick();
     runtime::testagent_tick();
+    runtime::direct_start_tick();
     if (!perf::frame_claim())
         return;
     double dt = disp.tick(now_seconds());
@@ -93,6 +98,13 @@ void session_enter_mid(safetyhook::Context &)
     perf::mark("session", "enter");
     perf::Scope p(probe);
     swofty_core::apply::moments::session_load("Game_GameModule_OnSessionEnter");
+    bool restart;
+    {
+        std::lock_guard<std::mutex> g(lifecycle_lock);
+        restart = lifecycle.on_start();
+    }
+    if (restart)
+        runtime::session_emit({true, false, runtime::session_life::END_RESTART});
     disp.fire(SWOFTY_EVENT_SESSION_START, 0, 0, nullptr, now_seconds());
     swofty_core::hooks::bridge_legacy(SWOFTY_EVENT_SESSION_START, 0, 0, nullptr);
 }
@@ -272,6 +284,35 @@ const SwoftyEvents *events_table()
 void events_setup()
 {
     setup();
+}
+
+void session_emit(const session_life::Emit &e)
+{
+    if (e.end) {
+        swofty::log("[events] session.end (%s)", e.reason == session_life::END_RESTART  ? "restart"
+                                                 : e.reason == session_life::END_UNLOAD ? "ended as the unload began"
+                                                                                       : "StateSession exited");
+        events_fire(SWOFTY_EVENT_SESSION_END, e.reason, 0, nullptr);
+    }
+    if (e.unload) {
+        swofty::log("[events] session.unload (StateUnloadSession entering)");
+        events_fire(SWOFTY_EVENT_SESSION_UNLOAD, 0, 0, nullptr);
+    }
+}
+
+void session_flow(const char *known, int to)
+{
+    if (!known || (to != 1 && to != 3))
+        return;
+    session_life::Emit e;
+    {
+        std::lock_guard<std::mutex> g(lifecycle_lock);
+        if (to == 3 && !std::strcmp(known, "StateSession"))
+            e = lifecycle.on_session_exiting();
+        else if (to == 1 && !std::strcmp(known, "StateUnloadSession"))
+            e = lifecycle.on_unload_entering();
+    }
+    session_emit(e);
 }
 
 size_t events_fire(const char *event, int64_t a, int64_t b, const void *data)

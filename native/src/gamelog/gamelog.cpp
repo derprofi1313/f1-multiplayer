@@ -234,10 +234,26 @@ Level classify(const char *channel, const char *fmt)
 
 void quiet_handler(const wchar_t *, const wchar_t *, const wchar_t *, unsigned, uintptr_t) {}
 
+int bad_read(DWORD code)
+{
+    return code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR || code == EXCEPTION_DATATYPE_MISALIGNMENT
+               ? EXCEPTION_EXECUTE_HANDLER
+               : EXCEPTION_CONTINUE_SEARCH;
+}
+
+int guarded_vsprintf(char *out, size_t n, const char *fmt, va_list ap)
+{
+    __try {
+        return __stdio_common_vsprintf(_CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR, out, n, fmt, nullptr, ap);
+    } __except (bad_read(GetExceptionCode())) {
+        return -1;
+    }
+}
+
 int format(char *out, size_t n, const char *fmt, va_list ap)
 {
     _invalid_parameter_handler old = _set_thread_local_invalid_parameter_handler(quiet_handler);
-    int r = __stdio_common_vsprintf(_CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR, out, n, fmt, nullptr, ap);
+    int r = guarded_vsprintf(out, n, fmt, ap);
     _set_thread_local_invalid_parameter_handler(old);
     if (r < 0)
         snprintf(out, n, "(unformattable) %s", fmt);

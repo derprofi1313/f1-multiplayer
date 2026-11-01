@@ -7,6 +7,7 @@
 #include "hud_guard.hpp"
 #include "hud_png.hpp"
 #include "perf.hpp"
+#include "room_cover.hpp"
 #include "d3d12_hooks.hpp"
 
 #include <safetyhook.hpp>
@@ -1339,7 +1340,8 @@ void draw_frame(IDXGISwapChain3 *sc, const d3d12hooks::Swapchain *known, void *)
         std::lock_guard<std::mutex> g(reg_lock);
         subs = reg.subs();
     }
-    if (subs.empty() && !cap.on)
+    bool cover = runtime::room_cover::active();
+    if (subs.empty() && !cap.on && !cover)
         return;
     if (!known) {
         if (std::find(unknown_told.begin(), unknown_told.end(), sc) == unknown_told.end()) {
@@ -1409,8 +1411,10 @@ void draw_frame(IDXGISwapChain3 *sc, const d3d12hooks::Swapchain *known, void *)
                     desc.BufferDesc.Height, int(desc.BufferDesc.Format), desc.BufferCount, c.by.c_str());
     }
     ULONGLONG now = GetTickCount64();
-    if (!subs.empty() && !killed("paint"))
-        paint_frame(sc, c.queue, subs, desc, now, c.color_space_set ? c.color_space : hud::guard::COLOR_SPACE_UNSET);
+    bool addons = !subs.empty() && !killed("paint");
+    if (addons || cover)
+        paint_frame(sc, c.queue, addons ? subs : std::vector<hud::Paintsub>(), desc, now,
+                    c.color_space_set ? c.color_space : hud::guard::COLOR_SPACE_UNSET);
     if (cap.on && !killed("capture"))
         capture_step(sc, c.queue, desc, now);
 }
@@ -1425,6 +1429,7 @@ void paint_frame(IDXGISwapChain3 *sc, ID3D12CommandQueue *q, const std::vector<h
         input_frame(subs, float(desc.BufferDesc.Width), float(desc.BufferDesc.Height), now);
         hud::build(subs, frame, float(desc.BufferDesc.Width), float(desc.BufferDesc.Height), overlay_off());
         draw_cursor(frame);
+        runtime::room_cover::paint(frame, now);
     }
     const std::vector<Vertex> &verts = frame.verts;
     flush_stats(now);
@@ -1892,14 +1897,17 @@ void setup()
     }
     capture_setup();
     bool on = gate_on();
-    if (!on && !cap.on) {
+    bool cover = runtime::room_cover::setup();
+    if (cover)
+        swofty::log("[cover] a direct start is requested; the present hook arms for its cover screen");
+    if (!on && !cap.on && !cover) {
         swofty::log("[overlay] the overlay feature is experimental and off; the HUD present hook is not armed");
         return;
     }
-    if (!on)
+    if (!on && cap.on)
         swofty::log("[overlay] the overlay is off; the present hook arms for SWOFTY_FRAME_CAPTURE only");
     implemented = on;
-    if (on) {
+    if (on || cover) {
         renderer.font_tried = true;
         if (!hud::img::grey(hud::font::ATLAS_PNG, hud::font::ATLAS_PNG_SIZE, renderer.font_px))
             swofty::log("[overlay] decoding the built-in font atlas failed; text draws nothing");

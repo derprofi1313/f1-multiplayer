@@ -1,0 +1,817 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vehicle.handling 1.1",
+  "x-registry": "vehicle.handling",
+  "x-version": "1.1",
+  "x-applies": "session",
+  "x-snapshot": false,
+  "description": "cars::Handling: one car handling file: the sections and keys it holds, in snake_case. A section is an open object. The launcher applies the records in data files to the handling files it ships at build (experimental, 1.7.0); the core stores them.",
+  "type": "object",
+  "properties": {
+    "from": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-ref": "vehicle.handling"
+    },
+    "vtf": {
+      "$ref": "#/$defs/path"
+    },
+    "class": {
+      "enum": [
+        "f1",
+        "f1_26",
+        "f2",
+        "classic",
+        "my_team",
+        "safety_car"
+      ],
+      "default": "f1"
+    },
+    "damage_scale": {
+      "type": "number",
+      "default": 1.0
+    },
+    "chassis": {
+      "type": "object",
+      "properties": {
+        "mass": {
+          "type": "number",
+          "default": 0
+        },
+        "moi_x": {
+          "type": "number",
+          "default": 0
+        },
+        "moi_y": {
+          "type": "number",
+          "default": 0
+        },
+        "moi_z": {
+          "type": "number",
+          "default": 0
+        },
+        "com_y": {
+          "type": "number",
+          "default": 0
+        },
+        "com_z": {
+          "type": "number",
+          "default": 0
+        },
+        "ffb_scale": {
+          "type": "number",
+          "default": 1
+        },
+        "tyre_physics_group": {
+          "type": "string"
+        }
+      }
+    },
+    "f1_aero": {
+      "type": "object",
+      "properties": {
+        "front_coeff_lift_multiplier": {
+          "type": "number",
+          "default": 1
+        },
+        "rear_coeff_lift_multiplier": {
+          "type": "number",
+          "default": 1
+        },
+        "body_drag_coeff_min": {
+          "type": "number",
+          "default": 0
+        },
+        "body_drag_coeff_max": {
+          "type": "number",
+          "default": 0
+        },
+        "front_coeff_lift_vs_ride_height": {
+          "$ref": "#/$defs/curve"
+        },
+        "rear_coeff_lift_vs_ride_height": {
+          "$ref": "#/$defs/curve"
+        },
+        "slipstream": {
+          "type": "object",
+          "properties": {
+            "drag": {
+              "type": "number",
+              "default": 0.8
+            },
+            "front_wing": {
+              "type": "number",
+              "default": 0.76
+            },
+            "rear_wing": {
+              "type": "number",
+              "default": 0.82
+            },
+            "lift": {
+              "type": "number",
+              "default": 0.91
+            },
+            "car_width": {
+              "type": "number",
+              "default": 1.5
+            }
+          },
+          "additionalProperties": false
+        },
+        "drs": {
+          "type": "object",
+          "properties": {
+            "hardware": {
+              "type": "boolean",
+              "default": true
+            },
+            "angle": {
+              "type": "number",
+              "default": 0
+            },
+            "open_close_speed": {
+              "type": "number",
+              "default": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "core_aero": {
+      "type": "object"
+    },
+    "wing_damage": {
+      "type": "object"
+    },
+    "suspension_damage": {
+      "type": "object"
+    },
+    "tyre_damage": {
+      "type": "object"
+    },
+    "body_damage": {
+      "type": "object"
+    },
+    "tyres": {
+      "type": "object"
+    },
+    "engine": {
+      "type": "object"
+    },
+    "gearbox": {
+      "type": "object",
+      "properties": {
+        "final_drive_ratio": {
+          "type": "number",
+          "default": 0
+        },
+        "gear_ratio_reverse": {
+          "type": "number",
+          "default": 0
+        },
+        "upshift_clutch_time": {
+          "type": "number",
+          "default": 0
+        },
+        "upshift_gear_delay": {
+          "type": "number",
+          "default": 0
+        },
+        "time_off_throttle_gear_up": {
+          "type": "number",
+          "default": 0
+        },
+        "downshift_clutch_time": {
+          "type": "number",
+          "default": 0
+        },
+        "downshift_gear_delay": {
+          "type": "number",
+          "default": 0
+        },
+        "time_on_throttle_gear_down": {
+          "type": "number",
+          "default": 0
+        },
+        "max_clutch_torque": {
+          "type": "number",
+          "default": 0
+        },
+        "ratios": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 9
+        },
+        "up_speed_multiple": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 8
+        },
+        "down_speed_multiple": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 8
+        },
+        "allow_gear_ratio_tuning": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_h_pattern": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "fuel_tank": {
+      "type": "object"
+    },
+    "fuel_ecu": {
+      "type": "object"
+    },
+    "brake_ecu": {
+      "type": "object",
+      "properties": {
+        "brake_front": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_rear": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_front_backwards": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_rear_backwards": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_front_forwards": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_rear_forwards": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_migration_torque": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_migration_torque_ai": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_pressure": {
+          "type": "number",
+          "default": 0
+        }
+      }
+    },
+    "steering": {
+      "type": "object"
+    },
+    "differential": {
+      "type": "object",
+      "properties": {
+        "drive_type": {
+          "type": "string",
+          "enum": [
+            "rwd",
+            "fwd",
+            "awd"
+          ],
+          "default": "rwd"
+        },
+        "rear_power_proportion": {
+          "type": "number",
+          "default": 100
+        },
+        "diff_rear_max_locking_torque": {
+          "type": "number",
+          "default": 0
+        }
+      }
+    },
+    "suspension": {
+      "type": "object",
+      "properties": {
+        "front": {
+          "type": "object",
+          "properties": {
+            "rest_x": {
+              "type": "number",
+              "default": 0
+            },
+            "rest_z": {
+              "type": "number",
+              "default": 0
+            },
+            "rest_length": {
+              "type": "number",
+              "default": 0
+            },
+            "min_height": {
+              "type": "number",
+              "default": 0
+            },
+            "max_height": {
+              "type": "number",
+              "default": 0
+            },
+            "bump_stop_height": {
+              "type": "number",
+              "default": 0
+            },
+            "ride_height_offset": {
+              "type": "number",
+              "default": 0
+            },
+            "spring_constant": {
+              "type": "number",
+              "default": 0
+            },
+            "third_spring_constant": {
+              "type": "number",
+              "default": 0
+            },
+            "anti_roll_constant": {
+              "type": "number",
+              "default": 0
+            },
+            "slow_bump_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "fast_bump_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "slow_rebound_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "fast_rebound_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "bump_stop_rising_spring": {
+              "type": "number",
+              "default": 0
+            },
+            "bump_stop_rising_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "tyre_radius": {
+              "type": "number",
+              "default": 0
+            },
+            "grip_multiplier": {
+              "type": "number",
+              "default": 1
+            }
+          }
+        },
+        "rear": {
+          "type": "object",
+          "properties": {
+            "rest_x": {
+              "type": "number",
+              "default": 0
+            },
+            "rest_z": {
+              "type": "number",
+              "default": 0
+            },
+            "rest_length": {
+              "type": "number",
+              "default": 0
+            },
+            "min_height": {
+              "type": "number",
+              "default": 0
+            },
+            "max_height": {
+              "type": "number",
+              "default": 0
+            },
+            "bump_stop_height": {
+              "type": "number",
+              "default": 0
+            },
+            "ride_height_offset": {
+              "type": "number",
+              "default": 0
+            },
+            "spring_constant": {
+              "type": "number",
+              "default": 0
+            },
+            "third_spring_constant": {
+              "type": "number",
+              "default": 0
+            },
+            "anti_roll_constant": {
+              "type": "number",
+              "default": 0
+            },
+            "slow_bump_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "fast_bump_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "slow_rebound_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "fast_rebound_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "bump_stop_rising_spring": {
+              "type": "number",
+              "default": 0
+            },
+            "bump_stop_rising_damping": {
+              "type": "number",
+              "default": 0
+            },
+            "tyre_radius": {
+              "type": "number",
+              "default": 0
+            },
+            "grip_multiplier": {
+              "type": "number",
+              "default": 1
+            }
+          }
+        },
+        "use_model_positions": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "tuning": {
+      "type": "object",
+      "properties": {
+        "differential_on_throttle_multiple_min": {
+          "type": "number",
+          "default": 0
+        },
+        "brake_bias_max": {
+          "type": "number",
+          "default": 0
+        },
+        "chassis_com_z": {
+          "$ref": "#/$defs/range"
+        },
+        "engine_braking": {
+          "$ref": "#/$defs/range"
+        },
+        "differential_on_throttle_multiple": {
+          "$ref": "#/$defs/range"
+        },
+        "differential_off_throttle_multiple": {
+          "$ref": "#/$defs/range"
+        },
+        "differential_mid_corner_multiple": {
+          "$ref": "#/$defs/range"
+        },
+        "differential_high_speed_kph": {
+          "$ref": "#/$defs/range"
+        },
+        "differential_preload": {
+          "$ref": "#/$defs/range"
+        },
+        "front_suspension_camber": {
+          "$ref": "#/$defs/range"
+        },
+        "rear_suspension_camber": {
+          "$ref": "#/$defs/range"
+        },
+        "front_suspension_toe": {
+          "$ref": "#/$defs/range"
+        },
+        "rear_suspension_toe": {
+          "$ref": "#/$defs/range"
+        },
+        "front_suspension_rest_length": {
+          "$ref": "#/$defs/range"
+        },
+        "rear_suspension_rest_length": {
+          "$ref": "#/$defs/range"
+        },
+        "front_ride_height": {
+          "$ref": "#/$defs/range"
+        },
+        "rear_ride_height": {
+          "$ref": "#/$defs/range"
+        },
+        "front_suspension_spring_constant": {
+          "$ref": "#/$defs/range"
+        },
+        "rear_suspension_spring_constant": {
+          "$ref": "#/$defs/range"
+        },
+        "front_suspension_third_spring": {
+          "$ref": "#/$defs/range"
+        },
+        "rear_suspension_third_spring": {
+          "$ref": "#/$defs/range"
+        },
+        "front_suspension_anti_roll_bar": {
+          "$ref": "#/$defs/range"
+        },
+        "rear_suspension_anti_roll_bar": {
+          "$ref": "#/$defs/range"
+        },
+        "brake_pressure": {
+          "$ref": "#/$defs/range"
+        },
+        "brake_migration": {
+          "$ref": "#/$defs/range"
+        },
+        "front_tyre_pressure": {
+          "$ref": "#/$defs/range"
+        },
+        "rear_tyre_pressure": {
+          "$ref": "#/$defs/range"
+        }
+      }
+    },
+    "assists": {
+      "type": "object"
+    },
+    "turbo": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "lag_spoof",
+            "full"
+          ],
+          "default": "full"
+        },
+        "max_boost": {
+          "type": "number",
+          "default": 0
+        }
+      }
+    },
+    "ers": {
+      "description": "null removes the section and the ERS parts of every radUpgrade block; absent leaves it.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "max_deploy_power": {
+          "type": "number",
+          "default": 0
+        },
+        "energy_store_capacity": {
+          "type": "number",
+          "default": 0
+        },
+        "exhaust_power_coefficient": {
+          "type": "number",
+          "default": 0
+        },
+        "overtake_power_efficiency": {
+          "type": "number",
+          "default": 0
+        },
+        "max_brake_torque_mguk": {
+          "type": "number",
+          "default": 0
+        }
+      }
+    },
+    "plank": {
+      "type": "object"
+    },
+    "rad_upgrades": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rad_upgrade"
+      }
+    },
+    "extends": {
+      "description": "Data files only: this record is a variant of that record, and its value is a merge patch on the base.",
+      "type": "string",
+      "x-ref": "vehicle.handling",
+      "x-missing": {
+        "default": "required",
+        "allow": [
+          "required"
+        ]
+      }
+    },
+    "edits": {
+      "description": "Changes applied after the typed sections: path is section.key or section.front.key, op set, scale or add.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "set",
+              "scale",
+              "add"
+            ],
+            "default": "set"
+          },
+          "value": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "remove": {
+      "description": "Sections the build removes, with their parts in every radUpgrade block.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": true,
+  "$defs": {
+    "path": {
+      "description": "A Path: a file or folder in the addon's folder, the game's original file (stock), or resources in an archive. null: empty.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[^/\\\\][^\\\\]*$"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stock": {
+              "type": "string",
+              "pattern": "^[^/\\\\][^\\\\]*$"
+            }
+          },
+          "required": [
+            "stock"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "erp": {
+              "type": "string",
+              "pattern": "^[^/\\\\][^\\\\]*$"
+            },
+            "prefix": {
+              "type": "string"
+            },
+            "kinds": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "enum": [
+                  "textures",
+                  "materials",
+                  "idf",
+                  "wep"
+                ]
+              }
+            }
+          },
+          "required": [
+            "erp",
+            "prefix",
+            "kinds"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "erp": {
+              "type": "string",
+              "pattern": "^[^/\\\\][^\\\\]*$"
+            },
+            "resources": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^eaid://"
+              }
+            }
+          },
+          "required": [
+            "erp",
+            "resources"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "rad_upgrade": {
+      "description": "cars::RadUpgrade: a named set of edits to the handling file's keys.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "section": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              },
+              "op": {
+                "enum": [
+                  "=",
+                  "+",
+                  "-",
+                  "*"
+                ]
+              },
+              "value": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "section",
+              "key",
+              "op",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "name",
+        "changes"
+      ],
+      "additionalProperties": false
+    },
+    "range": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "curve": {
+      "description": "A Curve: [x, y] number pairs.",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    }
+  }
+}

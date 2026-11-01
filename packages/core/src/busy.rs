@@ -236,6 +236,11 @@ mod tests {
         assert!(refuse_change(data, "mod.a", "Mod A").is_err());
         refuse_change(data, "mod.b", "Mod B").unwrap();
         drop(lock);
+        drop(
+            SessionLock::wait(data, std::time::Duration::from_secs(10))
+                .unwrap()
+                .expect("a forked child still holds the dropped lock"),
+        );
         assert_eq!(Busy::live(data), None, "its process let go of the lock");
         refuse_change(data, "mod.a", "Mod A").unwrap();
         let own = Busy::new("default", vec!["mod.a".into()]);

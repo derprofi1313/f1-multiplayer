@@ -90,6 +90,7 @@ typedef struct SwoftyAssets {
 
 #define SWOFTY_EVENT_SESSION_START "session.start"
 #define SWOFTY_EVENT_SESSION_END "session.end"
+#define SWOFTY_EVENT_SESSION_UNLOAD "session.unload"
 #define SWOFTY_EVENT_RACE_START "race.start"
 #define SWOFTY_EVENT_LAP "lap"
 #define SWOFTY_EVENT_FLAG "flag"
@@ -652,7 +653,7 @@ typedef struct SwoftyEra {
 
 enum { SWOFTY_TOO_SMALL = 4 };
 
-enum { SWOFTY_SCOPE_GLOBAL = 0, SWOFTY_SCOPE_PROFILE = 1, SWOFTY_SCOPE_CAREER = 2 };
+enum { SWOFTY_SCOPE_GLOBAL = 0, SWOFTY_SCOPE_PROFILE = 1, SWOFTY_SCOPE_CAREER = 2, SWOFTY_SCOPE_AUTOMATIC = 3 };
 enum { SWOFTY_APPLIES_BOOT = 0, SWOFTY_APPLIES_CONTENT = 1, SWOFTY_APPLIES_SESSION = 2, SWOFTY_APPLIES_READ = 3 };
 enum {
     SWOFTY_STATUS_OK = 0,
@@ -866,6 +867,35 @@ typedef struct SwoftyCareerOps {
     int (*set_look)(const char *driver_ref, const char *look_ref);
 } SwoftyCareerOps;
 
+/* Career saves (standard library 1.7.0, experimental), from the core export SwoftyCoreCareerSaves; not a
+   SwoftyApi field. Table version 1. The core keeps a career index in the launcher's data folder
+   ($DATA/careers/index.json, written at each profile load, career.loaded and profile save) and, beside it,
+   one data file per career and addon ($DATA/careers/data/<career>/<addon>.json). index: the career index as
+   JSON, {"version": 1, "careers": [{"career", "mode", "content", "team", "driver", "season", "round",
+   "last_saved", "addons": [{"id", "need", "why"}], "status"}]}, written to json (SWOFTY_TOO_SMALL: *len holds
+   the size needed). current: the loaded career's id, SWOFTY_ASSET_LATE with no career loaded. describe: a JSON
+   request {"driver", "team", "season", "round", "label"} (every key optional) naming the loaded career for the
+   index. need: the loaded career needs the addon (a version range, may be empty) for the reason; the index
+   lists it and the launcher warns before Play when the addon is off. data_get/data_set/data_remove: an addon's
+   own JSON for a career, versioned by the addon (the version is stored and handed back; the addon migrates).
+   data_set is refused (SWOFTY_REFUSED) for a career the index does not know; data_get on a career with no data
+   reports SWOFTY_ASSET_INVALID. missing: the careers the index knew that the last profile load did not find,
+   as the index's career records. Calls from any thread. */
+#define SWOFTY_CAREER_SAVES_VERSION 1
+
+typedef struct SwoftyCareerSaves {
+    uint32_t version;
+    int (*available)(void);
+    int (*index)(char *json, size_t cap, size_t *len);
+    int (*current)(char *id, size_t cap, size_t *len);
+    int (*describe)(SwoftyText request_json);
+    int (*need)(const char *addon, const char *range, const char *why);
+    int (*data_get)(const char *career, const char *addon, char *json, size_t cap, size_t *len, uint32_t *version);
+    int (*data_set)(const char *career, const char *addon, uint32_t version, SwoftyText json);
+    int (*data_remove)(const char *career, const char *addon);
+    int (*missing)(char *json, size_t cap, size_t *len);
+} SwoftyCareerSaves;
+
 /* Session operations (standard library 1.6), from the core export SwoftyCoreSessionOps; not a SwoftyApi
    field. Table version 1. Every call runs on the game's flow thread and reports SWOFTY_ASSET_UNAVAILABLE
    when a game function it needs does not resolve on the running build. control: the mode (0 human, 1 AI)
@@ -891,6 +921,105 @@ typedef struct SwoftySessionOps {
     int (*spectator_set_camera)(int32_t camera);
     int (*spectator_current)(int32_t *car, int32_t *camera);
 } SwoftySessionOps;
+
+/* Live car operations (standard library 1.6, experimental), from the core export SwoftyCoreCarOps; not a SwoftyApi
+   field. Table version 2; version 1 is the first six members and keeps its layout. A car is the game's vehicle id
+   (CarLive.vehicle_id, the slot of g_Sess_VehicleTable), dense from 0 in create order; the handle is that slot's
+   CarLive and identifies the car while it exists (the game moves its last car into a destroyed car's slot). count:
+   the cars in g_Sess_VehicleCount. car: the handle of the car with that index and its is_ai word (1 while the AI
+   drives it, the player's car included). get and set take the index and optionally the handle (NULL skips the
+   check) and one of the SWOFTY_CAR_* field ids; SWOFTY_ASSET_LATE when the slot is empty, holds another car or a
+   system's owner does not match, SWOFTY_ASSET_INVALID for an unknown field or a value outside its range,
+   SWOFTY_ASSET_UNAVAILABLE when the car has no such system, the running exe is not the build the field offsets were
+   read from, or the field is off because a KB row it needs has no independent verify row yet (the core logs
+   "<field> off: needs <row>" once). set writes one dword (an obfuscated value is re-encoded under its current key),
+   only on the game's flow thread (else SWOFTY_ASSET_LATE), and the game reads it on its next use; the game
+   overwrites it when it rebuilds the car, replays its R&D upgrades or applies a setup. SWOFTY_CAR_ENGINE_LIMITER is
+   the handling value (rad/s); set also re-runs the engine's derived values (Car_Engine_ComputeDerived_Thunk), and
+   answers SWOFTY_ASSET_UNAVAILABLE without writing when that function does not resolve. SWOFTY_CAR_FINAL_DRIVE and
+   SWOFTY_CAR_GEAR_RATIO_1 + n (handling values) rebuild the gearbox ratio table after the write
+   (Car_Tuning_SetFinalDrive 0x20|0x2000, no gear change); SWOFTY_ASSET_UNAVAILABLE when that function does not
+   resolve or the gearbox builds its table from setup ratios.
+
+   Version 2 members:
+   field: the id of a field by its Handling path ("steering.max_steering_lock", "aero.lift_scale"), the path
+   being the name car.profile records and the docs use; SWOFTY_ASSET_INVALID for an unknown path.
+   layer: the core keeps a layer (owner, car index or SWOFTY_CAR_ALL, field, op, value, priority) and applies it
+   to the matching cars now (on the flow thread) and again after every car.built, car.reset, R&D upgrade replay
+   and setup apply, so the value outlives the game's own resets. Layers of one field compose by priority (lower
+   first, so the higher one wins a set), then by the order they were added: set replaces the value, scale
+   multiplies it, add adds to it. The base is the game's value after its last reset (a virtual field's neutral
+   value: engine.power_scale 1, engine.limiter_offset_rpm 0, ai.grip_scale 1). A value outside the field's range
+   is clamped when applied. token: the handle unlayer takes. SWOFTY_ASSET_UNAVAILABLE for an off field.
+   unlayer: removes a layer by token and restores the cars it changed.
+   refit_tyres: writes the TyrePhysicsGroup string of the car's Chassis and refits its tyres
+   (Car_Tyre_SetWearFactor); SWOFTY_ASSET_UNAVAILABLE until a car-to-tyre-component lookup is bound.
+   SWOFTY_CAR_TYRES_*_GRIP_SCALE is off: the tyre solver (Car_Suspension_SolveWheels) never reads
+   CarSuspTyreType.grip_multiplier, only the AI snapshot and force feedback do.
+   SWOFTY_CAR_CHASSIS_BALLAST_KG rebuilds the mass without fuel until the next fuel update.
+   Virtual fields (engine.power_scale, engine.limiter_offset_rpm, ai.grip_scale) write nothing to game data: the
+   core's handlers on site_Car_EngineDriveTorque and site_Ai_TableGripInput read them per car. */
+#define SWOFTY_CAR_OPS_VERSION 2
+#define SWOFTY_CAR_ALL 0xffffffffu
+
+#define SWOFTY_CAR_STEERING_LOCK 1u
+#define SWOFTY_CAR_CLUTCH_TORQUE 2u
+#define SWOFTY_CAR_DIFF_ON_THROTTLE 3u
+#define SWOFTY_CAR_DIFF_OFF_THROTTLE 4u
+#define SWOFTY_CAR_TURBO_MAX_BOOST 5u
+#define SWOFTY_CAR_FUEL_MASS 6u
+#define SWOFTY_CAR_WING_SPEED_THRESHOLD 7u
+#define SWOFTY_CAR_WING_DAMAGE_SCALE 8u
+#define SWOFTY_CAR_WING_CHASSIS_DAMAGE_MULTIPLE 9u
+#define SWOFTY_CAR_WING_SIDE_DETACH_SCALE 10u
+#define SWOFTY_CAR_WING_FULL_DETACH_SCALE 11u
+#define SWOFTY_CAR_SUSP_SPEED_THRESHOLD 12u
+#define SWOFTY_CAR_SUSP_FRONT_DAMAGE_SCALE 13u
+#define SWOFTY_CAR_SUSP_REAR_DAMAGE_SCALE 14u
+#define SWOFTY_CAR_SUSP_WHEEL_DETACH_SCALE 15u
+#define SWOFTY_CAR_SUSP_PARTS_DETACH_SCALE 16u
+#define SWOFTY_CAR_SUSP_LINEAR_FRACTURE_LIMIT 17u
+#define SWOFTY_CAR_SUSP_ANGULAR_FRACTURE_LIMIT 18u
+#define SWOFTY_CAR_ENGINE_LIMITER 19u
+#define SWOFTY_CAR_FINAL_DRIVE 20u
+#define SWOFTY_CAR_GEAR_RATIO_1 21u /* 1st; 2nd..9th are 22u..29u */
+#define SWOFTY_CAR_AERO_LIFT_SCALE 30u
+#define SWOFTY_CAR_AERO_DRAG_SCALE 31u
+#define SWOFTY_CAR_ENGINE_POWER_SCALE 32u
+#define SWOFTY_CAR_ENGINE_LIMITER_OFFSET_RPM 33u
+#define SWOFTY_CAR_AI_GRIP_SCALE 34u
+#define SWOFTY_CAR_TYRES_FRONT_GRIP_SCALE 35u
+#define SWOFTY_CAR_TYRES_REAR_GRIP_SCALE 36u
+#define SWOFTY_CAR_CHASSIS_BALLAST_KG 37u
+#define SWOFTY_CAR_BRAKES_BIAS 38u
+#define SWOFTY_CAR_BRAKES_PRESSURE 39u
+#define SWOFTY_CAR_SUSP_FRONT_CAMBER 40u
+#define SWOFTY_CAR_SUSP_FRONT_TOE 41u
+#define SWOFTY_CAR_SUSP_FRONT_ANTI_ROLL 42u
+#define SWOFTY_CAR_SUSP_FRONT_RIDE_HEIGHT_OFFSET 43u
+#define SWOFTY_CAR_SUSP_REAR_CAMBER 44u
+#define SWOFTY_CAR_SUSP_REAR_TOE 45u
+#define SWOFTY_CAR_SUSP_REAR_ANTI_ROLL 46u
+#define SWOFTY_CAR_SUSP_REAR_RIDE_HEIGHT_OFFSET 47u
+
+#define SWOFTY_CAR_OP_SET 0u
+#define SWOFTY_CAR_OP_SCALE 1u
+#define SWOFTY_CAR_OP_ADD 2u
+
+typedef struct SwoftyCarOps {
+    uint32_t version;
+    int (*available)(void);
+    int (*count)(uint32_t *cars);
+    int (*car)(uint32_t index, void **handle, uint32_t *is_ai);
+    int (*get)(uint32_t index, const void *handle, uint32_t field, float *value);
+    int (*set)(uint32_t index, const void *handle, uint32_t field, float value);
+    /* version 2 */
+    int (*field)(const char *path, uint32_t *id);
+    int (*layer)(const char *owner, uint32_t index, uint32_t field, uint32_t op, float value, int32_t priority,
+                 uint32_t *token);
+    int (*unlayer)(uint32_t token);
+    int (*refit_tyres)(uint32_t index, const char *group);
+} SwoftyCarOps;
 
 typedef struct SwoftyApi {
     uint32_t version;
@@ -932,7 +1061,9 @@ typedef const SwoftyRegistry *(*SwoftyCoreRegistryFn)(void);
 typedef const SwoftyHooks *(*SwoftyCoreHooksFn)(void);
 typedef const SwoftyServices *(*SwoftyCoreServicesFn)(void);
 typedef const SwoftyCareerOps *(*SwoftyCoreCareerOpsFn)(void);
+typedef const SwoftyCareerSaves *(*SwoftyCoreCareerSavesFn)(void);
 typedef const SwoftySessionOps *(*SwoftyCoreSessionOpsFn)(void);
+typedef const SwoftyCarOps *(*SwoftyCoreCarOpsFn)(void);
 
 #define SWOFTY_STAGE_WINDOW 1
 
@@ -949,7 +1080,9 @@ SWOFTY_EXPORT const SwoftyRegistry *SwoftyCoreRegistry(void);
 SWOFTY_EXPORT const SwoftyHooks *SwoftyCoreHooks(void);
 SWOFTY_EXPORT const SwoftyServices *SwoftyCoreServices(void);
 SWOFTY_EXPORT const SwoftyCareerOps *SwoftyCoreCareerOps(void);
+SWOFTY_EXPORT const SwoftyCareerSaves *SwoftyCoreCareerSaves(void);
 SWOFTY_EXPORT const SwoftySessionOps *SwoftyCoreSessionOps(void);
+SWOFTY_EXPORT const SwoftyCarOps *SwoftyCoreCarOps(void);
 
 #ifdef __cplusplus
 }

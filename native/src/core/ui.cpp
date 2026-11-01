@@ -14,6 +14,7 @@ namespace runtime {
 std::string hook_error(const safetyhook::MidHook::Error &e);
 void netplay_screen(const char *name);
 void testagent_screen(const char *name);
+void direct_start_screen(const char *name);
 }
 
 bool ui_vm_init(uintptr_t module_base, const std::wstring &swofty_dir);
@@ -563,6 +564,7 @@ uint64_t open_hook(void *scene, void *screen, void *a3, void *a4)
     if (readable(screen, 0x70) && readable(*reinterpret_cast<void **>(static_cast<uint8_t *>(screen) + 0x68), 10)) {
         runtime::netplay_screen(chars(*reinterpret_cast<void **>(static_cast<uint8_t *>(screen) + 0x68)));
         runtime::testagent_screen(chars(*reinterpret_cast<void **>(static_cast<uint8_t *>(screen) + 0x68)));
+        runtime::direct_start_screen(chars(*reinterpret_cast<void **>(static_cast<uint8_t *>(screen) + 0x68)));
     }
     if (screen != last_screen) {
         prev_scene = last_scene;

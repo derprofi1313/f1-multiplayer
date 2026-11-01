@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui_kit::{Image, ImageFormat};
-use swofty_core::asset::{AssetOp, OpFile};
+use swofty_core::asset::AssetOp;
 use swofty_core::folders::{Entry, Folders, Key};
 use swofty_core::launcher::Summary;
 use swofty_core::manifest::{AddonManifest, Category};
@@ -83,7 +83,8 @@ pub struct Changes {
 }
 
 impl Changes {
-    pub fn read(store: &Store, item: &AddonItem) -> Self {
+    /// Reads the op files as a build does, with the profile's settings for the addon's options.
+    pub fn read(store: &Store, profile: &Profile, item: &AddonItem) -> Self {
         let m = &item.manifest;
         let dir = store.addons_dir().join(&m.id);
         let mut c = Self {
@@ -92,10 +93,7 @@ impl Changes {
             ..Self::default()
         };
         let ops = m.operations.op_files().flat_map(|(kind, rel)| {
-            let file = std::fs::read(dir.join(rel))
-                .ok()
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .and_then(|v| OpFile::from_value(v, kind).ok());
+            let file = swofty_core::build::read_op_file(&dir.join(rel), kind, m, profile).ok();
             if file.is_none() {
                 c.unreadable.push(rel.to_owned());
             }
@@ -259,10 +257,17 @@ pub struct Library {
     /// come last.
     pub entries: Vec<Entry>,
     pub loaded: Instant,
+    unsaved_order: bool,
 }
 
 impl Library {
     pub fn load(store: &Store) -> Self {
+        let mut library = Self::read(store);
+        library.save_order(store);
+        library
+    }
+
+    pub fn read(store: &Store) -> Self {
         let mut error = None;
         let mut note = |e: swofty_core::Error| error = Some(e.to_string());
         let profile = store.profile(&store.active_profile()).unwrap_or_else(|e| {
@@ -314,15 +319,7 @@ impl Library {
                 .cloned()
                 .unwrap_or_else(|| folders.place(id, false, None))
         };
-        if swofty_core::folders::arrange(&mut profile.clone(), place_of) {
-            match store.update_profile(&profile.name, |p| {
-                swofty_core::folders::arrange(p, place_of);
-                Ok(p.clone())
-            }) {
-                Ok(p) => profile = p,
-                Err(e) => note(e),
-            }
-        }
+        let unsaved_order = swofty_core::folders::arrange(&mut profile, place_of);
         let listed: std::collections::HashSet<&str> = profile.addons.iter().map(|a| a.id.as_str()).collect();
         let order = profile.addons.iter().map(|a| a.id.clone()).chain(
             addons
@@ -379,6 +376,21 @@ impl Library {
             folders,
             entries,
             loaded: Instant::now(),
+            unsaved_order,
+        }
+    }
+
+    pub fn save_order(&mut self, store: &Store) {
+        if !std::mem::take(&mut self.unsaved_order) {
+            return;
+        }
+        let place_of = |id: &str| self.place(id);
+        match store.update_profile(&self.profile.name, |p| {
+            swofty_core::folders::arrange(p, place_of);
+            Ok(p.clone())
+        }) {
+            Ok(p) => self.profile = p,
+            Err(e) => self.error = Some(e.to_string()),
         }
     }
 
@@ -421,10 +433,11 @@ pub fn plural(n: usize, one: &str, many: &str) -> String {
 #[cfg(test)]
 mod tests {
     use swofty_core::manifest::{AddonManifest, Category};
+    use swofty_core::profile::Profile;
     use swofty_core::store::Store;
     use swofty_core::view::{Icon, SectionSpec};
 
-    use super::{AddonIcon, AddonItem, SectionItem, Source, listed, section_icon, tracks_page};
+    use super::{AddonIcon, AddonItem, Changes, SectionItem, Source, listed, section_icon, tracks_page};
 
     fn addon(id: &str, track: bool) -> AddonItem {
         let manifest = AddonManifest::parse(&format!(
@@ -488,6 +501,44 @@ mod tests {
             Some(AddonIcon::Glyph(d)) if &*d == b"<svg/>"
         ));
         assert!(section_icon(&store, "t.mods", "tracks").is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn changes_count_op_files_that_use_option_templating() {
+        let root = std::env::temp_dir().join(format!("swofty-launcher-changes-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let store = Store::new(&root);
+        let dir = store.addons_dir().join("t.dnf").join("db");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("dnf.json"),
+            r#"{"schema_version": 1, "ops": [
+              {"op": "set", "select": "t.r", "field": "chance", "value": "{{chance}}"},
+              {"op": "set", "select": "t.r", "field": "failures", "value": "1", "when": {"failures": true}}
+            ]}"#,
+        )
+        .unwrap();
+        let mut item = addon("t.dnf", false);
+        item.manifest = AddonManifest::parse(
+            r#"{"schema_version":1,"id":"t.dnf","name":"DNF","version":"1.0.0","author":"t","compat":{"game":"f1_25"},
+              "options": [
+                {"id": "failures", "type": "toggle", "default": false, "binds": "db"},
+                {"id": "chance", "type": "slider", "min": 0, "max": 10, "step": 1, "default": 2, "binds": "db"}
+              ],
+              "operations": {"database": ["db/dnf.json", "db/missing.json"]}}"#,
+        )
+        .unwrap();
+        let mut profile = Profile::new("t");
+        let c = Changes::read(&store, &profile, &item);
+        assert_eq!(
+            (c.database, c.unreadable),
+            (1, vec!["db/missing.json".to_owned()])
+        );
+        profile
+            .set_option(&item.manifest, "failures", true.into())
+            .unwrap();
+        assert_eq!(Changes::read(&store, &profile, &item).database, 2);
         std::fs::remove_dir_all(&root).ok();
     }
 }

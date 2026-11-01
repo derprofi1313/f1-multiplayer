@@ -4,6 +4,7 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::{Icon, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 
+use swofty_core::ea_app::Moved;
 use swofty_core::install::EA_APP_SEEN;
 
 use crate::discord::{BLURPLE, BLURPLE_HOVER, INVITE, LOGO};
@@ -221,6 +222,33 @@ impl Shell {
                                 }),
                         ),
                 )
+        });
+    }
+}
+
+impl Shell {
+    /// The EA app has F1 25 in another folder, so its launch link can't
+    /// start this copy: say so before anything is built, and offer the
+    /// recorded copy when the game is there.
+    pub(crate) fn show_ea_moved(&mut self, moved: Moved, window: &mut Window, cx: &mut Context<Self>) {
+        let shell = cx.entity().downgrade();
+        let text = format!("{}.", moved.text());
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let alert = alert
+                .width(px(560.))
+                .title("The EA app has F1 25 in another folder")
+                .description(text.clone());
+            if !moved.there {
+                return alert.ok_text("OK");
+            }
+            let (shell, dir) = (shell.clone(), moved.recorded.clone());
+            alert
+                .ok_text(format!("Play the copy in {}", dir.display()))
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    shell.update(cx, |s, cx| s.use_copy(dir.clone(), window, cx)).ok();
+                    true
+                })
         });
     }
 }

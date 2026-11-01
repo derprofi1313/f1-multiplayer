@@ -47,6 +47,14 @@ struct Facts {
         auto it = tracks.find(std::string(code));
         return it == tracks.end() ? nullptr : &it->second;
     }
+
+    bool any_track_holds(const std::string &world) const
+    {
+        for (auto &[code, t] : tracks)
+            if (t.worlds.count(world))
+                return true;
+        return false;
+    }
 };
 
 inline std::vector<std::string> facts_strings(const swofty::json::Value &v)

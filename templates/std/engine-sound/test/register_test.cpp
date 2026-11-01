@@ -58,7 +58,7 @@ int main()
     check(sound && (*sound)["settings_from"].as_string() == "game/ferrari_2025", "mixing from the stock Ferrari");
 
     auto ferrari = core.layers("vehicle", "swofty.classic-seasons-2017/ferrari");
-    check(ferrari.size() == 1 && ferrari[0]->scope == SWOFTY_SCOPE_GLOBAL, "one layer on the 2017 Ferrari");
+    check(ferrari.size() == 1 && ferrari[0]->scope == SWOFTY_SCOPE_AUTOMATIC, "one layer on the 2017 Ferrari");
     if (ferrari.size() == 1) {
         auto v = core.apply(*ferrari[0], json::parse(R"({ "label": "cs17_ferrari", "model": "cars/cs17_ferrari.erp",
             "engine_sound": "swofty.classic-seasons-2017/ferrari" })"));

@@ -1,8 +1,6 @@
-//! Backups of the game's profile save around sessions that leave out an addon
-//! whose manifest sets `saves.affects`. F1 25 keeps every career in the one
-//! profile save, and a profile save written without such an addon drops that
-//! addon's careers, so the launcher copies the save files first and reports a
-//! save that changed and shrank.
+//! The profile save backups in `$DATA/save-backups/` from before the career
+//! vault. The vault imports them (`vault::migrate`) and removes the folder at
+//! its first prune; `take` stays as the copy-and-check the vault reuses.
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +13,7 @@ pub const DIR: &str = "save-backups";
 pub const KEEP: usize = 10;
 pub const PREFIX: &str = "savegame@profile#";
 pub const MANIFEST: &str = "manifest.json";
-const NOTICE: &str = "state/save-notice.json";
+pub const NOTICE: &str = "state/save-notice.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedFile {
@@ -48,31 +46,6 @@ pub struct Backup {
     pub manifest: Manifest,
 }
 
-/// A profile save that a session changed and made smaller than its backup.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Shrink {
-    pub backup: String,
-    pub profile: String,
-    pub absent: Vec<String>,
-    pub before: u64,
-    pub after: u64,
-}
-
-impl Shrink {
-    pub fn text(&self) -> String {
-        format!(
-            "the profile save shrank from {} to {} bytes in a session without {}; their careers may be gone. \
-             The save from before the session is backup {}: restore it with `f1mp saves restore {}` while F1 25 \
-             is closed",
-            self.before,
-            self.after,
-            self.absent.join(", "),
-            self.backup,
-            self.backup
-        )
-    }
-}
-
 /// `YYYYMMDD-HHMMSS` in UTC, the name prefix of a backup.
 pub fn stamp(secs: i64) -> String {
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
@@ -99,6 +72,28 @@ pub fn now_stamp() -> String {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     stamp(secs)
+}
+
+/// The seconds a [`stamp`] names.
+pub fn parse_stamp(s: &str) -> Option<i64> {
+    let (date, time) = s.get(..15)?.split_once('-')?;
+    if date.len() != 8 || time.len() != 6 || !date.chars().chain(time.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>, of: &str| of[r].parse::<i64>().ok();
+    let (y, m, d) = (n(0..4, date)?, n(4..6, date)?, n(6..8, date)?);
+    let (hh, mm, ss) = (n(0..2, time)?, n(2..4, time)?, n(4..6, time)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+    let y = y - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
 }
 
 pub fn backups_dir(root: &Path) -> PathBuf {
@@ -272,110 +267,6 @@ pub fn find(root: &Path, name: &str) -> Result<Backup> {
     })
 }
 
-/// Fewer bytes than this is ordinary career play; a career container the game drops
-/// is tens of kilobytes (a Progressive Career container was about 69 KB).
-pub const SHRINK_REPORTED: u64 = 24 * 1024;
-
-/// The session's effect on the profile save: `Some` when a file changed or went
-/// missing and the files now hold at least [`SHRINK_REPORTED`] fewer bytes than the
-/// backup.
-pub fn compare(backup: &Backup, save_dir: &Path) -> Result<Option<Shrink>> {
-    let mut changed = false;
-    let mut after = 0;
-    for f in &backup.manifest.files {
-        let path = save_dir.join(&f.name);
-        match path.is_file() {
-            true => {
-                let now = record(&path)?;
-                after += now.size;
-                changed |= now != *f;
-            }
-            false => changed = true,
-        }
-    }
-    let before = backup.manifest.total();
-    Ok((changed && after + SHRINK_REPORTED <= before).then(|| Shrink {
-        backup: backup.name.clone(),
-        profile: backup.manifest.profile.clone(),
-        absent: backup.manifest.absent.clone(),
-        before,
-        after,
-    }))
-}
-
-pub const CLOSE_STEAM: &str = "Exit Steam completely (Steam menu > Exit), then restore again. Starting Steam afterwards uploads the restored save.";
-
-fn blocker_of(game: bool, steam: bool) -> Option<String> {
-    match (game, steam) {
-        (true, _) => Some(format!("F1 25 is running; close it first. {CLOSE_STEAM}")),
-        (false, true) => Some(format!(
-            "Steam is running and would call the restored save corrupted. {CLOSE_STEAM}"
-        )),
-        (false, false) => None,
-    }
-}
-
-/// Why a restore must wait: F1 25 or Steam is running.
-pub fn restore_blocker() -> Option<String> {
-    blocker_of(
-        crate::process::game_running(),
-        crate::steam_client::status().state != crate::steam_client::State::Stopped,
-    )
-}
-
-/// Copies a backup back over the profile save after backing up the current
-/// files; returns that new backup. The caller checks that F1 25 and Steam are closed.
-pub fn restore(root: &Path, name: &str, save_dir: &Path, stamp: &str) -> Result<Option<Backup>> {
-    let b = find(root, name)?;
-    for f in &b.manifest.files {
-        let src = b.dir.join(&f.name);
-        if record(&src)? != *f {
-            return Err(Error::Other(format!(
-                "backup {name} is damaged: {} does not match its manifest",
-                f.name
-            )));
-        }
-    }
-    let before = take(
-        root,
-        save_dir,
-        &b.manifest.profile,
-        &[],
-        stamp,
-        &format!("before restoring {name}"),
-    )?;
-    for f in &b.manifest.files {
-        let to = save_dir.join(&f.name);
-        let tmp = save_dir.join(format!(".{}.swofty-restore", f.name));
-        std::fs::copy(b.dir.join(&f.name), &tmp).map_err(io_err(&tmp))?;
-        std::fs::rename(&tmp, &to).map_err(io_err(&to))?;
-        if record(&to)? != *f {
-            return Err(Error::Other(format!("{} did not restore cleanly", to.display())));
-        }
-    }
-    if read_notice(root).is_some_and(|n| n.backup == name) {
-        clear_notice(root);
-    }
-    Ok(before)
-}
-
-pub fn write_notice(root: &Path, s: &Shrink) -> Result<()> {
-    let path = root.join(NOTICE);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(io_err(dir))?;
-    }
-    let json = serde_json::to_vec_pretty(s).map_err(|e| Error::Other(e.to_string()))?;
-    std::fs::write(&path, json).map_err(io_err(&path))
-}
-
-pub fn read_notice(root: &Path) -> Option<Shrink> {
-    serde_json::from_slice(&std::fs::read(root.join(NOTICE)).ok()?).ok()
-}
-
-pub fn clear_notice(root: &Path) {
-    std::fs::remove_file(root.join(NOTICE)).ok();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +291,12 @@ mod tests {
     fn stamps_in_utc() {
         assert_eq!(stamp(0), "19700101-000000");
         assert_eq!(stamp(1_793_062_123), "20261027-004843");
+        for secs in [0, 951_782_400, 1_709_164_799, 1_793_062_123, 4_102_444_800] {
+            assert_eq!(parse_stamp(&stamp(secs)), Some(secs), "{secs}");
+        }
+        assert_eq!(parse_stamp("20261027-004843-default"), Some(1_793_062_123));
+        assert_eq!(parse_stamp("2026102-004843"), None);
+        assert_eq!(parse_stamp("20261327-004843"), None);
     }
 
     #[test]
@@ -480,76 +377,5 @@ mod tests {
         assert_eq!(left.len(), KEEP);
         assert_eq!(left[0].name, "20261027-010011-p_1");
         assert_eq!(left[KEEP - 1].name, "20261027-010002-p_1");
-    }
-
-    #[test]
-    fn reports_a_changed_and_smaller_save() {
-        let root = tmp("compare");
-        let dir = saves(&root, &[1u8; 90_000]);
-        let b = take(
-            &root,
-            &dir,
-            "default",
-            &["swofty.progressive".into()],
-            "20261027-010203",
-            "session",
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(compare(&b, &dir).unwrap(), None);
-        std::fs::write(dir.join("savegame@profile#NXDSMWW.BWW"), [2u8; 95_000]).unwrap();
-        assert_eq!(compare(&b, &dir).unwrap(), None, "a bigger save is not reported");
-        std::fs::write(dir.join("savegame@profile#NXDSMWW.BWW"), [2u8; 89_344]).unwrap();
-        assert_eq!(compare(&b, &dir).unwrap(), None, "ordinary play is not reported");
-        std::fs::write(dir.join("savegame@profile#NXDSMWW.BWW"), [2u8; 20_000]).unwrap();
-        let s = compare(&b, &dir).unwrap().unwrap();
-        assert_eq!((s.before, s.after), (90_000 + 416, 20_000 + 416));
-        assert_eq!(s.absent, ["swofty.progressive"]);
-        assert!(s.text().contains("f1mp saves restore 20261027-010203-default"));
-        write_notice(&root, &s).unwrap();
-        assert_eq!(read_notice(&root), Some(s));
-    }
-
-    #[test]
-    fn restore_waits_for_the_game_and_steam() {
-        assert_eq!(blocker_of(false, false), None);
-        assert!(blocker_of(true, false).unwrap().contains("F1 25 is running"));
-        let steam = blocker_of(false, true).unwrap();
-        assert!(steam.contains("Steam is running"));
-        assert!(steam.contains("Exit Steam completely"));
-        assert!(blocker_of(true, true).unwrap().contains("Exit Steam completely"));
-    }
-
-    #[test]
-    fn restore_backs_up_the_current_save_first() {
-        let root = tmp("restore");
-        let dir = saves(&root, &[1u8; 90_000]);
-        let b = take(&root, &dir, "default", &[], "20261027-010203", "session")
-            .unwrap()
-            .unwrap();
-        std::fs::write(dir.join("savegame@profile#NXDSMWW.BWW"), [2u8; 20_000]).unwrap();
-        write_notice(&root, &compare(&b, &dir).unwrap().unwrap()).unwrap();
-        let pre = restore(&root, &b.name, &dir, "20261027-020000").unwrap().unwrap();
-        assert_eq!(
-            std::fs::read(dir.join("savegame@profile#NXDSMWW.BWW")).unwrap(),
-            [1u8; 90_000]
-        );
-        assert_eq!(
-            std::fs::read(pre.dir.join("savegame@profile#NXDSMWW.BWW")).unwrap(),
-            [2u8; 20_000]
-        );
-        assert_eq!(pre.manifest.reason, format!("before restoring {}", b.name));
-        assert_eq!(read_notice(&root), None);
-        assert_eq!(
-            std::fs::read(dir.join("savegame@highlights001#ABC")).unwrap(),
-            b"replay"
-        );
-        assert!(restore(&root, "nope", &dir, "20261027-020001").is_err());
-        std::fs::write(b.dir.join("savegame@profile#QKRHMYXE"), b"tampered").unwrap();
-        assert!(restore(&root, &b.name, &dir, "20261027-020002").is_err());
-        assert_eq!(
-            std::fs::read(dir.join("savegame@profile#QKRHMYXE")).unwrap(),
-            [7u8; 416]
-        );
     }
 }

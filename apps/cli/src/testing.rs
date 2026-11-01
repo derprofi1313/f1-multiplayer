@@ -31,6 +31,7 @@ use swofty_core::testsuite::lock::{self, GameLock};
 use swofty_core::testsuite::plan::{self, Batch, Plan};
 use swofty_core::testsuite::report::{self, BatchReport, Report, Status, StepReport, TestReport, exit};
 use swofty_core::testsuite::sandbox::{self, RunDir, RunOptions};
+use swofty_core::testsuite::session;
 use swofty_core::testsuite::suite::{self, Env, Kind, Selector, Suite, Test};
 
 use crate::time::{now_secs, stamp};
@@ -49,6 +50,11 @@ pub enum TestCommand {
         about = "Start F1 25 in test mode and send the test agent the commands you type (route, read, wait, pad, capture, career load, quit...)"
     )]
     Shell(ShellArgs),
+    #[command(
+        about = "Start F1 25 straight into a Grand Prix or Time Trial session, with no title or menu, then take commands as the shell does",
+        after_help = "Example (a 3-lap race at Silverstone in Vettel's Ferrari, on the 2020 Classic Seasons box):\n  swofty --profile default test session grand_prix cs_f1_2020 silverstone session=race laps=3 team=ferrari driver=vettel --fixture <fixture>\n\nA Grand Prix takes the box (its entrant list), the track, team= and driver= (the player's seat; a part of the label is enough: williams, vettel), session= (practice1..3, qualifying, race, or a game session name such as practice_s or qualifying_o) and laps= (races). weather= and ai_difficulty= are not applied yet. The game runs on a copy of --profile (or the active profile) with its addons and settings, behind a cover screen until the garage or the race broadcast is up. Use --fixture: a new Grand Prix overwrites the profile save's Grand Prix."
+    )]
+    Session(SessionArgs),
     #[command(
         subcommand,
         about = "Capture, list and check fixtures: saved games in a known state"
@@ -91,6 +97,23 @@ pub struct ShellArgs {
         help = "Start in the save sandbox with this fixture's saves (a fixture folder or a name in the fixture store), so career load, advance and save now work"
     )]
     fixture: Option<String>,
+    #[arg(skip)]
+    direct: Option<Value>,
+    #[arg(skip)]
+    base: Option<String>,
+}
+
+#[derive(Args)]
+pub struct SessionArgs {
+    #[arg(
+        required = true,
+        num_args = 1..,
+        value_name = "PLAN",
+        help = "<time_trial|grand_prix> [box] [track] [team=..] [driver=..] [session=..] [weather=..] [laps=..] [ai_difficulty=..]"
+    )]
+    plan: Vec<String>,
+    #[command(flatten)]
+    shell: ShellArgs,
 }
 
 #[derive(Subcommand)]
@@ -243,11 +266,20 @@ fn parse_wait(s: &str) -> std::result::Result<Duration, String> {
     Ok(Duration::from_secs(secs))
 }
 
-pub fn command(store: &Store, cmd: TestCommand) -> Result<ExitCode> {
+/// `named` is the `--profile` given on the command line and `active` the profile it resolves to (the active
+/// profile without one). A shell starts on a copy of `named`; a session on a copy of `active`.
+pub fn command(store: &Store, named: Option<&str>, active: &str, cmd: TestCommand) -> Result<ExitCode> {
     match cmd {
         TestCommand::Plan(a) => plan_command(&a),
         TestCommand::Run(a) => run_command(store, a),
-        TestCommand::Shell(a) => shell_command(store, a),
+        TestCommand::Shell(mut a) => {
+            a.base = named.map(str::to_owned);
+            shell_command(store, a)
+        }
+        TestCommand::Session(mut a) => {
+            a.shell.base = Some(active.to_owned());
+            session_command(store, a)
+        }
         TestCommand::Fixture(c) => fixture_command(store, c),
     }
 }
@@ -530,7 +562,7 @@ fn sandbox_preflight(
 }
 
 pub(crate) fn sandboxed(b: &Batch) -> bool {
-    b.env.kind == Kind::Career
+    b.env.kind == Kind::Career || (b.env.kind == Kind::Session && b.env.str("fixture").is_some())
 }
 
 pub(crate) fn check_sandbox(
@@ -1066,6 +1098,26 @@ impl Harness<'_> {
         Ok(())
     }
 
+    /// The shell's profile as a copy of `base`: the same addons in the same order, on or off as there, with the
+    /// same settings, so the build applies what `f1mp --profile <base> run --apply` applies; `extra` are
+    /// switched on as well.
+    fn profile_from(&self, base: &str, name: &str, extra: &[String]) -> Result<()> {
+        if !self.store.profile_names()?.iter().any(|n| n == base) {
+            bail!("there is no profile {base}: swofty profile list shows them");
+        }
+        let installed = self.store.addons()?;
+        let mut p = self.store.profile(base)?;
+        p.name = name.to_owned();
+        for id in extra {
+            if !installed.contains_key(id) {
+                bail!("{id} is not installed: install it with swofty addons install <folder>");
+            }
+            p.set_enabled(id, true)?;
+        }
+        self.store.save_profile(&p)?;
+        Ok(())
+    }
+
     fn batch(&mut self, index: usize, b: &Batch) -> (BatchReport, Vec<TestReport>) {
         let (mut br, mut reports) = Self::blank(b, index);
         let runnable: Vec<usize> = (0..b.tests.len())
@@ -1263,7 +1315,8 @@ impl Harness<'_> {
                     sandbox.as_ref().and_then(|s| s.mode.as_deref()),
                     a,
                     &mut *run,
-                )
+                )?;
+                self.env_session(&b.env, a, &mut *run)
             }
         });
         if dropped_agent {
@@ -1543,6 +1596,19 @@ impl Harness<'_> {
                 .timeout_s
                 .map_or(self.times.step, Duration::from_secs)
                 .min(test_limit.saturating_sub(started.elapsed()));
+            if let Some(suite::Wait::Ms(n)) = s.host {
+                let t0 = Instant::now();
+                let span = Duration::from_millis(n).min(test_limit.saturating_sub(started.elapsed()));
+                while t0.elapsed() < span && !run.finished() {
+                    std::thread::sleep(self.times.poll.min(span - t0.elapsed()));
+                }
+                r.steps.push(StepReport {
+                    step: s.text.clone(),
+                    status: "ok".to_owned(),
+                    ms: Some(ms(t0)),
+                });
+                continue;
+            }
             let by_agent =
                 s.host.is_none() || matches!(s.host, Some(suite::Wait::Event(_))) && agent.is_some();
             if by_agent {
@@ -1815,6 +1881,30 @@ impl Harness<'_> {
         }
     }
 
+    /// A session environment: the agent starts the Time Trial or Grand Prix
+    /// session and the CLI waits for it to say the load has started. A
+    /// refusal ends the batch with the agent's reason.
+    fn env_session(
+        &self,
+        env: &Env,
+        a: &mut Agent,
+        run: &mut dyn Running,
+    ) -> std::result::Result<(), String> {
+        if env.kind != Kind::Session {
+            return Ok(());
+        }
+        let (cmd, args) = session::agent_command(env);
+        say(&format!("{cmd} {}", args));
+        let reply = a.call(&cmd, args, self.times.career, &self.times, run)?;
+        match reply.outcome {
+            Outcome::Ok => {
+                say(&format!("session started ({})", reply.value));
+                Ok(())
+            }
+            _ => Err(format!("{cmd}: {}", reply.text())),
+        }
+    }
+
     /// A boot environment ends on the main menu: the agent answers the
     /// core's notice and waits for the home screen. An agent that can't
     /// leaves the batch where the front end put it.
@@ -2061,6 +2151,26 @@ fn strip(v: &Value) -> Value {
     v.get("value").cloned().unwrap_or_else(|| v.clone())
 }
 
+/// The request the core's direct start reads (native/src/core/direct_start.cpp): the game starts with
+/// `SWOFTY_DIRECT_START=@<run folder>/direct_start.json` and goes from boot straight to the session.
+const DIRECT_START_ENV: &str = "SWOFTY_DIRECT_START";
+const DIRECT_START_FILE: &str = "direct_start.json";
+
+fn session_command(store: &Store, a: SessionArgs) -> Result<ExitCode> {
+    let words: Vec<&str> = a.plan.iter().map(String::as_str).collect();
+    let mut request = match session::shell_args(&words) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("swofty: {e}");
+            return Ok(ExitCode::from(exit::FAIL));
+        }
+    };
+    request["target"] = "session".into();
+    let mut shell = a.shell;
+    shell.direct = Some(request);
+    shell_command(store, shell)
+}
+
 fn shell_command(store: &Store, a: ShellArgs) -> Result<ExitCode> {
     let run_id = format!("shell-{}", stamp());
     let g = match crate::build::game(store, a.game.clone()) {
@@ -2156,17 +2266,21 @@ fn shell_session(store: &Store, game: &Path, a: &ShellArgs, run_id: &str) -> Res
     let b = Batch {
         key: "shell".into(),
         env: Env {
-            kind: match fixture {
-                Some(_) => Kind::Career,
-                None => Kind::Boot,
+            kind: match (&a.direct, &fixture) {
+                (Some(_), _) => Kind::Session,
+                (None, Some(_)) => Kind::Career,
+                (None, None) => Kind::Boot,
             },
-            params: Default::default(),
+            params: match &a.direct {
+                Some(Value::Object(m)) => m.clone().into_iter().collect(),
+                _ => Default::default(),
+            },
         },
         addons: a.addons.clone(),
         settings: Default::default(),
         tests: Vec::new(),
     };
-    let code = shell_loop(h, &b, &out, fixture);
+    let code = shell_loop(h, &b, a.base.as_deref(), &out, fixture);
     if store.profile_names().is_ok_and(|n| n.contains(&profile)) {
         store.delete_profile(&profile).ok();
     }
@@ -2177,8 +2291,20 @@ fn shell_session(store: &Store, game: &Path, a: &ShellArgs, run_id: &str) -> Res
     code
 }
 
-fn shell_loop(h: Harness, b: &Batch, out: &Path, fixture: Option<Fixture>) -> Result<ExitCode> {
-    h.profile(b, h.profile)?;
+fn shell_loop(
+    h: Harness,
+    b: &Batch,
+    base: Option<&str>,
+    out: &Path,
+    fixture: Option<Fixture>,
+) -> Result<ExitCode> {
+    match base {
+        Some(base) => {
+            h.profile_from(base, h.profile, &b.addons)?;
+            say(&format!("profile: a copy of {base} with its addons and settings"));
+        }
+        None => h.profile(b, h.profile)?,
+    }
     let (mut br, mut reports) = Harness::blank(b, 1);
     let mut agent = h.open_run(b, 1, out, fixture.is_some())?;
     let sandbox = match fixture {
@@ -2191,7 +2317,14 @@ fn shell_loop(h: Harness, b: &Batch, out: &Path, fixture: Option<Fixture>) -> Re
             }
         },
     };
-    let env = agent.run.env();
+    let mut env = agent.run.env();
+    if b.env.kind == Kind::Session {
+        let path = agent.run.root.join(DIRECT_START_FILE);
+        let request: serde_json::Map<String, Value> = b.env.params.clone().into_iter().collect();
+        std::fs::write(&path, serde_json::to_vec_pretty(&Value::Object(request))?)?;
+        env.push((DIRECT_START_ENV.to_owned(), format!("@{}", path.display())));
+        say(&format!("direct start: {}", path.display()));
+    }
     say(&format!(
         "starting F1 25 in test mode (run folder {}{})",
         agent.run.root.display(),

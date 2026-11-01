@@ -13,6 +13,9 @@
 #include <thread>
 
 #include "netplay_drive_logic.hpp"
+#include "netplay_room.hpp"
+#include "room_cover.hpp"
+#include "virtual_pad.hpp"
 #include "netplay_session.hpp"
 
 // Launcher commands for LAN netplay, over the same kind of file mailbox the Career Editor uses
@@ -61,6 +64,7 @@ void **lan_vt;
 safetyhook::MidHook h_populate;
 unsigned probes;
 std::atomic<bool> lan_systems;
+std::atomic<void *> init_registry{nullptr};
 
 template <class T> T lan_field(size_t off)
 {
@@ -71,14 +75,12 @@ template <class T> T lan_field(size_t off)
 
 void capture_vm(safetyhook::Context &c);
 
-void populate_mid(safetyhook::Context &c)
+bool init_lan_item(void *registry, void *ctx, const char *from)
 {
-    capture_vm(c);
     if (lan_systems.load() || probes >= MAX_PROBES)
-        return;
-    auto *registry = reinterpret_cast<void *>(c.rbx), *ctx = reinterpret_cast<void *>(c.rdi);
-    if (!runtime::readable(registry, 8) || !runtime::readable(ctx, 0x28))
-        return;
+        return lan_systems.load();
+    if (!lan_vt || !runtime::readable(registry, 8) || !runtime::readable(ctx, 0x28))
+        return false;
     ++probes;
     std::memset(lan_item, 0, sizeof lan_item);
     std::memcpy(lan_item, &lan_vt, sizeof lan_vt);
@@ -86,9 +88,20 @@ void populate_mid(safetyhook::Context &c)
     auto *modes = lan_field<void *>(LAN_GAME_MODES), *network = lan_field<void *>(LAN_NETWORK);
     bool ok = rc == 0 && modes && network;
     lan_systems = ok;
-    swofty::log("[netplay] LAN systems probe %u: init returned 0x%llx, game modes %p, network %p, Network.LAN.active %u%s",
-                probes, (unsigned long long)rc, modes, network, unsigned(lan_item[LAN_ACTIVE]),
+    if (ok)
+        init_registry = registry;
+    swofty::log("[netplay] LAN systems probe %u (%s): init returned 0x%llx, game modes %p, network %p, Network.LAN.active %u%s",
+                probes, from, (unsigned long long)rc, modes, network, unsigned(lan_item[LAN_ACTIVE]),
                 ok ? "; the mode switch can run without the LAN tile" : "");
+    return ok;
+}
+
+void populate_mid(safetyhook::Context &c)
+{
+    capture_vm(c);
+    if (lan_systems.load() || probes >= MAX_PROBES)
+        return;
+    init_lan_item(reinterpret_cast<void *>(c.rbx), reinterpret_cast<void *>(c.rdi), "tile builder");
 }
 
 // View models the menus fire routes from. Every tile-list view model keeps its TileList at +0x2c8
@@ -237,7 +250,64 @@ void probe_setup()
 constexpr DWORD POLL_MS = 250;
 constexpr uint64_t HEARTBEAT_MS = 5000;
 
-std::atomic<bool> armed, frontend, lobby, home_screen;
+std::atomic<bool> armed, frontend, lobby, home_screen, room_launched;
+
+// The core's notice over the front end, for a game the launcher started for a room. The title is the direct
+// start's (title_skip.cpp); the notice is passed with the shared virtual pad (virtual_pad.cpp), which this
+// takes a claim on, so the game sees one controller and no second one is installed.
+std::atomic<bool> skip_armed{false}, transition_screen{false}, activity_screen{false};
+drive::TitleSkip title_skip;
+bool skip_held = false;
+
+void skip_setup()
+{
+    runtime::pad::setup();
+    if (!runtime::pad::why().empty()) {
+        swofty::log("[netplay] room launch: the notice is not passed, no virtual pad (%s)", runtime::pad::why().c_str());
+        return;
+    }
+    runtime::pad::claim(true);
+    title_skip.start(GetTickCount64());
+    skip_armed = true;
+    runtime::room_cover::step("Starting F1 25", 0.05f, 0.2f);
+    swofty::log("[netplay] room launch: the notice is passed with the shared virtual pad's a");
+}
+
+void skip_tick()
+{
+    if (!skip_armed.load())
+        return;
+    drive::SkipFacts f;
+    f.frontend = frontend.load();
+    f.home = home_screen.load();
+    f.transition = transition_screen.load();
+    f.lobby = lobby.load();
+    f.activity = activity_screen.load();
+    int before = title_skip.presses();
+    bool press = title_skip.tick(f, GetTickCount64());
+    if (press != skip_held) {
+        skip_held = press;
+        if (press)
+            runtime::pad::set(runtime::pad::A);
+        else
+            runtime::pad::release();
+    }
+    if (title_skip.presses() != before) {
+        runtime::room_cover::step("Getting past the title screen", 0.2f, 0.38f);
+        swofty::log("[netplay] room launch: press %d of the shared virtual pad's a for the notice", title_skip.presses());
+    }
+    if (title_skip.done()) {
+        skip_armed = false;
+        if (skip_held)
+            runtime::pad::release();
+        skip_held = false;
+        // The game binds the player to the virtual pad at the title; letting go of the last claim unplugs it and the
+        // game stops on CONTROLLER DISCONNECTED, so the claim stays held, idle, for the rest of the run.
+        swofty::log("[netplay] room launch: stopped pressing the notice after %d press(es) (%s); the virtual pad stays plugged in", title_skip.presses(),
+                    activity_screen.load() ? "the activity screen is up" : home_screen.load() ? "the main menu is up" : "the lobby or the time limit");
+    }
+}
+
 std::atomic<int> role{int(drive::Role::none)};
 
 std::mutex queue_lock;
@@ -254,6 +324,13 @@ drive::State state()
     s.lobby = lobby.load();
     s.home_screen = home_screen.load();
     s.role = drive::Role(role.load());
+    if (runtime::netplay_room::status().phase == runtime::netplay_room::Phase::failed)
+        s.room_failed = runtime::netplay_room::last_error();
+    auto cover = runtime::room_cover::snapshot();
+    if (cover.active) {
+        s.cover_step = cover.label;
+        s.cover_percent = cover.percent;
+    }
     return s;
 }
 
@@ -341,6 +418,51 @@ void watch()
 
 }
 
+namespace runtime::netplay_room::bind {
+
+void *network()
+{
+    auto *network = lan_field<uint8_t *>(LAN_NETWORK);
+    return lan_systems.load() && network && runtime::readable(network, 8) ? network : nullptr;
+}
+
+void *registry()
+{
+    return init_registry.load();
+}
+
+bool on_home()
+{
+    return frontend.load() && home_screen.load();
+}
+
+bool in_lobby()
+{
+    return lobby.load();
+}
+
+bool lan_mode()
+{
+    return ::lan_mode();
+}
+
+bool provide_context(void *registry, void *context)
+{
+    return init_lan_item(registry, context, "caller");
+}
+
+bool armed()
+{
+    return ::armed.load();
+}
+
+std::string mode_switch()
+{
+    return ::mode_switch();
+}
+
+}
+
 namespace runtime {
 
 // FeHome_Handle_Command receives the home view model on every home command, so it backs up the
@@ -363,6 +485,10 @@ void netplay_drive_setup()
         return;
     swofty::log("[netplay] launcher commands on (<game>/swofty/netplay); configure, host, join and leave accepted");
     probe_setup();
+    runtime::netplay_room_setup();
+    room_launched = drive::room_launch(v) || runtime::netplay_room_requested();
+    if (drive::room_launch(v))
+        skip_setup();
     if (!started.exchange(true))
         std::thread(watch).detach();
 }
@@ -372,6 +498,8 @@ void netplay_flow(uint32_t hash, uint32_t to)
     bool in = to == 1 || to == 2;
     if (hash == drive::STATE_FRONTEND) {
         frontend = in;
+        if (in)
+            runtime::room_cover::step("Opening the main menu", 0.55f, 0.65f);
         if (!in) {
             home_screen = false;
             home_vm.self = nullptr;
@@ -389,20 +517,56 @@ void netplay_screen(const char *name)
     static const char *const overlays[] = {"fe_planes", "persistent", "playercard", "render_badge",
                                            "theming_overlay_frontend", "standard_wipe", "frontend_transition",
                                            "slice_bg_content_underlay", "f1_life_driver_tags", "audio_themes"};
-    if (!name || std::strncmp(name, "fe_", 3) != 0)
+    if (!name)
+        return;
+    runtime::netplay_room_screen(name);
+    if (!std::strcmp(name, "frontend_transition"))
+        transition_screen = true;
+    if (!std::strcmp(name, "f1_world_activity_container")) {
+        activity_screen = true;
+        runtime::room_cover::step("Preparing your session", 0.7f, 0.78f);
+    }
+    if (std::strncmp(name, "fe_", 3) != 0)
         return;
     for (const char *o : overlays)
         if (!std::strcmp(name, o))
             return;
+    transition_screen = false;
     home_screen = !std::strcmp(name, "fe_home");
     if (!std::strcmp(name, "fe_local_multiplayer"))
         local_mp_opened = true;
+}
+
+namespace {
+
+std::mutex notice_lock;
+std::deque<std::pair<void *, void *>> notices;
+
+void flush_notices()
+{
+    std::deque<std::pair<void *, void *>> now;
+    {
+        std::lock_guard<std::mutex> g(notice_lock);
+        now.swap(notices);
+    }
+    for (auto &[fn, ctx] : now)
+        answer(fn, ctx, "cancel");
+}
+
 }
 
 bool netplay_popup(const char *id, void *fn, void *ctx)
 {
     if (!id)
         return false;
+    if (room_launched.load() && drive::room_notice(id)) {
+        swofty::log("[netplay] room launch: the notice '%s' is not shown; it is answered for the player", id);
+        if (fn && ctx) {
+            std::lock_guard<std::mutex> g(notice_lock);
+            notices.emplace_back(fn, ctx);
+        }
+        return true;
+    }
     std::lock_guard<std::mutex> g(job_lock);
     if (!job.popup(id, GetTickCount64()))
         return false;
@@ -432,6 +596,10 @@ void run_job()
     f.lan_mode = lan_mode();
     f.lobby = lobby.load();
     f.home = frontend.load() && home_screen.load();
+    if (auto room = runtime::netplay_room::status(); room.phase == runtime::netplay_room::Phase::failed) {
+        f.room_failed = true;
+        f.room_error = room.detail;
+    }
     drive::Do d;
     void *fn, *ctx;
     {
@@ -492,10 +660,25 @@ void run_job()
     reply(c, error, detail);
 }
 
+bool start_headless(const drive::Command &c)
+{
+    namespace room = runtime::netplay_room;
+    if (c.op != drive::Op::join)
+        return false;
+    std::string why;
+    bool started = room::set_up_from_home(room::Role::join, c.ip.c_str(), why);
+    if (!started)
+        swofty::log("[netplay] join: taking the screen-driven steps instead (%s)", why.c_str());
+    return started;
+}
+
 void netplay_tick()
 {
     if (!started.load())
         return;
+    skip_tick();
+    flush_notices();
+    runtime::netplay_room::tick();
     bool running;
     {
         std::lock_guard<std::mutex> g(job_lock);
@@ -529,11 +712,15 @@ void netplay_tick()
             break;
         case drive::Op::host:
         case drive::Op::join: {
+            bool headless = start_headless(c);
             std::lock_guard<std::mutex> g(job_lock);
-            job.start(c, GetTickCount64());
+            if (headless)
+                job.start_headless(c, GetTickCount64());
+            else
+                job.start(c, GetTickCount64());
             job_ip = c.ip;
             answer_fn = answer_ctx = nullptr;
-            swofty::log("[netplay] %s: started", drive::op_name(c.op));
+            swofty::log("[netplay] %s: started%s", drive::op_name(c.op), headless ? " (headless)" : " (screens)");
             return;
         }
         case drive::Op::leave: error = run_leave(c); break;

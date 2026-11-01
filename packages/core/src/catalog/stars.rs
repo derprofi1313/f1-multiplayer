@@ -13,7 +13,8 @@ use super::{TIMEOUT, Trouble, agent_name, base_url};
 use crate::{Result, io_err};
 
 pub const FILE: &str = "state/stars.json";
-pub const CLIENT_HEADER: &str = "X-F1 Multiplayer-Client";
+/// The header Swofty's registry reads the star client from. A header name cannot contain spaces.
+pub const CLIENT_HEADER: &str = "X-Swofty-Client";
 pub const SYNC_LIMIT: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -270,6 +271,18 @@ mod tests {
         s.synced(&sent, reply(&["a"], &[("a", 1)]), "now".into());
         assert!(s.error.is_none());
         assert!(s.pending.is_empty());
+    }
+
+    #[test]
+    fn the_client_header_name_is_a_valid_http_token() {
+        // A name with a space makes every sync fail with "invalid HTTP header name".
+        assert!(!CLIENT_HEADER.is_empty());
+        assert!(
+            CLIENT_HEADER
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            "{CLIENT_HEADER} is not a valid header name"
+        );
     }
 
     #[test]

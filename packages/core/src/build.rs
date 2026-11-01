@@ -4040,7 +4040,7 @@ mod tests {
         assert_eq!(
             picks(&build(&store, "default", &game).unwrap()),
             [format!(
-                "Seats: picks Jacob F1 Multiplayer (dm_208), Ret Ired (dm_209), Driver Manager drivers, and Driver Manager is off in this profile; {tail}"
+                "Seats: picks Jacob Swofty (dm_208), Ret Ired (dm_209), Driver Manager drivers, and Driver Manager is off in this profile; {tail}"
             )]
         );
         std::fs::remove_dir_all(&root).ok();

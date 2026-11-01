@@ -13,6 +13,7 @@ use swofty_core::mpauth;
 use swofty_core::multiplayer::host::{self, HostServer, upnp};
 use swofty_core::multiplayer::servercode;
 
+use crate::i18n::tr;
 use crate::pages::{GUTTER, label};
 use crate::shell::{Page, Shell};
 use crate::theme::{Palette, ScrollArea};
@@ -91,7 +92,7 @@ impl Shell {
         }
         let name = self.mp_host_name(cx);
         if name.is_empty() {
-            self.mp_page.host.error = Some("Enter your driver name first.".into());
+            self.mp_page.host.error = Some(tr("Enter your driver name first.").into());
             cx.notify();
             return;
         }
@@ -143,7 +144,7 @@ impl Shell {
                             .map(|ip| ip.to_string())
                     });
                     if public.is_none() && note.is_none() {
-                        note = Some("Enter your public IP address to get the host code.".into());
+                        note = Some(tr("Enter your public IP address to get the host code.").into());
                     }
                     let code = public.map(|a| server.code_for(&a));
                     if let Some(code) = &code
@@ -233,7 +234,7 @@ impl Shell {
         let name = self.mp_host_name(cx);
         let password = Some(value(&panel.password, cx)).filter(|p| !p.is_empty());
         if code.is_empty() || name.is_empty() {
-            self.mp_page.host.error = Some("Enter the server code and your driver name.".into());
+            self.mp_page.host.error = Some(tr("Enter the server code and your driver name.").into());
             cx.notify();
             return;
         }
@@ -294,7 +295,7 @@ impl Shell {
                 .primary()
                 .small()
                 .icon(IconName::Play)
-                .label("Start server")
+                .label(tr("Start server"))
                 .loading(busy == Some("host"))
                 .disabled(busy.is_some())
                 .on_click(cx.listener(|this, _, _, cx| this.mp_host_start(cx))),
@@ -311,7 +312,7 @@ impl Shell {
             Button::new("mp-join-host")
                 .primary()
                 .small()
-                .label("Connect")
+                .label(tr("Connect"))
                 .loading(busy == Some("join"))
                 .disabled(busy.is_some())
                 .on_click(cx.listener(|this, _, _, cx| this.mp_join_host(cx))),
@@ -320,7 +321,7 @@ impl Shell {
             .size_full()
             .child(self.header(
                 Page::Multiplayer.label(),
-                "Play with friends who use the same addons: host a server on your PC, or join a friend's.".to_owned(),
+                tr("Play with friends who use the same addons: host a server on your PC, or join a friend's.").to_owned(),
                 div(),
                 p,
             ))
@@ -377,7 +378,7 @@ impl Shell {
                                     Button::new("mp-host-stop")
                                         .outline()
                                         .small()
-                                        .label("Stop server")
+                                        .label(tr("Stop server"))
                                         .on_click(cx.listener(|this, _, _, cx| this.mp_host_stop(cx))),
                                 ),
                         )
@@ -385,7 +386,7 @@ impl Shell {
                             h_flex()
                                 .gap(px(8.))
                                 .items_center()
-                                .child(label("SERVER CODE", p))
+                                .child(label(tr("SERVER CODE"), p))
                                 .child(
                                     div()
                                         .flex_1()
@@ -399,7 +400,7 @@ impl Shell {
                                         .outline()
                                         .small()
                                         .icon(IconName::Copy)
-                                        .label("Copy server code")
+                                        .label(tr("Copy server code"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.mp_copy_code(short.replace(' ', ""), cx)
                                         })),
@@ -429,7 +430,7 @@ impl Shell {
                                         .outline()
                                         .small()
                                         .icon(IconName::Copy)
-                                        .label("Copy host code")
+                                        .label(tr("Copy host code"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.mp_copy_code(code.clone(), cx)
                                         })),
@@ -441,7 +442,7 @@ impl Shell {
                                     Button::new("mp-host-address")
                                         .outline()
                                         .small()
-                                        .label("Make host code")
+                                        .label(tr("Make host code"))
                                         .on_click(cx.listener(|this, _, _, cx| this.mp_host_set_address(cx))),
                                 ),
                         })
@@ -458,13 +459,13 @@ impl Shell {
                                 .flex_1()
                                 .text_size(px(13.))
                                 .text_color(p.text_muted)
-                                .child("Your host server isn't running. Start it again to open rooms."),
+                                .child(tr("Your host server isn't running. Start it again to open rooms.")),
                         )
                         .child(
                             Button::new("mp-host-restart")
                                 .primary()
                                 .small()
-                                .label("Start server")
+                                .label(tr("Start server"))
                                 .loading(panel.busy == Some("host"))
                                 // Starting signs in afresh and replaces the stale loopback sign-in;
                                 // until then that sign-in still names the driver.

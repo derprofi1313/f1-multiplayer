@@ -18,6 +18,7 @@ use swofty_core::league::{
 };
 use swofty_core::multiplayer::rooms::{Api, LeagueState, SharedCareer};
 
+use crate::i18n::tr;
 use crate::pages::{GUTTER, label};
 use crate::shell::{Page, Shell};
 use crate::theme::{Palette, ScrollArea};
@@ -659,7 +660,7 @@ impl Shell {
         let solo_career = self.career.solo_form || api.is_none();
         let name = value(&self.career.name, cx);
         if name.is_empty() {
-            self.career.error = Some("Give the career a name.".into());
+            self.career.error = Some(tr("Give the career a name.").into());
             cx.notify();
             return;
         }
@@ -668,7 +669,7 @@ impl Shell {
             n => match n.parse::<u8>() {
                 Ok(n) => Some(n),
                 Err(_) => {
-                    self.career.error = Some("The race number is a number from 1 to 99.".into());
+                    self.career.error = Some(tr("The race number is a number from 1 to 99.").into());
                     cx.notify();
                     return;
                 }
@@ -743,7 +744,7 @@ impl Shell {
         let Some(api) = self.career_api() else { return };
         let code = value(&self.career.code, cx);
         if code.is_empty() {
-            self.career.error = Some("Type the career code your friend sent you.".into());
+            self.career.error = Some(tr("Type the career code your friend sent you.").into());
             cx.notify();
             return;
         }
@@ -752,7 +753,7 @@ impl Shell {
             move || {
                 let career = api.join_career(&code).map_err(|e| e.message)?;
                 if career.mode != league::MODE {
-                    return Err("That code belongs to a shared career that isn't a league career.".into());
+                    return Err(tr("That code belongs to a shared career that isn't a league career.").into());
                 }
                 api.league_action(&career.id, &Action::Enter { number })
                     .map_err(|e| e.message)?;
@@ -797,7 +798,7 @@ impl Shell {
 
     fn career_enable_telemetry(&mut self, cx: &mut Context<Self>) {
         if !self.processes.is_empty() {
-            self.career.note = Some("Close F1 25 first: it writes its settings when it quits.".into());
+            self.career.note = Some(tr("Close F1 25 first: it writes its settings when it quits.").into());
             cx.notify();
             return;
         }
@@ -807,7 +808,7 @@ impl Shell {
                 self.career.telemetry = Some(s);
                 self.career.listen_error = None;
                 self.career.note =
-                    Some("The game's UDP telemetry is on. Race results arrive by themselves now.".into());
+                    Some(tr("The game's UDP telemetry is on. Race results arrive by themselves now.").into());
             }
             Err(e) => self.career.note = Some(format!("Couldn't turn the telemetry on: {e}")),
         }
@@ -819,8 +820,8 @@ impl Shell {
 
     pub(crate) fn career_page(&mut self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let subtitle =
-            "Your own career from 2016 to 2026, alone or with friends: qualifying and races count from the \
-                        game by themselves, contracts move you between teams each winter."
+            tr("Your own career from 2016 to 2026, alone or with friends: qualifying and races count from the \
+                        game by themselves, contracts move you between teams each winter.")
                 .to_owned();
         let signed_in = self.career_api().is_some();
         let solo_shown = self.career.solo() && self.career.league().is_some();
@@ -836,7 +837,7 @@ impl Shell {
                     self.career
                         .error
                         .clone()
-                        .unwrap_or_else(|| "Loading your careers…".into()),
+                        .unwrap_or_else(|| tr("Loading your careers…").into()),
                 )
                 .into_any_element()
         } else if self.career.league().is_none() || self.career.creating {
@@ -907,9 +908,9 @@ impl Shell {
                     .small()
                     .icon(if creating { IconName::X } else { IconName::Plus })
                     .label(if creating {
-                        "Back to the career"
+                        tr("Back to the career")
                     } else {
-                        "New career"
+                        tr("New career")
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.career.creating = !creating;
@@ -937,7 +938,7 @@ impl Shell {
                     format!("Race results: listening on {} for the game's telemetry.", l.addr())
                 }
             }
-            (Some(s), None, None) if s.usable() => "Race results: listening starts with your first league career.".into(),
+            (Some(s), None, None) if s.usable() => tr("Race results: listening starts with your first league career.").into(),
             (Some(_), None, None) | (None, None, None) => {
                 "Race results need the game's UDP telemetry. Turn it on here (with the game closed) or in the game \
                  under Settings > Telemetry."
@@ -965,7 +966,7 @@ impl Shell {
                     Button::new("career-telemetry")
                         .outline()
                         .small()
-                        .label("Turn telemetry on")
+                        .label(tr("Turn telemetry on"))
                         .on_click(cx.listener(|this, _, _, cx| this.career_enable_telemetry(cx))),
                 )
             })
@@ -1032,7 +1033,7 @@ impl Shell {
         let distances = h_flex()
             .gap(px(6.))
             .items_center()
-            .child(div().w(px(110.)).text_size(px(13.)).child("Race distance"))
+            .child(div().w(px(110.)).text_size(px(13.)).child(tr("Race distance")))
             .children([25u8, 50, 100].into_iter().map(|d| {
                 let b = Button::new(("career-distance", d as usize))
                     .small()
@@ -1051,7 +1052,7 @@ impl Shell {
                 let b = Button::new("career-mode-solo")
                     .small()
                     .icon(IconName::User)
-                    .label("Alone")
+                    .label(tr("Alone"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.career.solo_form = true;
                         cx.notify();
@@ -1062,7 +1063,7 @@ impl Shell {
                 let b = Button::new("career-mode-friends")
                     .small()
                     .icon(IconName::Users)
-                    .label("With friends")
+                    .label(tr("With friends"))
                     .disabled(!signed_in)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.career.solo_form = false;
@@ -1125,7 +1126,7 @@ impl Shell {
                     .primary()
                     .small()
                     .icon(IconName::Flag)
-                    .label("Start career")
+                    .label(tr("Start career"))
                     .loading(c.busy == Some("start"))
                     .disabled(busy)
                     .on_click(cx.listener(|this, _, _, cx| this.career_create(cx))),
@@ -1142,7 +1143,7 @@ impl Shell {
                 Button::new("career-join")
                     .primary()
                     .small()
-                    .label("Join career")
+                    .label(tr("Join career"))
                     .loading(c.busy == Some("start"))
                     .disabled(busy)
                     .on_click(cx.listener(|this, _, _, cx| this.career_join(cx))),
@@ -1159,7 +1160,7 @@ impl Shell {
                     .outline()
                     .small()
                     .icon(IconName::Users)
-                    .label("Open Multiplayer")
+                    .label(tr("Open Multiplayer"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Multiplayer;
                         cx.notify();
@@ -1289,7 +1290,7 @@ impl Shell {
                             ))),
                     )
                     .when(!solo_career, |d| {
-                        d.child(label("CODE", p))
+                        d.child(label(tr("CODE"), p))
                             .child(
                                 div()
                                     .text_size(px(15.))
@@ -1301,7 +1302,7 @@ impl Shell {
                                     .outline()
                                     .small()
                                     .icon(IconName::Copy)
-                                    .label("Copy")
+                                    .label(tr("Copy"))
                                     .on_click(
                                         cx.listener(move |this, _, _, cx| {
                                             this.mp_copy_code(code.clone(), cx)
@@ -1487,7 +1488,7 @@ impl Shell {
                     }
                 )
             }
-            None if b.quali_done => "Practice: left out this round.".to_owned(),
+            None if b.quali_done => tr("Practice: left out this round.").to_owned(),
             None => "Practice: drive a practice session first for resource points. It grades your laps \
                      (track acclimatisation), your best lap against your team-mate (qualifying pace) and \
                      a long run (tyre management). Or simulate it, for fewer points."
@@ -1507,7 +1508,7 @@ impl Shell {
         });
         let seat = match (&b.team, &b.replaces) {
             (Some(t), Some(r)) => format!("You drive for {t}: pick {r} in the game."),
-            _ => "You have no seat this season; you get offers when it ends.".to_owned(),
+            _ => tr("You have no seat this season; you get offers when it ends.").to_owned(),
         };
         let mut aims = Vec::new();
         if let Some(g) = b.goal {
@@ -1560,7 +1561,7 @@ impl Shell {
                 )
             })
             .when(!b.lineup.is_empty(), |d| {
-                d.child(label("DRIVER CHANGES THIS ROUND", p))
+                d.child(label(tr("DRIVER CHANGES THIS ROUND"), p))
                     .children(b.lineup.iter().map(|n| {
                         div()
                             .text_size(px(12.))
@@ -1579,7 +1580,7 @@ impl Shell {
                                 .outline()
                                 .small()
                                 .icon(IconName::Gauge)
-                                .label("Simulate practice")
+                                .label(tr("Simulate practice"))
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.career_act(Action::Practice { round: None }, cx)
@@ -1598,7 +1599,7 @@ impl Shell {
                             .outline()
                             .small()
                             .icon(IconName::Dices)
-                            .label("Simulate this round")
+                            .label(tr("Simulate this round"))
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.career_act(Action::Simulate { round: None }, cx)
@@ -1609,7 +1610,7 @@ impl Shell {
                             .outline()
                             .small()
                             .icon(IconName::SkipForward)
-                            .label("Leave it out")
+                            .label(tr("Leave it out"))
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.career_act(Action::Skip { round: None }, cx)
@@ -1620,7 +1621,7 @@ impl Shell {
                             .outline()
                             .small()
                             .icon(IconName::Undo)
-                            .label("Take back the last round")
+                            .label(tr("Take back the last round"))
                             .disabled(busy || !can_undo)
                             .on_click(cx.listener(|this, _, _, cx| this.career_act(Action::Undo, cx))),
                     ),
@@ -1644,7 +1645,7 @@ impl Shell {
                         Button::new("career-force")
                             .outline()
                             .small()
-                            .label("Count it anyway")
+                            .label(tr("Count it anyway"))
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.career_count(report.clone(), None, true, cx)
@@ -1700,7 +1701,7 @@ impl Shell {
                         Button::new(SharedString::from(format!("count-sprint-{:x}", r.session)))
                             .outline()
                             .small()
-                            .label("Count as sprint")
+                            .label(tr("Count as sprint"))
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.career_count(b2.clone(), Some(SessionKind::Sprint), false, cx)
@@ -1712,14 +1713,14 @@ impl Shell {
                         .outline()
                         .small()
                         .icon(IconName::X)
-                        .label("Discard")
+                        .label(tr("Discard"))
                         .on_click(cx.listener(move |this, _, _, cx| this.career_discard(session, cx))),
                 )
         });
         let waiting: Vec<_> = waiting.collect();
         if !waiting.is_empty() {
             card = card
-                .child(label("SESSIONS THE GAME REPORTED, NOT COUNTED YET", p))
+                .child(label(tr("SESSIONS THE GAME REPORTED, NOT COUNTED YET"), p))
                 .children(waiting);
         }
         card
@@ -1829,7 +1830,7 @@ impl Shell {
                         if league.players.len() == 1 {
                             format!("Sign an offer and the {next} season starts.")
                         } else if waiting.is_empty() {
-                            "Everyone signed.".to_owned()
+                            tr("Everyone signed.").to_owned()
                         } else {
                             format!(
                                 "Waiting for {} to sign. The next season starts when everyone has.",
@@ -1842,7 +1843,7 @@ impl Shell {
                             Button::new("career-next-season")
                                 .outline()
                                 .small()
-                                .label("Start next season anyway")
+                                .label(tr("Start next season anyway"))
                                 .disabled(busy)
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.career_act(Action::NextSeason, cx)),
@@ -1854,7 +1855,7 @@ impl Shell {
                             .outline()
                             .small()
                             .icon(IconName::Undo)
-                            .label("Take back the last round")
+                            .label(tr("Take back the last round"))
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| this.career_act(Action::Undo, cx))),
                     ),
@@ -1882,7 +1883,7 @@ impl Shell {
                 div()
                     .text_size(px(12.))
                     .text_color(p.text_muted)
-                    .child("In the new contract, ask for:"),
+                    .child(tr("In the new contract, ask for:")),
             )
             .child(choice("career-focus-none", "Nothing extra", None))
             .child(choice(
@@ -1916,7 +1917,7 @@ impl Shell {
                 div()
                     .text_size(px(16.))
                     .font_weight(FontWeight::BOLD)
-                    .child("The career is complete"),
+                    .child(tr("The career is complete")),
             )
             .children(champions.into_iter().map(|t| div().text_size(px(13.)).child(t)))
     }
@@ -1963,13 +1964,13 @@ impl Shell {
                 h_flex()
                     .gap(px(6.))
                     .flex_wrap()
-                    .child(button("career-tab-drivers", "Drivers", Tab::Drivers))
-                    .child(button("career-tab-teams", "Constructors", Tab::Teams))
-                    .child(button("career-tab-calendar", "Calendar", Tab::Calendar))
-                    .child(button("career-tab-driver", "Your driver", Tab::Driver))
-                    .child(button("career-tab-development", "R&D", Tab::Development))
-                    .child(button("career-tab-record", "Your career", Tab::Record))
-                    .child(button("career-tab-news", "News", Tab::News)),
+                    .child(button("career-tab-drivers", tr("Drivers"), Tab::Drivers))
+                    .child(button("career-tab-teams", tr("Constructors"), Tab::Teams))
+                    .child(button("career-tab-calendar", tr("Calendar"), Tab::Calendar))
+                    .child(button("career-tab-driver", tr("Your driver"), Tab::Driver))
+                    .child(button("career-tab-development", tr("R&D"), Tab::Development))
+                    .child(button("career-tab-record", tr("Your career"), Tab::Record))
+                    .child(button("career-tab-news", tr("News"), Tab::News)),
             )
             .child(body)
     }
@@ -2125,7 +2126,7 @@ impl Shell {
                     .when_some(mate, |d, h| d.child(duel(h, "Team-mate")))
                     .when_some(rival, |d, h| d.child(duel(h, "Rival")))
             })
-            .child(label("SEASONS", p))
+            .child(label(tr("SEASONS"), p))
             .child(seasons)
     }
 
@@ -2189,7 +2190,7 @@ impl Shell {
             .gap(px(10.))
             .child(div().w(px(110.)))
             .child(div().w(px(160.)))
-            .child(div().w(px(50.)).child(label("YOU", p)))
+            .child(div().w(px(50.)).child(label(tr("YOU"), p)))
             .children(others.iter().map(|(n, _)| {
                 div()
                     .w(px(150.))
@@ -2203,7 +2204,7 @@ impl Shell {
         let status = if pl.number_one {
             format!("{team}'s number one driver: a tenth more resource points.")
         } else if pl.recognition >= progress::NUMBER_ONE {
-            "Valued highly; score more points than your team-mate to become the number one driver.".to_owned()
+            tr("Valued highly; score more points than your team-mate to become the number one driver.").to_owned()
         } else if pl.recognition < progress::RECOGNITION_RENEW {
             format!(
                 "{team} isn't happy: below {:.0}, a team lets the contract run out.",
@@ -2259,17 +2260,17 @@ impl Shell {
                  against your team-mate, racecraft with places gained, awareness with clean races (penalties and \
                  crashes cost it). Simulated sessions only add experience.",
             ))
-            .child(label("TEAM", p))
+            .child(label(tr("TEAM"), p))
             .child(
                 h_flex()
                     .gap(px(10.))
                     .items_center()
-                    .child(div().w(px(110.)).text_size(px(13.)).child("Recognition"))
+                    .child(div().w(px(110.)).text_size(px(13.)).child(tr("Recognition")))
                     .child(bar(40.0 + pl.recognition / 100.0 * 59.0))
                     .child(div().text_size(px(13.)).child(format!("{:.0} of 100", pl.recognition))),
             )
             .child(div().text_size(px(12.)).text_color(p.text_muted).child(status))
-            .child(label("CONTRACT", p))
+            .child(label(tr("CONTRACT"), p))
             .child(div().text_size(px(13.)).child(format!(
                 "{} a season + {} a point, until {}{focus}",
                 progress::money(u64::from(pl.salary_k)),
@@ -2291,7 +2292,7 @@ impl Shell {
                 div()
                     .text_size(px(13.))
                     .text_color(p.text_muted)
-                    .child("You have no seat this season."),
+                    .child(tr("You have no seat this season.")),
             );
         };
         let slot = entry.slot;
@@ -2354,7 +2355,7 @@ impl Shell {
                         .small()
                         .icon(IconName::Wrench)
                         .label(if maxed {
-                            "Fully developed".to_owned()
+                            tr("Fully developed").to_owned()
                         } else {
                             format!("Develop · {cost} points")
                         })
@@ -2414,13 +2415,13 @@ impl Shell {
                 ))
             })
             .when(!on_order.is_empty(), |d| {
-                d.child(label("ON ORDER", p)).children(
+                d.child(label(tr("ON ORDER"), p)).children(
                     on_order
                         .into_iter()
                         .map(|t| div().text_size(px(13.)).child(t)),
                 )
             })
-            .child(label("THE CAR", p))
+            .child(label(tr("THE CAR"), p))
             .child(div().text_size(px(13.)).child(format!(
                 "Gap to the fastest car: {now:.2}% now, {start:.2}% at the start of {}. The {} fastest car of {}.",
                 season.year,

@@ -46,6 +46,9 @@ struct Member {
     digest: Option<String>,
     blob: Option<Value>,
     relay: Option<String>,
+    /// The member's game is in the room's lobby, as its `ready` message says. Launchers count only a
+    /// ready member as joined; a reopened room and a lost connection clear it.
+    ready: bool,
 }
 
 struct Room {
@@ -349,7 +352,8 @@ impl Lobby {
                     "code": r.code, "name": r.name,
                     "host": {"id": r.host, "name": host.map_or("Host", |h| h.user.name.as_str()), "avatar": null},
                     "members": r.members.len(), "max_members": r.max, "category": r.category,
-                    "digest": host.and_then(|h| h.digest.clone()), "addons": null, "created_at": r.created_at,
+                    "digest": host.and_then(|h| h.digest.clone()), "addons": host.and_then(|h| room_addons(h.blob.as_ref()?)),
+                    "created_at": r.created_at,
                 })
             })
             .collect()
@@ -398,6 +402,7 @@ impl Lobby {
                 user: user.clone(),
                 ip: 1,
                 connected: false,
+                ready: false,
                 digest: None,
                 blob: None,
                 relay: None,
@@ -443,6 +448,7 @@ impl Lobby {
                 user: user.clone(),
                 ip,
                 connected: false,
+                ready: false,
                 digest: None,
                 blob: None,
                 relay: None,
@@ -474,10 +480,6 @@ impl Lobby {
     }
 
     fn websocket(self: &Arc<Self>, tls: TlsStream, head: Vec<u8>, code: &str, user: &User) {
-        let tcp = match tls.sock.try_clone() {
-            Ok(t) => t,
-            Err(_) => return,
-        };
         let replay = Replay {
             head: Cursor::new(head),
             inner: tls,
@@ -485,7 +487,13 @@ impl Lobby {
         let Ok(mut ws) = tungstenite::accept(replay) else {
             return;
         };
-        let _ = tcp.set_read_timeout(Some(Duration::from_millis(20)));
+        // The loop below sends what the room queued between reads, so a read must give up quickly.
+        // Set on the socket the TLS stream reads, not on a clone: on Windows a cloned socket's timeout
+        // doesn't reach it, and the 10 s timeout of the request read held every lobby update back
+        // until the client spoke.
+        if ws.get_ref().inner.sock.set_read_timeout(Some(Duration::from_millis(20))).is_err() {
+            return;
+        }
         let (tx, rx) = mpsc::channel();
         let connection;
         {
@@ -557,6 +565,7 @@ impl Lobby {
             if let Some(room) = s.rooms.get_mut(code) {
                 for m in room.members.iter_mut().filter(|m| m.user.id == user.id) {
                     m.connected = false;
+                    m.ready = false;
                 }
             }
             broadcast(&mut s, code);
@@ -592,6 +601,16 @@ impl Lobby {
                 }
                 broadcast(&mut s, code);
             }
+            "ready" => {
+                let ready = msg["ready"].as_bool().unwrap_or(false);
+                let Some(m) = room.members.iter_mut().find(|m| m.user.id == user.id) else {
+                    return;
+                };
+                if m.ready != ready {
+                    m.ready = ready;
+                    broadcast(&mut s, code);
+                }
+            }
             "relay" => {
                 if let Some(m) = room.members.iter_mut().find(|m| m.user.id == user.id) {
                     m.relay = msg["relay"].as_str().map(|r| r.chars().take(64).collect());
@@ -617,6 +636,9 @@ impl Lobby {
             }
             "reopen" if is_host && room.started => {
                 room.started = false;
+                for m in &mut room.members {
+                    m.ready = false;
+                }
                 broadcast(&mut s, code);
             }
             "kick" if is_host => {
@@ -675,6 +697,19 @@ fn close_room(s: &mut State, code: &str, reason: &str) {
     }
 }
 
+/// The room card's addons: every addon the host's fingerprint lists, by id and name.
+fn room_addons(blob: &Value) -> Option<Value> {
+    let list: Vec<Value> = blob["addons"]
+        .as_array()?
+        .iter()
+        .filter_map(|a| {
+            let id = a["id"].as_str()?;
+            Some(json!({"id": id, "name": a["name"].as_str().unwrap_or(id)}))
+        })
+        .collect();
+    Some(json!({"count": list.len(), "tracks": [], "list": list}))
+}
+
 fn view(room: &Room) -> Value {
     let host_digest = room
         .members
@@ -688,7 +723,7 @@ fn view(room: &Room) -> Value {
         "key": room.key,
         "members": room.members.iter().map(|m| json!({
             "id": m.user.id, "name": m.user.name, "avatar": null, "ip": format!("10.77.0.{}", m.ip),
-            "host": m.user.id == room.host, "ready": false, "connected": m.connected,
+            "host": m.user.id == room.host, "ready": m.ready, "connected": m.connected,
             "digest": m.digest, "matches": m.digest.is_some() && m.digest == host_digest, "relay": m.relay,
         })).collect::<Vec<_>>(),
     })

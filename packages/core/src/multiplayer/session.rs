@@ -3445,6 +3445,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A room launch on a host server: the guest's game reaches the lobby, its launcher sends
+    /// `ready`, and the host counts the guest as in the lobby only from the server's flag. The room
+    /// list names the host's addons.
+    #[test]
+    fn a_host_server_keeps_each_members_ready_flag_for_room_launches() {
+        let dir = std::env::temp_dir().join(format!("swofty-host-ready-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let server = crate::multiplayer::host::HostServer::start(crate::multiplayer::host::Config {
+            dir: dir.join("server"),
+            port: 0,
+            name: "Test host".into(),
+            password: None,
+            public: false,
+            discovery: None,
+            fresh_code: false,
+        })
+        .unwrap();
+        let code = server.code_for("127.0.0.1");
+        let host_session = crate::mpauth::sign_in_host(&dir.join("h"), &code, "Host", None).unwrap();
+        let guest_session = crate::mpauth::sign_in_host(&dir.join("g"), &code, "Ana", None).unwrap();
+        let (host_game, guest_game) = (FakeGame::new("hs-ready-host"), FakeGame::new("hs-ready-guest"));
+        let same = built_print("aa", &[("t/x", 512)]);
+        let on_server = |s: &crate::mpauth::Session, game: &Arc<FakeGame>, f: Fingerprint| {
+            let mut setup = launching(setup("http://unused", &s.token, game, f), None);
+            setup.api = Api::for_session(s);
+            setup.relay = Relay::Turn;
+            setup
+        };
+        // Each launcher starts its closed game for the room, then the game reaches its lobby.
+        let start = |s: &Session, game: &Arc<FakeGame>, who: &str| {
+            wait_until(s, &format!("the launch ask at the {who}"), asked);
+            s.launched();
+            game.closed.store(false, Ordering::Relaxed);
+            game.set_screen(Screen::Other);
+            game.reach_lobby();
+            wait_until(s, &format!("the {who}'s lobby"), in_lobby)
+        };
+        host_game.closed.store(true, Ordering::Relaxed);
+        guest_game.closed.store(true, Ordering::Relaxed);
+        let host = create(on_server(&host_session, &host_game, same.clone()), RoomSettings::default());
+        let room = start(&host, &host_game, "host").room.unwrap().code;
+        let listed = Api::for_session(&guest_session).rooms().unwrap();
+        let card = listed.iter().find(|r| r.code == room).expect("the room is listed");
+        assert_eq!(
+            card.addons.as_ref().map(|a| a.list.iter().map(|x| x.id.clone()).collect::<Vec<_>>()),
+            Some(same.addons.iter().map(|a| a.id.clone()).collect::<Vec<_>>()),
+            "the card lists the host's addons"
+        );
+        let guest = join(on_server(&guest_session, &guest_game, same), &room);
+        start(&guest, &guest_game, "guest");
+        let asked_at = Instant::now();
+        let seen = wait_until(&host, "the guest ready at the host", |s| {
+            s.members
+                .iter()
+                .any(|m| !m.me && m.stage == Some(MemberStage::InLobby))
+        });
+        let in_lobby_count = seen
+            .members
+            .iter()
+            .filter(|m| m.connected && m.stage == Some(MemberStage::InLobby))
+            .count();
+        assert_eq!(in_lobby_count, 2, "{:#?}", seen.members);
+        assert!(
+            asked_at.elapsed() < Duration::from_secs(3),
+            "the server passes lobby updates on at once, not when the host next speaks: {:?}",
+            asked_at.elapsed()
+        );
+        leave(&guest);
+        wait_until(&host, "the guest gone at the host", |s| s.members.len() == 1);
+        leave(&host);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn server_relay_is(server: &FakeServer, relay: &str) -> bool {
         let api = Api::with_server(&server.url, "host-token");
         api.lobby("F1-TEST22")

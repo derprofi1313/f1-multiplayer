@@ -18,6 +18,7 @@ use swofty_core::vault::restore::Running;
 use swofty_core::vault::{self, Location, Notice, Reason, Snapshot, Vault};
 
 use crate::addons::ago;
+use crate::i18n::tr;
 use crate::library::plural;
 use crate::pages::{GUTTER, label};
 use crate::shell::{Page, Prompt, Shell};
@@ -250,26 +251,26 @@ fn list(items: &[Brief]) -> String {
 
 fn version_label(s: &Snapshot) -> &'static str {
     match s.pinned.iter().any(|p| p == "before-restore") {
-        true => "Before restore",
+        true => tr("Before restore"),
         false => reason_label(s.reason),
     }
 }
 
 fn reason_label(r: Reason) -> &'static str {
     match r {
-        Reason::BeforeSession => "Before Play",
-        Reason::AfterSession => "After Play",
-        Reason::Imported => "Imported from Steam",
-        Reason::ImportedProfile => "Copied from another profile",
-        Reason::LauncherStart => "Launcher start",
-        Reason::ChangedOutside => "Changed outside the launcher",
-        Reason::ForeignLaunch => "F1 25 started outside the launcher",
-        Reason::ForeignExit => "F1 25 closed outside the launcher",
-        Reason::BeforeRestore => "Before restore",
-        Reason::Restored => "Restored",
-        Reason::Migrated => "Old backup",
-        Reason::Manual => "Backup",
-        Reason::Other => "Saved",
+        Reason::BeforeSession => tr("Before Play"),
+        Reason::AfterSession => tr("After Play"),
+        Reason::Imported => tr("Imported from Steam"),
+        Reason::ImportedProfile => tr("Copied from another profile"),
+        Reason::LauncherStart => tr("Launcher start"),
+        Reason::ChangedOutside => tr("Changed outside the launcher"),
+        Reason::ForeignLaunch => tr("F1 25 started outside the launcher"),
+        Reason::ForeignExit => tr("F1 25 closed outside the launcher"),
+        Reason::BeforeRestore => tr("Before restore"),
+        Reason::Restored => tr("Restored"),
+        Reason::Migrated => tr("Old backup"),
+        Reason::Manual => tr("Backup"),
+        Reason::Other => tr("Saved"),
     }
 }
 
@@ -292,10 +293,10 @@ fn imported_from(snaps: &[Snapshot]) -> Imported {
                 .map(|n| n.to_string_lossy().into_owned());
             match from {
                 Some(f) => format!("Copied from {f}"),
-                None => "Copied from another profile".to_owned(),
+                None => tr("Copied from another profile").to_owned(),
             }
         }
-        _ => "Imported Steam save".to_owned(),
+        _ => tr("Imported Steam save").to_owned(),
     };
     Imported {
         title,
@@ -329,8 +330,8 @@ fn season_round(l: &Listed) -> Option<String> {
 
 fn short_block(layout: vault::Layout, r: Running) -> Option<&'static str> {
     match (r.game, layout, r.steam) {
-        (true, _, _) => Some("Close F1 25 first"),
-        (false, vault::Layout::Steam, true) => Some("Close Steam first"),
+        (true, _, _) => Some(tr("Close F1 25 first")),
+        (false, vault::Layout::Steam, true) => Some(tr("Close Steam first")),
         _ => None,
     }
 }
@@ -393,7 +394,7 @@ fn build_saves_untimed(store: &Store, install: Option<&crate::game::Install>, na
     let has_save = loc.as_ref().is_some_and(launcher_saves::has_files);
     let imported = (has_save && entries.is_empty()).then(|| match vanilla {
         true => Imported {
-            title: "Your Steam save".to_owned(),
+            title: tr("Your Steam save").to_owned(),
             at: None,
         },
         false => imported_from(&snaps),
@@ -519,9 +520,9 @@ impl Shell {
             let shell = shell.clone();
             alert
                 .width(px(480.))
-                .title(NOTICE_TITLE)
-                .description(NOTICE_BODY)
-                .ok_text("Show me")
+                .title(tr(NOTICE_TITLE))
+                .description(tr(NOTICE_BODY))
+                .ok_text(tr("Show me"))
                 .cancel_text("OK")
                 .show_cancel(true)
                 .on_ok(move |_, _, cx| {
@@ -543,7 +544,7 @@ impl Shell {
         let text = format!(
             "{} replaces the save of {to}. Its current save is kept as a version.",
             match from_name == VANILLA {
-                true => "Your Steam save".to_owned(),
+                true => tr("Your Steam save").to_owned(),
                 false => from_name.clone(),
             }
         );
@@ -558,7 +559,7 @@ impl Shell {
                 .width(px(480.))
                 .title(title.clone())
                 .description(text.clone())
-                .ok_text(if steam { "Import" } else { "Copy" })
+                .ok_text(if steam { tr("Import") } else { tr("Copy") })
                 .show_cancel(true)
                 .on_ok(move |_, window, cx| {
                     shell
@@ -607,7 +608,7 @@ impl Shell {
                 .width(px(480.))
                 .title(title.clone())
                 .description(text.clone())
-                .ok_text("Export")
+                .ok_text(tr("Export"))
                 .show_cancel(true)
                 .on_ok(move |_, window, cx| {
                     shell.update(cx, |s, cx| s.export_save(&profile, window, cx)).ok();
@@ -705,8 +706,8 @@ impl Shell {
                         .outline()
                         .small()
                         .label(match on_page {
-                            true => "Review the restore",
-                            false => "Open Career saves",
+                            true => tr("Review the restore"),
+                            false => tr("Open Career saves"),
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_saves(Some(review.clone()), cx);
@@ -716,7 +717,7 @@ impl Shell {
                     Button::new("saves-banner-dismiss")
                         .ghost()
                         .small()
-                        .label("Dismiss")
+                        .label(tr("Dismiss"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let root = this.store.root.clone();
                             if hint {
@@ -765,7 +766,7 @@ impl Shell {
                         ago(at as f64)
                     ),
                     (Some(at), None) => format!("Restored your save from {}.", ago(at as f64)),
-                    (None, _) => "Restored your save.".to_owned(),
+                    (None, _) => tr("Restored your save.").to_owned(),
                 })
             }
             Err(e) => {
@@ -800,17 +801,17 @@ impl Shell {
             .to_string();
         self.prompt(
             Prompt {
-                title: "Career saves storage",
-                description: "The most space, in MB, the saved versions may take. The oldest unpinned versions go first."
+                title: tr("Career saves storage"),
+                description: tr("The most space, in MB, the saved versions may take. The oldest unpinned versions go first.")
                     .into(),
                 initial,
                 placeholder: "500",
-                ok: "Save",
+                ok: tr("Save"),
                 browse: None,
                 action: std::rc::Rc::new(|store, value| {
-                    let mb: u64 = value.parse().map_err(|_| "Enter a number of MB.".to_owned())?;
+                    let mb: u64 = value.parse().map_err(|_| tr("Enter a number of MB.").to_owned())?;
                     if mb == 0 {
-                        return Err("The limit must be at least 1 MB.".to_owned());
+                        return Err(tr("The limit must be at least 1 MB.").to_owned());
                     }
                     let mut c = store.config();
                     c.vault_cap_mb = Some(mb);
@@ -852,8 +853,8 @@ impl Shell {
         match &v.diff {
             Some(d) => {
                 lines.push(match d.get_back.is_empty() {
-                    true => line("You get back", p.text_placeholder, "No careers.".into()),
-                    false => line("You get back", p.success, list(&d.get_back)),
+                    true => line(tr("You get back"), p.text_placeholder, tr("No careers.").into()),
+                    false => line(tr("You get back"), p.success, list(&d.get_back)),
                 });
                 let mut lose = Vec::new();
                 if !d.lose.is_empty() {
@@ -868,14 +869,14 @@ impl Shell {
                     ));
                 }
                 lines.push(match lose.is_empty() {
-                    true => line("You lose", p.text_placeholder, "No careers.".into()),
-                    false => line("You lose", p.error, lose.join("; ")),
+                    true => line(tr("You lose"), p.text_placeholder, tr("No careers.").into()),
+                    false => line(tr("You lose"), p.error, lose.join("; ")),
                 });
             }
             None => lines.push(line(
                 "Careers",
                 p.text_placeholder,
-                "No career list to compare.".into(),
+                tr("No career list to compare.").into(),
             )),
         }
         lines.push(line(
@@ -884,7 +885,7 @@ impl Shell {
             format!("Settings and setups go back to {when}. The save as it is now is kept as a version."),
         ));
         let close = match layout {
-            vault::Layout::Steam => Some("Steam uploads the restored save when it starts."),
+            vault::Layout::Steam => Some(tr("Steam uploads the restored save when it starts.")),
             _ => None,
         };
         v_flex()
@@ -903,7 +904,7 @@ impl Shell {
                         Button::new("restore-confirm")
                             .primary()
                             .small()
-                            .label("Restore")
+                            .label(tr("Restore"))
                             .disabled(blocker.is_some())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.restore_version(&source, &id, window, cx)
@@ -913,7 +914,7 @@ impl Shell {
                         Button::new("restore-cancel")
                             .ghost()
                             .small()
-                            .label("Cancel")
+                            .label(tr("Cancel"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.saves.confirm = None;
                                 cx.notify();
@@ -928,12 +929,12 @@ impl Shell {
         let loading = self.saves.loading && self.saves.view.as_ref().is_none_or(|v| v.profile != current);
         let Some(view) = self.saves.view.as_ref().filter(|_| !loading) else {
             let empty = match loading {
-                true => "Loading saves…",
-                false => "No F1 25 save found yet.",
+                true => tr("Loading saves…"),
+                false => tr("No F1 25 save found yet."),
             };
             return v_flex()
                 .size_full()
-                .child(self.header("Saves", String::new(), div(), p))
+                .child(self.header(tr("Saves"), String::new(), div(), p))
                 .children(banner)
                 .child(
                     div()
@@ -945,12 +946,12 @@ impl Shell {
                 .into_any_element();
         };
         let title = match view.vanilla() {
-            true => "Vanilla saves".to_owned(),
+            true => tr("Vanilla saves").to_owned(),
             false => format!("{} saves", view.profile),
         };
         let subtitle = match view.vanilla() {
-            true => "Plays on your Steam save".to_owned(),
-            false => "This profile's own save".to_owned(),
+            true => tr("Plays on your Steam save").to_owned(),
+            false => tr("This profile's own save").to_owned(),
         };
         let actions = self.saves_actions(view, cx);
         let careers = self.careers_block(view, p, cx);
@@ -999,14 +1000,14 @@ impl Shell {
                 .text_size(px(13.))
                 .text_color(p.text_muted)
                 .child(Icon::new(IconName::Info).size(px(15.)))
-                .child(div().flex_1().min_w_0().child(EMPTY_SAVE))
+                .child(div().flex_1().min_w_0().child(tr(EMPTY_SAVE)))
                 .child(
                     Button::new("saves-empty-import")
                         .small()
                         .icon(IconName::Download)
-                        .label("Import from Steam")
+                        .label(tr("Import from Steam"))
                         .disabled(blocked)
-                        .when(blocked, |b| b.tooltip("Close F1 25 first"))
+                        .when(blocked, |b| b.tooltip(tr("Close F1 25 first")))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.ask_copy(steam.clone(), VANILLA.to_owned(), name.clone(), window, cx);
                         })),
@@ -1041,7 +1042,7 @@ impl Shell {
                     row.child(
                         Button::new("saves-missing-steam")
                             .small()
-                            .label("Play with your Steam saves")
+                            .label(tr("Play with your Steam saves"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.set_launcher_saves(false, window, cx);
                                 this.refresh_saves();
@@ -1052,9 +1053,9 @@ impl Shell {
                     Button::new("saves-missing-retry")
                         .small()
                         .icon(IconName::Download)
-                        .label("Import from Steam")
+                        .label(tr("Import from Steam"))
                         .disabled(blocked)
-                        .when(blocked, |b| b.tooltip("Close F1 25 first"))
+                        .when(blocked, |b| b.tooltip(tr("Close F1 25 first")))
                         .on_click(cx.listener(|this, _, window, cx| this.retry_steam_import(window, cx))),
                 )
                 .child(
@@ -1062,7 +1063,7 @@ impl Shell {
                         .small()
                         .outline()
                         .icon(IconName::Folder)
-                        .label("Choose the folder…")
+                        .label(tr("Choose the folder…"))
                         .disabled(blocked)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.pick_steam_save(name.clone(), window, cx);
@@ -1077,7 +1078,7 @@ impl Shell {
         let found = !self.saves.view.as_ref().is_some_and(|v| v.steam_missing);
         window.push_notification(
             match found {
-                true => Notification::success("Imported your Steam save."),
+                true => Notification::success(tr("Imported your Steam save.")),
                 false => Notification::warning(
                     "Still couldn't find your Steam save. The log lists where it looked.",
                 ),
@@ -1092,7 +1093,7 @@ impl Shell {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Choose".into()),
+            prompt: Some(tr("Choose").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -1126,23 +1127,23 @@ impl Shell {
         let name = view.profile.clone();
         let vanilla = view.vanilla();
         let why_import = match () {
-            _ if vanilla => Some("Vanilla uses the Steam save"),
-            _ if steam.is_none() => Some("No Steam save found"),
-            _ if game => Some("Close F1 25 first"),
+            _ if vanilla => Some(tr("Vanilla uses the Steam save")),
+            _ if steam.is_none() => Some(tr("No Steam save found")),
+            _ if game => Some(tr("Close F1 25 first")),
             _ => None,
         };
         let why_export = match () {
-            _ if vanilla => Some("Vanilla uses the Steam save"),
-            _ if steam.is_none() => Some("No Steam save found"),
-            _ if !view.has_save => Some("Nothing to export yet"),
-            _ if game => Some("Close F1 25 first"),
-            _ if view.steam_running => Some("Close Steam first"),
+            _ if vanilla => Some(tr("Vanilla uses the Steam save")),
+            _ if steam.is_none() => Some(tr("No Steam save found")),
+            _ if !view.has_save => Some(tr("Nothing to export yet")),
+            _ if game => Some(tr("Close F1 25 first")),
+            _ if view.steam_running => Some(tr("Close Steam first")),
             _ => None,
         };
         let why_copy = match () {
-            _ if view.others.is_empty() => Some("No other profiles"),
-            _ if !view.has_save => Some("Nothing to copy yet"),
-            _ if game => Some("Close F1 25 first"),
+            _ if view.others.is_empty() => Some(tr("No other profiles")),
+            _ if !view.has_save => Some(tr("Nothing to copy yet")),
+            _ if game => Some(tr("Close F1 25 first")),
             _ => None,
         };
         let (from, from_name) = (view.loc.clone(), name.clone());
@@ -1152,7 +1153,7 @@ impl Shell {
             .outline()
             .small()
             .icon(IconName::Copy)
-            .label("Copy careers to…")
+            .label(tr("Copy careers to…"))
             .dropdown_caret(true)
             .disabled(why_copy.is_some())
             .when_some(why_copy, |b, t| b.tooltip(t))
@@ -1175,7 +1176,7 @@ impl Shell {
             .outline()
             .small()
             .icon(IconName::Download)
-            .label("Import from Steam")
+            .label(tr("Import from Steam"))
             .disabled(why_import.is_some())
             .when_some(why_import, |b, t| b.tooltip(t))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1187,7 +1188,7 @@ impl Shell {
             .outline()
             .small()
             .icon(IconName::Upload)
-            .label("Export to Steam")
+            .label(tr("Export to Steam"))
             .disabled(why_export.is_some())
             .when_some(why_export, |b, t| b.tooltip(t))
             .on_click(cx.listener(move |this, _, window, cx| this.ask_export(name.clone(), window, cx)));
@@ -1208,14 +1209,14 @@ impl Shell {
                     .py(px(14.))
                     .text_size(px(13.))
                     .text_color(p.text_muted)
-                    .child("No careers yet. They appear after you play this profile.")
+                    .child(tr("No careers yet. They appear after you play this profile."))
                     .into_any_element(),
             ],
             _ => view.entries.iter().map(|e| self.career_row(e, p)).collect(),
         };
         v_flex()
             .gap(px(8.))
-            .child(label("CAREERS", p))
+            .child(label(tr("CAREERS"), p))
             .child(self.rows_box(rows, p))
     }
 
@@ -1248,7 +1249,7 @@ impl Shell {
                         .text_size(px(13.))
                         .text_color(p.text_muted)
                         .child(Icon::new(IconName::Save).size(px(15.)))
-                        .child("Saved game"),
+                        .child(tr("Saved game")),
                 ),
             )
             .child(
@@ -1370,7 +1371,7 @@ impl Shell {
                     .text_color(p.text_muted)
                     .child(match view.steam_missing {
                         true => STEAM_SAVE_MISSING,
-                        false => "No versions yet.",
+                        false => tr("No versions yet."),
                     })
                     .into_any_element(),
             ],
@@ -1382,7 +1383,7 @@ impl Shell {
         };
         v_flex()
             .gap(px(8.))
-            .child(label("VERSIONS", p))
+            .child(label(tr("VERSIONS"), p))
             .child(self.rows_box(rows, p))
     }
 
@@ -1467,7 +1468,7 @@ impl Shell {
                                     .ghost()
                                     .small()
                                     .icon(IconName::Star)
-                                    .label(if own_pin { "Unpin" } else { "Pin" })
+                                    .label(if own_pin { tr("Unpin") } else { tr("Pin") })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.pin_version(&pin_source, &pin_id, own_pin, cx)
                                     })),
@@ -1477,7 +1478,7 @@ impl Shell {
                                     .outline()
                                     .small()
                                     .icon(IconName::Undo2)
-                                    .label("Restore")
+                                    .label(tr("Restore"))
                                     .disabled(why.is_some())
                                     .when_some(why, |b, t| b.tooltip(t))
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1526,7 +1527,7 @@ impl Shell {
                 Button::new("saves-storage-change")
                     .ghost()
                     .small()
-                    .label("Change")
+                    .label(tr("Change"))
                     .on_click(cx.listener(|this, _, window, cx| this.cap_prompt(window, cx))),
             )
             .child("·")
@@ -1534,7 +1535,7 @@ impl Shell {
                 Button::new("saves-storage-open")
                     .ghost()
                     .small()
-                    .label("Open folder")
+                    .label(tr("Open folder"))
                     .on_click(cx.listener(move |_, _, _, cx| crate::reveal::show(&dir, cx))),
             )
     }

@@ -628,7 +628,7 @@ fn changelog_header(count: usize, p: Palette) -> Div {
 
 fn changelog_row(post: &Post, first: bool, p: Palette) -> AnyElement {
     let url = post.url.as_deref().and_then(safe_url);
-    let current = post.version() == env!("CARGO_PKG_VERSION");
+    let current = post.version() == swofty_core::update::DISPLAY_VERSION;
     v_flex()
         .id(SharedString::from(format!("news-{}", post.id)))
         .flex_shrink_0()

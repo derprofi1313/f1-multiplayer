@@ -22,7 +22,7 @@ pub const LABEL: &str = "Send Logs to Developers";
 pub const SAVE_LABEL: &str = "Save Logs";
 
 pub fn label() -> &'static str {
-    if send_logs::available() { LABEL } else { SAVE_LABEL }
+    crate::i18n::tr(if send_logs::available() { LABEL } else { SAVE_LABEL })
 }
 
 pub fn icon() -> IconName {

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "swofty.core",
+  "name": "SwoftyMod",
+  "version": "0.2.13",
+  "author": "Swofty",
+  "description": "Adds core functionality for addon loading and customisation in Swofty Launcher",
+  "license": "AGPL-3.0-or-later",
+  "kind": ["ui", "native"],
+  "compat": { "game": "f1_25", "game_builds": [">=25251167"], "seasons": [] },
+  "options": [
+    {
+      "id": "show_launcher_panel",
+      "type": "toggle",
+      "label": "Show launcher panel",
+      "description": "Show the \"Launched with Swofty Launcher\" panel on the home screen.",
+      "default": true,
+      "binds": "native",
+      "multiplayer": "cosmetic"
+    }
+  ],
+  "operations": {
+    "native": [{ "dll": "native/swofty_core.dll", "capabilities": ["log", "scan", "hook"] }]
+  }
+}

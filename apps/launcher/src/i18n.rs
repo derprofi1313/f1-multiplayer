@@ -214,6 +214,15 @@ const DE: &[(&str, &str)] = &[
     ),
     ("You get back", "Du bekommst zurück"),
     ("You lose", "Du verlierst"),
+    (
+        "Couldn't find your Steam save, so this profile's launcher saves are empty.",
+        "Dein Steam-Spielstand wurde nicht gefunden, deshalb sind die Launcher-Spielstände dieses Profils leer.",
+    ),
+    ("Switch profiles here to see their saves", "Hier das Profil wechseln, um seine Spielstände zu sehen"),
+    ("ADDON PANELS", "ADDON-PANELS"),
+    ("ACTIVE PROFILE", "AKTIVES PROFIL"),
+    ("Send Logs to Developers", "Logs an die Entwickler senden"),
+    ("Save Logs", "Logs speichern"),
 ];
 
 #[cfg(test)]

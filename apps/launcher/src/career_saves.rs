@@ -1073,6 +1073,7 @@ impl Shell {
         };
         let title = match view.vanilla() {
             true => tr("Vanilla saves").to_owned(),
+            false if crate::i18n::is_german() => format!("Spielstände: {}", view.profile),
             false => format!("{} saves", view.profile),
         };
         let subtitle = match view.vanilla() {
@@ -1163,7 +1164,7 @@ impl Shell {
                 .text_size(px(13.))
                 .text_color(p.text_muted)
                 .child(Icon::new(IconName::Info).size(px(15.)))
-                .child(div().flex_1().min_w(px(240.)).child(STEAM_SAVE_MISSING))
+                .child(div().flex_1().min_w(px(240.)).child(tr(STEAM_SAVE_MISSING)))
                 .when(on, |row| {
                     row.child(
                         Button::new("saves-missing-steam")
@@ -1496,7 +1497,7 @@ impl Shell {
                     .text_size(px(13.))
                     .text_color(p.text_muted)
                     .child(match view.steam_missing {
-                        true => STEAM_SAVE_MISSING,
+                        true => tr(STEAM_SAVE_MISSING),
                         false => tr("No versions yet."),
                     })
                     .into_any_element(),
@@ -1643,11 +1644,10 @@ impl Shell {
             .border_color(p.border_variant)
             .text_size(px(13.))
             .text_color(p.text_muted)
-            .child(format!(
-                "Versions use {} of {}",
-                mb(view.usage),
-                mb_whole(view.cap)
-            ))
+            .child(match crate::i18n::is_german() {
+                true => format!("Versionen belegen {} von {}", mb(view.usage), mb_whole(view.cap)),
+                false => format!("Versions use {} of {}", mb(view.usage), mb_whole(view.cap)),
+            })
             .child("·")
             .child(
                 Button::new("saves-storage-change")

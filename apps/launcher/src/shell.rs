@@ -1793,7 +1793,7 @@ impl Shell {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child("Switch profiles here to see their saves"),
+                        .child(crate::i18n::tr("Switch profiles here to see their saves")),
                 ),
         )
     }
@@ -2036,7 +2036,7 @@ impl Shell {
                                 .flex_shrink_0()
                                 .pt(px(if short { 4. } else { 12. }))
                                 .gap(px(6.))
-                                .child(label("ADDON PANELS", p).px(px(8.)))
+                                .child(label(crate::i18n::tr("ADDON PANELS"), p).px(px(8.)))
                                 .child(v_flex().gap(px(1.)).children(self.panels(p, cx))),
                         ),
                 ),
@@ -2049,7 +2049,7 @@ impl Shell {
                     .pt(px(4.))
                     .pb(px(2.))
                     .children((self.page == Page::Careers).then(|| self.profile_pointer(p)))
-                    .child(label("ACTIVE PROFILE", p).px(px(4.)))
+                    .child(label(crate::i18n::tr("ACTIVE PROFILE"), p).px(px(4.)))
                     .child(self.profile_picker(p, cx)),
             )
     }

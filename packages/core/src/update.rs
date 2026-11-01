@@ -10,9 +10,9 @@ use sha2::{Digest, Sha256};
 use crate::launcher::Progress;
 use crate::{Error, Result, io_err};
 
-pub const LATEST_URL: &str =
-    "https://api.github.com/repos/Swofty-Developments/SwoftyLauncher/releases/latest";
-pub const RELEASES_URL: &str = "https://github.com/Swofty-Developments/SwoftyLauncher/releases";
+/// F1 Multiplayer's own releases. Swofty's releases must never be offered as an update.
+pub const LATEST_URL: &str = "https://api.github.com/repos/derprofi1313/f1-multiplayer/releases/latest";
+pub const RELEASES_URL: &str = "https://github.com/derprofi1313/f1-multiplayer/releases";
 pub const SUMS_FILE: &str = "SHA256SUMS";
 pub const PRETEND_ENV: &str = "SWOFTY_UPDATE_PRETEND_VERSION";
 pub const FIXTURE_ENV: &str = "SWOFTY_TEST_GITHUB";
@@ -694,6 +694,14 @@ pub fn apply(new: &Path, root: &Path, backup: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_launcher_only_looks_at_its_own_releases() {
+        for url in [LATEST_URL, RELEASES_URL] {
+            assert!(url.contains("derprofi1313/f1-multiplayer"), "{url}");
+            assert!(!url.contains("Swofty-Developments"), "{url}");
+        }
+    }
 
     fn v(s: &str) -> Version {
         Version::parse(s).unwrap()

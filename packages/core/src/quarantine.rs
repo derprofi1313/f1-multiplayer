@@ -142,8 +142,18 @@ pub enum Cause {
     },
     /// The game held the game folder's version.dll, yet the loader never
     /// logged an attach: it was loaded and failed or stalled on its own.
-    LoadedSilently,
+    LoadedSilently {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exec_options: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        layers: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        security: Vec<String>,
+    },
 }
+
+pub const EXEC_OPTIONS_KEY: &str =
+    r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\F1_25.exe";
 
 /// Where Windows turns on "prefer System32 DLLs" for F1_25.exe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,10 +308,32 @@ impl Cause {
                 "F1 25 had already closed when F1 Multiplayer looked, so it can't tell whether {PROXY} was loaded. \
                  Windows Security and Smart App Control logged no block, so an antivirus is not shown to be the cause"
             ),
-            Self::LoadedSilently => format!(
-                "the game loaded the game folder's {PROXY}, so nothing blocked it, but the loader never reported \
-                 that it started"
-            ),
+            Self::LoadedSilently {
+                exec_options,
+                layers,
+                security,
+            } => {
+                let mut text = format!(
+                    "the game loaded the game folder's {PROXY}, so nothing blocked it, but the loader never reported \
+                     that it started"
+                );
+                if !exec_options.is_empty() {
+                    text.push_str(&format!(
+                        ". F1_25.exe has Image File Execution Options values set ({})",
+                        exec_options.join(", ")
+                    ));
+                }
+                if !layers.is_empty() {
+                    text.push_str(&format!(
+                        ". F1_25.exe has compatibility settings on ({})",
+                        layers.join("; ")
+                    ));
+                }
+                if !security.is_empty() {
+                    text.push_str(&format!(". {} is loaded into the game", security.join(", ")));
+                }
+                text
+            }
         }
     }
 
@@ -310,7 +342,10 @@ impl Cause {
     pub fn unexplained(&self) -> bool {
         matches!(
             self,
-            Self::Unexplained { .. } | Self::Unreadable | Self::GameEnded { .. } | Self::LoadedSilently
+            Self::Unexplained { .. }
+                | Self::Unreadable
+                | Self::GameEnded { .. }
+                | Self::LoadedSilently { .. }
         )
     }
 
@@ -449,9 +484,42 @@ impl Cause {
                     "Press Send Logs to Developers and say how far F1 25 got before it closed.{av}"
                 )
             }
-            Self::LoadedSilently => "Press Send Logs to Developers and ask in the support Discord; the loader's own \
-                 files in the launcher folder are what the developers need to look at."
-                .to_owned(),
+            Self::LoadedSilently { exec_options, layers, security } => {
+                let mut steps: Vec<String> = Vec::new();
+                if !exec_options.is_empty() {
+                    steps.push(format!(
+                        "delete the value{} {} under {EXEC_OPTIONS_KEY} in the registry editor (regedit)",
+                        if exec_options.len() == 1 { "" } else { "s" },
+                        exec_options.join(", ")
+                    ));
+                }
+                if !layers.is_empty() {
+                    steps.push(
+                        "clear F1_25.exe's compatibility settings (right-click F1_25.exe > Properties > \
+                         Compatibility, untick everything and press Apply)"
+                            .to_owned(),
+                    );
+                }
+                if !security.is_empty() {
+                    steps.push(format!(
+                        "add the game folder ({}) and F1_25.exe as exclusions in {} and turn off its game or \
+                         process protection",
+                        game.display(),
+                        security.join(", ")
+                    ));
+                }
+                if steps.is_empty() {
+                    "Press Send Logs to Developers and ask in the support Discord; the loader's own \
+                     files in the launcher folder are what the developers need to look at."
+                        .to_owned()
+                } else {
+                    format!(
+                        "To fix it, close F1 25, {}, then press Play in F1 Multiplayer. If mods still don't load, \
+                         press Send Logs to Developers and ask in the support Discord.",
+                        steps.join(", then ")
+                    )
+                }
+            }
             Self::Defender => return None,
         })
     }
@@ -1037,10 +1105,27 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("most likely blocked"), "{text}");
-        r.cause = Some(Box::new(Cause::LoadedSilently));
+        let silent = Cause::LoadedSilently {
+            exec_options: Vec::new(),
+            layers: Vec::new(),
+            security: Vec::new(),
+        };
+        r.cause = Some(Box::new(silent.clone()));
         let text = r.text();
         assert!(text.contains("so nothing blocked it"), "{text}");
-        assert!(Cause::LoadedSilently.unexplained());
+        assert!(!text.contains("Image File Execution"), "{text}");
+        assert!(silent.unexplained());
+        let with = Cause::LoadedSilently {
+            exec_options: vec!["MaxLoaderThreads".into()],
+            layers: vec!["~ DISABLEDXMAXIMIZEDWINDOWEDMODE HIGHDPIAWARE (for this user)".into()],
+            security: vec!["mc-sec-plugin-x64.dll".into()],
+        };
+        r.cause = Some(Box::new(with));
+        let text = r.text();
+        assert!(text.contains("MaxLoaderThreads"), "{text}");
+        assert!(text.contains(r"Image File Execution Options\F1_25.exe"), "{text}");
+        assert!(text.contains("compatibility settings"), "{text}");
+        assert!(text.contains("exclusions in mc-sec-plugin-x64.dll"), "{text}");
     }
 
     #[test]

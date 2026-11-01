@@ -333,6 +333,9 @@ const HOOKS: &[(&str, &str)] = &[
     ("windhawk", "Windhawk"),
 ];
 
+/// In-process modules of security products, by the start of the DLL's name.
+const SECURITY_MODULES: &[&str] = &["mc-sec", "mfehidk", "aswhook", "snxhk", "sf2", "avghook"];
+
 /// Exploit protection's program settings among the Image File Execution
 /// Options value names. MaxLoaderThreads alone is common and changes nothing.
 const EXPLOIT_PROTECTION: &[&str] = &["MitigationOptions", "MitigationAuditOptions", "EAFModules"];
@@ -654,7 +657,7 @@ impl Findings {
             .iter()
             .any(|g| matches!(&g.modules, Ok(m) if m.version.iter().any(|p| in_folder(p, game))))
         {
-            return Some(Cause::LoadedSilently);
+            return Some(self.loaded_silently());
         }
         if self.games.is_empty() && self.created.is_some() {
             return Some(Cause::GameEnded {
@@ -699,6 +702,35 @@ impl Findings {
         match &self.prefer_from {
             Some(Ok(found)) => found.first().cloned(),
             _ => self.exploit_protection().then_some(PreferSource::Program),
+        }
+    }
+
+    fn loaded_silently(&self) -> Cause {
+        let exec_options = match &self.exec_options {
+            Some(Ok(names)) => names.clone(),
+            _ => Vec::new(),
+        };
+        let layers = match &self.layers {
+            Some(Ok(l)) => l.clone(),
+            _ => Vec::new(),
+        };
+        let mut security: Vec<String> = Vec::new();
+        for g in &self.games {
+            let Ok(m) = &g.modules else { continue };
+            for name in &m.others {
+                if SECURITY_MODULES
+                    .iter()
+                    .any(|p| name.to_lowercase().starts_with(p))
+                    && !security.iter().any(|s| s.eq_ignore_ascii_case(name))
+                {
+                    security.push(name.clone());
+                }
+            }
+        }
+        Cause::LoadedSilently {
+            exec_options,
+            layers,
+            security,
         }
     }
 
@@ -1820,7 +1852,7 @@ mod tests {
         );
         let loaded = running(&[&format!(r"{GAME}\version.dll"), SYSTEM], Mitigation::default());
         let f = found([audit, core].concat(), vec![loaded]);
-        assert_eq!(f.cause(&game()), Some(Cause::LoadedSilently));
+        assert!(matches!(f.cause(&game()), Some(Cause::LoadedSilently { .. })));
     }
 
     #[test]
@@ -2047,7 +2079,33 @@ mod tests {
         );
         let ours = format!(r"{GAME}\version.dll");
         let f = found(Vec::new(), vec![running(&[ours.as_str()], Mitigation::default())]);
-        assert_eq!(f.cause(&game()), Some(Cause::LoadedSilently));
+        assert!(matches!(f.cause(&game()), Some(Cause::LoadedSilently { .. })));
+    }
+
+    #[test]
+    fn silent_loader_names_ifeo_values_and_security_modules() {
+        let ours = format!(r"{GAME}\version.dll");
+        let mut f = found(Vec::new(), vec![running(&[ours.as_str()], Mitigation::default())]);
+        assert_eq!(
+            f.cause(&game()),
+            Some(Cause::LoadedSilently {
+                exec_options: Vec::new(),
+                layers: Vec::new(),
+                security: Vec::new()
+            })
+        );
+        f.exec_options = Some(Ok(vec!["MaxLoaderThreads".into()]));
+        f.layers = Some(Ok(vec!["~ HIGHDPIAWARE (for this user)".into()]));
+        let Ok(m) = &mut f.games[0].modules else { panic!() };
+        m.others = vec!["mc-sec-plugin-x64.dll".into(), "other.dll".into()];
+        assert_eq!(
+            f.cause(&game()),
+            Some(Cause::LoadedSilently {
+                exec_options: vec!["MaxLoaderThreads".into()],
+                layers: vec!["~ HIGHDPIAWARE (for this user)".into()],
+                security: vec!["mc-sec-plugin-x64.dll".into()]
+            })
+        );
     }
 
     fn system_copy() -> Findings {
@@ -2252,11 +2310,11 @@ mod tests {
     fn smart_app_control_on_is_the_cause_only_when_nothing_else_is() {
         let ours = format!(r"{GAME}\version.dll");
         let mut f = found(Vec::new(), vec![running(&[&ours, SYSTEM], Mitigation::default())]);
-        assert_eq!(f.cause(&game()), Some(Cause::LoadedSilently));
+        assert!(matches!(f.cause(&game()), Some(Cause::LoadedSilently { .. })));
         f.smart_app_control = Some(Ok(Some(1)));
         assert_eq!(f.cause(&game()), Some(Cause::SmartAppControl { seen: false }));
         f.smart_app_control = Some(Ok(Some(2)));
-        assert_eq!(f.cause(&game()), Some(Cause::LoadedSilently));
+        assert!(matches!(f.cause(&game()), Some(Cause::LoadedSilently { .. })));
         f.games = vec![running(&[SYSTEM], Mitigation::default())];
         f.smart_app_control = Some(Ok(Some(1)));
         assert!(matches!(f.cause(&game()), Some(Cause::Unexplained { .. })));

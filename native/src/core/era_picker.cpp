@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "replay_grid_logic.hpp"
 
 #include <swofty/game.hpp>
 #include <swofty/mem.hpp>
@@ -531,6 +532,7 @@ void vehicles_entry(void *module)
     auto *m = static_cast<uint8_t *>(module);
     uintptr_t begin = at<uintptr_t>(m, MODULE_VEHICLES_BEGIN), end = at<uintptr_t>(m, MODULE_VEHICLES_END);
     session_trace("Sess_Setup_VehicleComponents", int64_t(logic::session_vehicles(begin, end)));
+    runtime::replay_grid::session_vehicles.store(int64_t(logic::session_vehicles(begin, end)));
     uintptr_t within = logic::vehicles_end_within_table(begin, end);
     if (within == end)
         return vehicles_orig(module);

@@ -105,7 +105,7 @@ jobs:
           version: 0.16.0
 
       - name: Build
-        run: native/build.sh
+        run: bash native/build.sh
 
       - uses: actions/upload-artifact@v7
         with:
@@ -170,7 +170,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: Swofty-Developments/SwoftyLauncher
-        run: tools/dxc/fetch.sh dxc-windows-x86_64.tar.gz
+        run: bash tools/dxc/fetch.sh dxc-windows-x86_64.tar.gz
 
       - name: Package
         shell: pwsh

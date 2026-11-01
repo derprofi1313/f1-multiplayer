@@ -1448,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stat_id_an_earlier_addon_holds_moves_and_counts_as_a_conflict() {
+    fn a_stat_id_an_earlier_addon_pins_moves_and_counts_as_a_conflict() {
         use swofty_formats::gvdb::Record;
         let features = Features::default();
         let opt_in = BTreeSet::new();
@@ -1463,7 +1463,7 @@ mod tests {
         p.add_fields("b", fields());
         p.push(op(
             "a",
-            r#"{"op":"db.add-row","table":"t","from":"t.r_0","set":{"_metadata_":"a_row"}}"#,
+            r#"{"op":"db.add-row","table":"t","from":"t.r_0","set":{"_metadata_":"a_row","stat_id":"6"}}"#,
         ));
         p.push(op(
             "b",
@@ -1509,6 +1509,49 @@ mod tests {
             ),
             ("a", "b", 1)
         );
+    }
+
+    #[test]
+    fn a_free_stat_id_of_an_earlier_addon_leaves_the_one_a_later_addon_pins() {
+        use swofty_formats::gvdb::Record;
+        let features = Features::default();
+        let opt_in = BTreeSet::new();
+        let fields = || {
+            BTreeMap::from([(
+                "t.r".to_owned(),
+                vec!["_metadata_".to_owned(), "stat_id".to_owned()],
+            )])
+        };
+        let mut p = Planner::new(&features, &opt_in);
+        p.add_fields("a", fields());
+        p.add_fields("b", fields());
+        p.push(op(
+            "a",
+            r#"{"op":"db.add-row","table":"t","from":"t.r_0","set":{"_metadata_":"a_row"}}"#,
+        ));
+        p.push(op(
+            "b",
+            r#"{"op":"db.add-row","table":"t","from":"t.r_0","set":{"_metadata_":"b_row","stat_id":"6"}}"#,
+        ));
+        let mut db = Gvdb {
+            records: vec![
+                Record::new("t._r_instancecount_", 0, "1"),
+                Record::new("t.r_0._metadata_", 4, "base"),
+                Record::new("t.r_0.stat_id", 0, "5"),
+            ],
+        };
+        let stock = db.records.iter().map(|r| r.key).collect();
+        let mut report = DbReport::default();
+        p.apply_db_report(&mut db, &stock, &HashSet::new(), &mut report)
+            .unwrap();
+        assert_eq!(db.get_text("t.r_1.stat_id").as_deref(), Some("7"));
+        assert_eq!(db.get_text("t.r_2.stat_id").as_deref(), Some("6"));
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("is taken by")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(p.finish().conflicts.is_empty());
     }
 
     #[test]

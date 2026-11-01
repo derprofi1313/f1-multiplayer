@@ -89,6 +89,7 @@ pub struct Probe {
     pub(crate) banner_profile: String,
     pub(crate) banner: Option<Option<crate::career_saves::Banner>>,
     pub(crate) saves_marker: bool,
+    pub(crate) saves_print: Option<u64>,
 }
 
 static VAULT_WATCH: std::sync::LazyLock<std::sync::Mutex<vault::watch::Watch>> =
@@ -221,11 +222,14 @@ pub fn probe(
     seen: Option<SystemTime>,
     profile: &str,
     banner_due: bool,
+    saves_open: bool,
 ) -> Probe {
     let processes = game_processes();
     watch_vault(store, &processes);
     retry_import(store, &processes);
     let (requests, merged) = merge_requests(store, processes.is_empty(), seen);
+    let saves_print =
+        saves_open.then(|| crate::career_saves::saves_print(&store.root, profile, !processes.is_empty()));
     Probe {
         install: rediscover.then(|| discover_all(store)),
         processes,
@@ -242,6 +246,7 @@ pub fn probe(
         banner_profile: profile.to_owned(),
         banner: banner_due.then(|| crate::career_saves::SavesPage::banner_for(&store.root, profile)),
         saves_marker: swofty_core::launcher_saves::marker(&store.root).is_some(),
+        saves_print,
         launch_stage: std::fs::read_to_string(store.root.join(steam_client::STAGE_FILE))
             .ok()
             .map(|s| s.trim().to_owned())

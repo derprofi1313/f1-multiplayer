@@ -52,20 +52,20 @@ pub fn parse(text: &str) -> Vec<Career> {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return Vec::new();
     };
-    let one = |key: Option<&str>, v: &Value| -> Option<Career> {
-        let mut c: Career = serde_json::from_value(v.clone()).ok()?;
+    let one = |key: Option<String>, v: Value| -> Option<Career> {
+        let mut c: Career = serde_json::from_value(v).ok()?;
         if c.key.is_none() {
-            c.key = key.map(str::to_owned);
+            c.key = key;
         }
         (!c.career.is_empty()).then_some(c)
     };
-    match &v {
-        Value::Array(list) => list.iter().filter_map(|c| one(None, c)).collect(),
-        Value::Object(map) => match map.get("careers") {
-            Some(Value::Array(list)) => list.iter().filter_map(|c| one(None, c)).collect(),
-            Some(Value::Object(by_key)) => by_key.iter().filter_map(|(k, c)| one(Some(k), c)).collect(),
+    match v {
+        Value::Array(list) => list.into_iter().filter_map(|c| one(None, c)).collect(),
+        Value::Object(mut map) => match map.remove("careers") {
+            Some(Value::Array(list)) => list.into_iter().filter_map(|c| one(None, c)).collect(),
+            Some(Value::Object(by_key)) => by_key.into_iter().filter_map(|(k, c)| one(Some(k), c)).collect(),
             _ => map
-                .iter()
+                .into_iter()
                 .filter(|(_, c)| c.is_object())
                 .filter_map(|(k, c)| one(Some(k), c))
                 .collect(),

@@ -28,6 +28,7 @@ struct Sig {
     uintptr_t rva;
     enum Kind { addr, rel32, riprel } kind = addr;
     uintptr_t insn = 0, anchor = 0, len = 0;
+    const char *section = ".xtls";
 };
 
 struct OverlayErp {
@@ -216,6 +217,8 @@ std::vector<CoreMixins> fe_tile_guard_mixins();
 void fe_tile_guard_commit();
 std::vector<CoreMixins> ai_corner_guard_mixins();
 void ai_corner_guard_commit();
+std::vector<CoreMixins> replay_grid_guard_mixins();
+void replay_grid_guard_commit();
 std::vector<CoreMixins> watchdog_grace_mixins();
 void watchdog_grace_commit();
 void watchdog_flow(uint32_t hash, uint32_t to, const char *name);

@@ -180,6 +180,29 @@ pub fn overlay_fits(
                 return Ok(Err(format!("{} in {target}: {why}", res.name)));
             }
         }
+        let find = |name: &str| -> Result<Option<Resource>> {
+            for file in [&overlay, &stock] {
+                if let Some(r) = file.erp.resources.iter().find(|r| r.name == name) {
+                    return Ok(Some(file.load(r)?));
+                }
+            }
+            Ok(None)
+        };
+        for res in &overlay.erp.resources {
+            let view = match res.name.strip_suffix(".image") {
+                Some(v) if v.ends_with(".texarray") => v,
+                _ if res.name.ends_with(".texarray") => res.name.as_str(),
+                _ => continue,
+            };
+            let (Some(v), Some(i)) = (find(view)?, find(&format!("{view}.image"))?) else {
+                continue;
+            };
+            if let Some((said, has)) = crate::erpbuild::view_mismatch(&v, &i)? {
+                return Ok(Err(format!(
+                    "{view} in {target}: its view says {said} slices, the image has {has}"
+                )));
+            }
+        }
     }
     Ok(Ok(overlay.erp.resources.len()))
 }

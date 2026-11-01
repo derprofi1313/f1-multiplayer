@@ -941,6 +941,20 @@ void on_heap_error(int code, const char *msg, bool is_fatal, void *heap)
                      (unsigned long long)h.used, (unsigned long long)h.free_bytes, (unsigned long long)h.largest)
                      .c_str()
                : "");
+    if (code == 0x58) {
+        DWORD last = GetLastError();
+        MEMORYSTATUSEX ms = {};
+        ms.dwLength = sizeof ms;
+        if (GlobalMemoryStatusEx(&ms))
+            cl("[crash] Ne heap error 0x58 (useAddressSpace: the commit of a heap block failed, error 0x58 is a Win32 error the game does not map, e.g. 1455 commit limit) in '%s': last Win32 error %lu, system commit limit %llu MiB, commit left %llu MiB, physical %llu of %llu MiB free, process address space left %llu MiB; heap %s",
+               h.name, last, (unsigned long long)(ms.ullTotalPageFile >> 20), (unsigned long long)(ms.ullAvailPageFile >> 20),
+               (unsigned long long)(ms.ullAvailPhys >> 20), (unsigned long long)(ms.ullTotalPhys >> 20),
+               (unsigned long long)(ms.ullAvailVirtual >> 20),
+               h.stats ? fmt("capacity %llu, used %llu, free %llu, largest free %llu", (unsigned long long)h.capacity,
+                             (unsigned long long)h.used, (unsigned long long)h.free_bytes, (unsigned long long)h.largest)
+                             .c_str()
+                       : "stats unavailable");
+    }
     if (!is_fatal)
         return;
     alignas(16) CONTEXT ctx;

@@ -126,6 +126,7 @@ struct Slot {
     ULONGLONG armed_at = 0;
     UINT passes = 0;
     int pass_of[MAX_PASSES] = {};
+    ID3D12Resource *depth = nullptr;
 };
 
 // The core's textures for one picture size: each slot's working set, last frame's result, and the
@@ -315,7 +316,9 @@ FinalProbe finals[256];
 D3D12_PLACED_SUBRESOURCE_FOOTPRINT final_fp;
 UINT final_w, final_h;
 // Each back buffer's use for one frame: fresh from the barrier that makes it a render target until the
-// passes run on it, and the depth buffer as the picture's list left it.
+// passes run on it, and the depth buffer as the picture's list left it. The depth buffer here and in
+// depth_res is held (postfx::hold): the HUD's list and the lists between read it a frame later, after
+// the game may have freed it.
 struct BackUse {
     ID3D12Resource *back = nullptr;
     bool fresh = false;
@@ -328,6 +331,19 @@ unsigned back_seen, hud_read_at;
 bool hud_read_seen;
 
 
+// Lets go of the held depth buffers other than keep: all of them when the picture changes, the old ones
+// when the game names a new depth buffer, and only renamed when the game gives a held one another name.
+void drop_depths(ID3D12Resource *keep, ID3D12Resource *renamed = nullptr)
+{
+    auto drop = [&](ID3D12Resource *&d) {
+        if (d && (keep ? d != keep : !renamed || d == renamed))
+            postfx::hold(d, nullptr);
+    };
+    for (auto &u : back_uses)
+        drop(u.depth);
+    drop(depth_res);
+}
+
 BackUse &back_use(ID3D12Resource *b)
 {
     BackUse *oldest = &back_uses[0];
@@ -337,6 +353,7 @@ BackUse &back_use(ID3D12Resource *b)
         if (u.seen < oldest->seen)
             oldest = &u;
     }
+    postfx::hold(oldest->depth, nullptr);
     *oldest = BackUse{};
     oldest->back = b;
     oldest->seen = ++back_seen;
@@ -627,7 +644,7 @@ bool make_frame(const D3D12_RESOURCE_DESC &d)
         old.insert(old.end(), {wk.orig, wk.pic[0], wk.pic[1]});
         old.insert(old.end(), wk.tex.begin(), wk.tex.end());
     }
-    depth_res = nullptr;
+    drop_depths(nullptr);
     frame = Frame{};
     frame.desc = d;
     frame.view = view;
@@ -995,6 +1012,7 @@ bool record(const Where &w, int k)
     land_capture();
     free_retired();
     Slot &s = slots[k];
+    postfx::hold(s.depth, w.depth);
     read_times(s);
     s.passes = 0;
     D3D12_RESOURCE_DESC d = w.back->GetDesc();
@@ -1296,8 +1314,7 @@ void on_setname(ID3D12Object *o, LPCWSTR name)
         names.erase(res);
         watch(res, 0);
     }
-    if (res == depth_res)
-        depth_res = nullptr;
+    drop_depths(wcscmp(name, DEPTH_NAME) == 0 ? res : nullptr, res);
     bool tonemap = wcscmp(name, TONEMAP_NAME) == 0, back = wcscmp(name, BACKBUFFER_NAME) == 0;
     uint8_t bits = (tonemap ? W_TONEMAP : 0) | (back ? W_BACK : 0) | (wcscmp(name, HUDLESS_NAME) == 0 ? W_HUDLESS : 0) |
                    (wcscmp(name, DEPTH_NAME) == 0 ? W_DEPTH : 0) |
@@ -1472,7 +1489,7 @@ bool on_barrier(ID3D12GraphicsCommandList *list, UINT n, const D3D12_RESOURCE_BA
             if ((b.Transition.StateAfter & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) && m->target &&
                 m->state == D3D12_RESOURCE_STATE_RENDER_TARGET) {
                 BackUse &u = back_use(m->target);
-                u.depth = m->depth;
+                postfx::hold(u.depth, m->depth);
                 u.depth_state = m->depth_state;
             }
         }
@@ -1567,7 +1584,7 @@ bool on_exec(ID3D12CommandQueue *q, UINT n, ID3D12CommandList *const *lists)
             }
             if (m.depth) {
                 if (split == n || i <= split) {
-                    depth_res = m.depth;
+                    postfx::hold(depth_res, m.depth);
                     depth_state = m.depth_state;
                 } else {
                     later_depth = m.depth;
@@ -1585,7 +1602,7 @@ bool on_exec(ID3D12CommandQueue *q, UINT n, ID3D12CommandList *const *lists)
     if (split == n && !signals) {
         if (later_depth) {
             std::lock_guard<std::recursive_mutex> g(lock);
-            depth_res = later_depth;
+            postfx::hold(depth_res, later_depth);
             depth_state = later_depth_state;
         }
         return false;
@@ -1598,7 +1615,7 @@ bool on_exec(ID3D12CommandQueue *q, UINT n, ID3D12CommandList *const *lists)
     if (split < n)
         run_between(q, res, state, hudless, hudless_state);
     if (later_depth) {
-        depth_res = later_depth;
+        postfx::hold(depth_res, later_depth);
         depth_state = later_depth_state;
     }
     if (split + 1 < n) {

@@ -42,7 +42,7 @@ struct Spec {
 constexpr Spec kHeaps[] = {
     {"AUDIO_BUNDLE", Factory::plain, 43 * kMiB, Virtual::off, 2 * (uint32_t)kMiB, false, 96, 64, 512, 2 * kMiB,
      "SWOFTY_AUDIO_BUNDLE_MB", "[audio] ", "AUDIO_BUNDLE heap"},
-    {"SAVE_TEMP_ALLOC", Factory::internal, 75 * kMiB, Virtual::on, 0, true, 200, 200, 512, 1, "SWOFTY_SAVE_TEMP_MB",
+    {"SAVE_TEMP_ALLOC", Factory::internal, 75 * kMiB, Virtual::on, 0, true, 512, 320, 1024, 1, "SWOFTY_SAVE_TEMP_MB",
      "[saves] temp pool: ", "SAVE_TEMP_ALLOC"},
     {"GAME_DEFAULT", Factory::plain, 390 * kMiB, Virtual::on, 0, false, 1024, 640, 2600, 1, "SWOFTY_GAME_HEAP_MB", "[heap] ",
      "GAME_DEFAULT heap"},

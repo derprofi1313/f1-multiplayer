@@ -416,18 +416,29 @@ impl Shell {
             .detach();
         let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
-                let Ok((store, rediscover, seen, profile, banner_due)) = this.update(cx, |s, _| {
-                    let r = std::mem::take(&mut s.rediscover);
-                    let profile = s.library.profile.name.clone();
-                    let due = r || s.saves.banner_profile != profile;
-                    (s.store.clone(), r, s.requests, profile, due)
-                }) else {
+                let Ok((store, rediscover, seen, profile, banner_due, saves_open)) =
+                    this.update(cx, |s, _| {
+                        let r = std::mem::take(&mut s.rediscover);
+                        let profile = s.library.profile.name.clone();
+                        let due = r || s.saves.banner_profile != profile;
+                        (
+                            s.store.clone(),
+                            r,
+                            s.requests,
+                            profile,
+                            due,
+                            s.page == Page::Careers,
+                        )
+                    })
+                else {
                     break;
                 };
-                let probe = cx
-                    .background_executor()
-                    .spawn(async move { game::probe(&store, rediscover, seen, &profile, banner_due) })
-                    .await;
+                let probe =
+                    cx.background_executor()
+                        .spawn(async move {
+                            game::probe(&store, rediscover, seen, &profile, banner_due, saves_open)
+                        })
+                        .await;
                 if this
                     .update_in(cx, |s, window, cx| s.apply(probe, window, cx))
                     .is_err()
@@ -693,6 +704,12 @@ impl Shell {
             self.saves.banner_profile = probe.banner_profile;
         }
         self.saves.game_running = !probe.processes.is_empty();
+        if self
+            .saves
+            .refresh_due(self.page == Page::Careers, probe.saves_print)
+        {
+            self.refresh_saves_in_background(cx);
+        }
         if probe.saves_marker && self.saves.take_notice(&root) {
             self.show_saves_notice(window, cx);
         }
@@ -746,8 +763,8 @@ impl Shell {
             self.copies = found.all;
             self.missing_copies = found.missing;
             self.detected = true;
-            if self.page == Page::Careers {
-                self.refresh_saves();
+            if self.page == Page::Careers && (changed || probe.merged) {
+                self.refresh_saves_in_background(cx);
             }
             if probe.merged {
                 self.reload(cx);
@@ -1729,8 +1746,9 @@ impl Shell {
             self.cancel_scroll();
         }
         self.db_page_change(page, cx);
+        let was = self.page;
         self.page = page;
-        if page == Page::Careers {
+        if page == Page::Careers && was != Page::Careers {
             self.refresh_saves_in_background(cx);
         }
         if let Some(i) = self.open_section().filter(|i| !self.section_loaded(*i)) {

@@ -512,8 +512,13 @@ impl Shell {
         if !std::mem::take(&mut self.mp_page.room_launching) {
             return;
         }
-        if let (Some(why), Some(session)) = (why, &self.mp_page.session) {
-            session.launch_failed(&why);
+        match why {
+            None => self.mp_page.game_seen = true,
+            Some(why) => {
+                if let Some(session) = &self.mp_page.session {
+                    session.launch_failed(&why);
+                }
+            }
         }
     }
 

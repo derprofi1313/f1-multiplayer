@@ -3165,10 +3165,19 @@ impl Shell {
         let installed = self.installed_manifests();
         let learned = self.addons.problems.clone();
         let store = self.store.clone();
+        let moved = std::rc::Rc::new(std::cell::Cell::new(true));
+        let seen = moved.clone();
         self.update_profile(window, cx, move |profile| {
             let pinned = |id: &str| store.is_builtin(id) || order::is_pinned(id);
-            order::fix(profile, &installed, &learned, &pinned).map(|_| ())
+            seen.set(order::fix(profile, &installed, &learned, &pinned)?);
+            Ok(())
         });
+        if !moved.get() {
+            window.push_notification(
+                Notification::info("The order already satisfies every rule it can fix. Nothing moved."),
+                cx,
+            );
+        }
     }
 
     fn move_dependency_above(&mut self, dep: &str, addon: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -3210,7 +3219,11 @@ impl Shell {
                         .into_any_element(),
                 );
             }
-            order::Kind::Below | order::Kind::Waits | order::Kind::Loses { .. } => {
+            order::Kind::Below
+            | order::Kind::Waits
+            | order::Kind::Loses {
+                winner_below: true, ..
+            } => {
                 let (dep, at) = (other.clone(), addon.clone());
                 out.push(
                     button(key("above"), format!("Move {} above", name(&other)))
@@ -3237,6 +3250,7 @@ impl Shell {
                         .into_any_element(),
                 );
             }
+            order::Kind::Loses { .. } => {}
             order::Kind::Career { why, .. } => {
                 let id = addon.clone();
                 match &**why {

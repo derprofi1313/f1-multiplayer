@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 // The parts of the post-process passes that are plain logic: which views a pass runs in, the key
 // names a toggle option holds, texture formats and sizes, and option values from settings text.
@@ -143,6 +144,19 @@ inline bool option_value(std::string_view text, float &out)
 inline uint32_t groups(uint32_t size, uint32_t threads)
 {
     return threads ? (size + threads - 1) / threads : 0;
+}
+
+// Makes at point to r with a reference of its own on r and lets go of the one it held, so a resource
+// the game releases stays alive while the core still points at it.
+template <class T> void hold(T *&at, std::type_identity_t<T> *r)
+{
+    if (at == r)
+        return;
+    if (r)
+        r->AddRef();
+    if (at)
+        at->Release();
+    at = r;
 }
 
 }

@@ -17,6 +17,12 @@ use crate::{Error, Result};
 const SCENE: &str = "UILayout";
 const ASSET_GROUPS: &str = "2025_asset_groups";
 
+const HANDLING_WHY: &str = "a car handling file is read from the game file, as a hand copy puts it";
+
+fn is_handling(r: &Resource) -> bool {
+    r.name.to_ascii_lowercase().ends_with(".vtf")
+}
+
 pub fn served_at_runtime(rel: &str) -> bool {
     rel.starts_with(ASSET_GROUPS)
 }
@@ -77,6 +83,29 @@ impl Archive {
             Slot::Stock(_) => unreachable!("loaded above"),
         }
     }
+}
+
+const VIEW_COUNT: usize = 0x14;
+
+pub(crate) fn view_slices(view: &Resource) -> Result<Option<u32>> {
+    let Some(frag) = view.fragments.first() else {
+        return Ok(None);
+    };
+    let data = frag.data()?;
+    Ok(data
+        .get(VIEW_COUNT..VIEW_COUNT + 4)
+        .map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes"))))
+}
+
+// The slice count a texture array view says and the one its image has, when they differ
+// and the view doesn't say 0 (the stock single-slice convention).
+pub(crate) fn view_mismatch(view: &Resource, image: &Resource) -> Result<Option<(u32, usize)>> {
+    let Some(array) = Array::read_slices(image) else {
+        return Ok(None);
+    };
+    Ok(view_slices(view)?
+        .filter(|&said| said != 0 && said as usize != array.count)
+        .map(|said| (said, array.count)))
 }
 
 pub struct ErpBuild<'a> {
@@ -473,6 +502,10 @@ impl<'a> ErpBuild<'a> {
         Ok(self.erps.get_mut(rel).expect("inserted above"))
     }
 
+    pub fn load(&mut self, rel: &str) -> Result<()> {
+        self.erp(rel).map(|_| ())
+    }
+
     // Applies an op for an origin, such as an addon or a mod inside one. The
     // runtime route puts each origin's resources in an overlay archive of its own.
     pub fn apply_for(
@@ -724,14 +757,16 @@ impl<'a> ErpBuild<'a> {
     fn add(&mut self, erp: &str, name: &str, kind: &str, data: &[Vec<u8>]) -> Result<()> {
         let wanted = erp::kind(kind).map_err(|e| fail(format!("add-resource {name}: {e}")))?;
         let target = self.erp(erp)?;
-        if target
-            .position(name)
-            .map_err(|e| fail(format!("{erp}: {e}")))?
-            .is_some()
-        {
-            return Err(fail(format!(
-                "{erp}: {name} already exists; put-resource replaces a resource"
-            )));
+        if let Some(i) = target.position(name).map_err(|e| fail(format!("{erp}: {e}")))? {
+            return Err(fail(match target.slots[i] {
+                Slot::Stock(_) => format!(
+                    "{erp} in the game folder already has {name}, so something outside the launcher probably changed this file \
+                     (a hand-installed mod or a leftover). \
+                     Remove hand-installed mods, then Repair F1 25 in the EA app (Steam: Verify integrity of game files), then Play. \
+                     (Addon authors: if the stock file has it, use put-resource.)"
+                ),
+                Slot::Owned(_) => format!("{erp}: {name} already exists; put-resource replaces a resource"),
+            }));
         }
         let like = target
             .slots
@@ -957,16 +992,15 @@ impl<'a> ErpBuild<'a> {
     }
 
     pub fn cohere_arrays(&mut self) -> Result<Vec<String>> {
-        const VIEW_COUNT: usize = 0x14;
         let mut lines = Vec::new();
         let rels: Vec<String> = self.erps.keys().cloned().collect();
         for rel in rels {
             let mut images: Vec<String> = self.erps[&rel]
                 .slots
                 .iter()
-                .filter_map(|s| match s {
-                    Slot::Owned(r) => Some(r.name.as_str()),
-                    Slot::Stock(_) => None,
+                .map(|s| match s {
+                    Slot::Owned(r) => r.name.as_str(),
+                    Slot::Stock(j) => self.erps[&rel].file.erp.resources[*j].name.as_str(),
                 })
                 .filter_map(|n| match n.strip_suffix(".image") {
                     Some(v) if v.ends_with(".texarray") => Some(n.to_owned()),
@@ -984,10 +1018,10 @@ impl<'a> ErpBuild<'a> {
                 let Some(img) = self.current(&rel, &image)? else {
                     continue;
                 };
-                let Some(array) = Array::read_slices(&img) else {
+                let Some(mut v) = self.current(&rel, &view)? else {
                     continue;
                 };
-                let Some(mut v) = self.current(&rel, &view)? else {
+                let Some((said, count)) = view_mismatch(&v, &img)? else {
                     continue;
                 };
                 let Some(mut data) = v.fragments.first().map(|f| f.data()).transpose()? else {
@@ -996,11 +1030,7 @@ impl<'a> ErpBuild<'a> {
                 let Some(at) = data.get_mut(VIEW_COUNT..VIEW_COUNT + 4) else {
                     continue;
                 };
-                let said = u32::from_le_bytes((&*at).try_into().expect("4 bytes"));
-                if said as usize == array.count {
-                    continue;
-                }
-                at.copy_from_slice(&(array.count as u32).to_le_bytes());
+                at.copy_from_slice(&(count as u32).to_le_bytes());
                 v.set_fragment(0, &data)
                     .map_err(|e| fail(format!("{rel}: {e}")))?;
                 self.place(&rel, v, true)?;
@@ -1008,8 +1038,7 @@ impl<'a> ErpBuild<'a> {
                     self.writers.insert((rel.clone(), view.clone()), origin);
                 }
                 lines.push(format!(
-                    "texture array {view}: view said {said} slices, image has {}; fixed",
-                    array.count
+                    "texture array {view}: view said {said} slices, image has {count}; fixed"
                 ));
             }
         }
@@ -1140,9 +1169,9 @@ impl<'a> ErpBuild<'a> {
                 .slots
                 .iter()
                 .filter_map(|s| match s {
-                    Slot::Owned(r) if !foreign_argument(r, stock) => {
-                        layout_change(r, stock).map(|why| (r.name.clone(), why))
-                    }
+                    Slot::Owned(r) if !foreign_argument(r, stock) => layout_change(r, stock)
+                        .or_else(|| is_handling(r).then(|| HANDLING_WHY.to_owned()))
+                        .map(|why| (r.name.clone(), why)),
                     _ => None,
                 })
                 .collect();
@@ -1557,6 +1586,26 @@ mod tests {
             "Sepang would crash F1 25: its x.trackspacespline and 1 more file(s) don't match the size headers the \
              game reads with them, and the launcher can't read the files to fix the headers. Fix."
         );
+    }
+
+    #[test]
+    fn a_ready_overlay_whose_view_disagrees_with_the_stock_image_goes_in_resource_by_resource() {
+        let root = texture_game("cohere-overlay");
+        let (game, addon) = (root.join("game"), root.join("addon"));
+        std::fs::create_dir_all(&addon).unwrap();
+        std::fs::write(
+            game.join(UI),
+            texture_erp(vec![array(2, &[[1; 4]; 6]), view_res(6)]),
+        )
+        .unwrap();
+        let original = |rel: &str| game.join(rel);
+        for (count, fits) in [(16, false), (6, true), (0, true)] {
+            let path = addon.join(format!("v{count}.erp"));
+            std::fs::write(&path, texture_erp(vec![view_res(count)])).unwrap();
+            let got = crate::runtime::overlay_fits(&path, &[UI.into()], &original).unwrap();
+            assert_eq!(got.is_ok(), fits, "{count}: {got:?}");
+        }
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -2209,11 +2258,24 @@ mod tests {
             ))
             .contains("missing.bin")
         );
+        let in_game_copy = fails(&format!(
+            r#"{{"op":"add-resource","erp":"ui/a.erp","resource":"{y}","type":"GfxSurfaceRes","sources":["raw/head.bin","raw/z.bin"]}}"#
+        ));
         assert_eq!(
-            fails(&format!(
-                r#"{{"op":"add-resource","erp":"ui/a.erp","resource":"{y}","type":"GfxSurfaceRes","sources":["raw/head.bin","raw/z.bin"]}}"#
-            )),
-            format!("ui/a.erp: {y} already exists; put-resource replaces a resource")
+            in_game_copy,
+            format!(
+                "ui/a.erp in the game folder already has {y}, so something outside the launcher probably changed this file \
+                 (a hand-installed mod or a leftover). \
+                 Remove hand-installed mods, then Repair F1 25 in the EA app (Steam: Verify integrity of game files), then Play. \
+                 (Addon authors: if the stock file has it, use put-resource.)"
+            )
+        );
+        let added = format!(
+            r#"{{"op":"add-resource","erp":"ui/a.erp","resource":"{z}","type":"GfxSurfaceRes","sources":["raw/head.bin","raw/z.bin"]}}"#
+        );
+        assert_eq!(
+            fails(&format!("{added},{added}")),
+            format!("ui/a.erp: {z} already exists; put-resource replaces a resource")
         );
         assert!(
             fails(&format!(
@@ -2290,6 +2352,52 @@ mod tests {
         }
         .to_bytes()
         .unwrap()
+    }
+
+    #[test]
+    fn a_same_size_handling_file_rewrites_its_archive_instead_of_the_runtime_overlay() {
+        let root = std::env::temp_dir().join(format!("swofty-erphandling-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let (game, addon) = (root.join("game"), root.join("addon"));
+        std::fs::create_dir_all(game.join("car")).unwrap();
+        std::fs::create_dir_all(addon.join("car")).unwrap();
+        let vtf = "eaid://f1_2026_vehicle_package/teams/ferrari/handling/ferrari.vtf";
+        let other = "eaid://f1_2026_vehicle_package/teams/ferrari/art/other.idf";
+        std::fs::write(
+            game.join("car/ferrari.erp"),
+            typed_erp("VTF", &[(vtf, b"Mass 771".to_vec()), (other, b"stays".to_vec())]),
+        )
+        .unwrap();
+        std::fs::write(addon.join("car/edited.vtf"), b"Mass 900").unwrap();
+        std::fs::write(addon.join("car/edited.idf"), b"stayz").unwrap();
+        let replace = |res: &str, src: &str| {
+            format!(
+                r#"{{"op":"replace-resource","erp":"car/ferrari.erp","resource":"{res}","source":"car/{src}"}}"#
+            )
+        };
+        let ops = |list: &[String]| erp_ops(&format!(r#"{{"schema_version":1,"ops":[{}]}}"#, list.join(",")));
+        let original = |rel: &str| game.join(rel);
+
+        let mut b = ErpBuild::new(&original);
+        apply(&mut b, &ops(&[replace(other, "edited.idf")]), &addon).unwrap();
+        assert!(b.resized().is_empty());
+
+        let mut b = ErpBuild::new(&original);
+        apply(&mut b, &ops(&[replace(vtf, "edited.vtf")]), &addon).unwrap();
+        let expected = vec![Resized {
+            erp: "car/ferrari.erp".into(),
+            resources: vec![(vtf.into(), HANDLING_WHY.into())],
+        }];
+        assert_eq!(b.resized(), expected);
+        let out = root.join("out");
+        assert_eq!(b.take_resized(&out).unwrap(), expected);
+        assert_eq!(b.resources().count(), 0);
+        let written = Erp::parse(&std::fs::read(out.join("car/ferrari.erp")).unwrap()).unwrap();
+        assert_eq!(
+            written.find(vtf).unwrap().fragments[0].data().unwrap(),
+            b"Mass 900"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -2860,6 +2968,54 @@ mod tests {
         );
         assert!(lines.is_empty());
         assert_eq!(views[0].1, 6);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_view_that_names_no_slice_count_is_left_alone() {
+        let root = texture_game("cohere-zero");
+        let game = root.join("game");
+        std::fs::write(
+            game.join(UI),
+            texture_erp(vec![array(2, &[[1; 4]; 1]), view_res(0)]),
+        )
+        .unwrap();
+        let original = |rel: &str| game.join(rel);
+        let mut b = ErpBuild::new(&original);
+        b.load(UI).unwrap();
+        assert!(b.cohere_arrays().unwrap().is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_whole_archive_put_with_a_wider_view_than_its_image_is_repaired() {
+        let root = texture_game("cohere-put");
+        let game = root.join("game");
+        let view = LOGOS.strip_suffix(".image").unwrap();
+        let stock = game.join(UI);
+        std::fs::write(&stock, texture_erp(vec![array(2, &[[1; 4]; 6]), view_res(16)])).unwrap();
+        let original = |rel: &str| game.join(rel);
+        let mut b = ErpBuild::new(&original);
+        b.load(UI).unwrap();
+        let lines = b.cohere_arrays().unwrap();
+        assert_eq!(
+            lines,
+            [format!(
+                "texture array {view}: view said 16 slices, image has 6; fixed"
+            )]
+        );
+        let counts: Vec<u32> = b
+            .resources()
+            .filter(|(_, r, _, _)| r.name == view)
+            .map(|(_, r, _, _)| view_count(r))
+            .collect();
+        assert_eq!(counts, [6]);
+        let mut again = ErpBuild::new(&original);
+        again.load(UI).unwrap();
+        std::fs::write(&stock, texture_erp(vec![array(2, &[[1; 4]; 6]), view_res(6)])).unwrap();
+        let mut ok = ErpBuild::new(&original);
+        ok.load(UI).unwrap();
+        assert!(ok.cohere_arrays().unwrap().is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
 

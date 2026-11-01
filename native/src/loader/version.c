@@ -1649,6 +1649,43 @@ static void log_build(void)
              (unsigned long long)sections[i].size, sections[i].flags);
 }
 
+/* Before the real version.dll is loaded, which is where a hooking module can stall the loader before its first
+   log line: one small write of the pid to %LOCALAPPDATA%\F1Multiplayer\state\loader-start.marker. kernel32 only; no
+   loading, no locks. Any failure is ignored. */
+static void write_start_marker(void)
+{
+    wchar_t self_exe[MAX_PATH];
+    if (!GetModuleFileNameW(NULL, self_exe, MAX_PATH))
+        return;
+    wchar_t *exe_slash = wcsrchr(self_exe, L'\\');
+    if (_wcsicmp(exe_slash ? exe_slash + 1 : self_exe, HOST_EXE) != 0)
+        return;
+    wchar_t path[MAX_PATH];
+    DWORD n = swofty_data_folder(path, MAX_PATH - 32);
+    if (!n)
+        return;
+    wcscpy(path + n, L"\\state\\loader-start.marker");
+    HANDLE h = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    char text[48];
+    int len = 0;
+    DWORD pid = GetCurrentProcessId();
+    char digits[12];
+    int d = 0;
+    do {
+        digits[d++] = (char)('0' + pid % 10);
+        pid /= 10;
+    } while (pid);
+    while (d)
+        text[len++] = digits[--d];
+    text[len++] = '\n';
+    DWORD wrote;
+    WriteFile(h, text, (DWORD)len, &wrote, NULL);
+    CloseHandle(h);
+}
+
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -1657,6 +1694,7 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved)
     if (reason != DLL_PROCESS_ATTACH)
         return TRUE;
     DisableThreadLibraryCalls(self);
+    write_start_marker();
 
     wchar_t sys[MAX_PATH * 2];
     UINT len = GetSystemDirectoryW(sys, MAX_PATH);

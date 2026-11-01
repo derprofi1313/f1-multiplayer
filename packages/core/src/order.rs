@@ -13,7 +13,7 @@ pub enum Kind {
     Version { wanted: String, found: String },
     Conflict,
     Waits,
-    Loses { items: usize },
+    Loses { items: usize, winner_below: bool },
     Career { label: String, why: Box<Kind> },
     Clash { why: String },
 }
@@ -47,7 +47,7 @@ impl Problem {
     }
 
     pub fn is_order(&self) -> bool {
-        matches!(self.kind, Kind::Below | Kind::Waits | Kind::Loses { .. })
+        matches!(self.kind, Kind::Below | Kind::Waits)
     }
 
     pub fn line(&self, name: &dyn Fn(&str) -> String) -> String {
@@ -59,7 +59,10 @@ impl Problem {
             Kind::Version { wanted, found } => format!("Needs {other} {wanted}; {found} is installed"),
             Kind::Conflict => format!("Can't be on with {other}"),
             Kind::Waits => format!("Changes rows that {other} adds, so it needs {other} above it"),
-            Kind::Loses { items } => format!("{other} loads below it and replaces {items} of its changes"),
+            Kind::Loses { items, winner_below } => {
+                let place = if *winner_below { "below" } else { "above" };
+                format!("{other} loads {place} it and replaces {items} of its changes")
+            }
             Kind::Career { label, why } => {
                 let me = name(&self.addon);
                 match &**why {
@@ -148,6 +151,8 @@ pub fn problems(
     out
 }
 
+const RENUMBERED: &str = ".stat_id";
+
 pub fn from_report(
     profile: &Profile,
     report: &crate::conflicts::Report,
@@ -170,12 +175,17 @@ pub fn from_report(
         }
     }
     for p in &report.pairs {
-        let items = p.database + p.strings + p.files + p.resources;
+        let renumbered = p.items.iter().filter(|i| i.ends_with(RENUMBERED)).count();
+        let items = (p.database.saturating_sub(renumbered)) + p.strings + p.files + p.resources;
         if items > 0 {
+            let winner_below = match (at.get(p.loser.as_str()), at.get(p.winner.as_str())) {
+                (Some(l), Some(w)) => w > l,
+                _ => true,
+            };
             out.push(Problem {
                 addon: p.loser.clone(),
                 other: p.winner.clone(),
-                kind: Kind::Loses { items },
+                kind: Kind::Loses { items, winner_below },
             });
         }
     }
@@ -598,6 +608,86 @@ mod tests {
         assert_eq!(l, ["cs.2016: Needs Classic Seasons (shared) above it"]);
     }
 
+    fn loses_report(items: &[&str], database: usize, order: &[&str]) -> (Profile, crate::conflicts::Report) {
+        let p = profile(order);
+        let report = crate::conflicts::Report {
+            order: p.enabled().map(str::to_owned).collect(),
+            pairs: vec![crate::conflicts::Pair {
+                winner: "cs.base".into(),
+                loser: "c.grid".into(),
+                database,
+                items: items.iter().map(|s| (*s).to_owned()).collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        (p, report)
+    }
+
+    #[test]
+    fn renumbered_stat_ids_are_not_a_loss() {
+        let ids = [
+            "entrants.vehicles.vehicle[_metadata_=a].stat_id",
+            "entrants.vehicles.vehicle[_metadata_=b].stat_id",
+        ];
+        let (p, report) = loses_report(&ids, 2, &["cs.base", "c.grid"]);
+        assert!(from_report(&p, &report, &is_pinned).is_empty());
+        let (p, report) = loses_report(&[ids[0], "tracks.T.laps"], 3, &["cs.base", "c.grid"]);
+        let found = from_report(&p, &report, &is_pinned);
+        assert_eq!(
+            found[0].kind,
+            Kind::Loses {
+                items: 2,
+                winner_below: false
+            }
+        );
+    }
+
+    #[test]
+    fn loses_names_where_the_winner_loads() {
+        let name = |id: &str| id.to_owned();
+        let (p, report) = loses_report(&["x"], 1, &["cs.base", "c.grid"]);
+        let line = from_report(&p, &report, &is_pinned)[0].line(&name);
+        assert_eq!(line, "cs.base loads above it and replaces 1 of its changes");
+        let (p, report) = loses_report(&["x"], 1, &["c.grid", "cs.base"]);
+        let line = from_report(&p, &report, &is_pinned)[0].line(&name);
+        assert_eq!(line, "cs.base loads below it and replaces 1 of its changes");
+    }
+
+    #[test]
+    fn order_for_me_is_only_offered_for_fixable_warnings() {
+        let loses = Problem {
+            addon: "a".into(),
+            other: "b".into(),
+            kind: Kind::Loses {
+                items: 1,
+                winner_below: true,
+            },
+        };
+        assert!(!loses.is_order());
+        assert!(
+            Problem {
+                kind: Kind::Waits,
+                ..loses.clone()
+            }
+            .is_order()
+        );
+        assert!(
+            Problem {
+                kind: Kind::Below,
+                ..loses
+            }
+            .is_order()
+        );
+    }
+
+    #[test]
+    fn fix_reports_no_change_for_loses_only() {
+        let (mut p, report) = loses_report(&["x"], 1, &["c.grid", "cs.base"]);
+        let found = from_report(&p, &report, &is_pinned);
+        assert!(!fix(&mut p, &installed(), &found, &is_pinned).unwrap());
+    }
+
     #[test]
     fn rows_another_addon_adds_put_the_waiter_below_it() {
         use crate::conflicts::{Report, Wait};
@@ -618,7 +708,13 @@ mod tests {
         };
         let found = from_report(&p, &report, &is_pinned);
         assert_eq!(found[0].kind, Kind::Waits);
-        assert_eq!(found[1].kind, Kind::Loses { items: 2 });
+        assert_eq!(
+            found[1].kind,
+            Kind::Loses {
+                items: 2,
+                winner_below: true
+            }
+        );
         assert_eq!(found[1].severity(), Severity::Amber);
         assert_eq!(found[0].severity(), Severity::Red);
         fix(&mut p, &installed(), &found, &is_pinned).unwrap();

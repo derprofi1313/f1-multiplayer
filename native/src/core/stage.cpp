@@ -209,7 +209,7 @@ bool same_build()
 uintptr_t find(const Sig &s, const char *tag, const char *channel)
 {
     uintptr_t at = 0, base = swofty::api->module_base();
-    int hits = swofty::api->scan(".xtls", s.pattern, &at);
+    int hits = swofty::api->scan(s.section, s.pattern, &at);
     if (hits != 1 || !at) {
         swofty::log("[%s] %s: %s signature matched %d time(s)", channel, tag, s.what, hits);
         return 0;

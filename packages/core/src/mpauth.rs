@@ -50,7 +50,8 @@ pub fn sign_in_host(
         Some(short) => crate::multiplayer::servercode::resolve(&short)?,
         None => crate::multiplayer::pinned::Endpoint::parse(code)?,
     };
-    let body = serde_json::json!({ "name": name, "password": password }).to_string();
+    let secret = host_secret(data_dir, &endpoint.pin);
+    let body = serde_json::json!({ "name": name, "password": password, "secret": secret }).to_string();
     let (status, text) = crate::multiplayer::pinned::request(
         &endpoint,
         "POST",
@@ -76,8 +77,123 @@ pub fn sign_in_host(
         allowed: true,
         server: Some(endpoint.code()),
     };
+    if doc["claimed"].as_bool() == Some(true) {
+        mark_claimed(data_dir, &endpoint.pin);
+    }
     save(data_dir, &session).map_err(|e| format!("couldn't save the sign-in: {e}"))?;
     Ok(session)
+}
+
+/// This launcher's secret for one host server (by its certificate pin), made once and kept in
+/// `<data>/multiplayer/host-keys.json`: the server lets only this secret sign in under the name
+/// it claimed (see [`crate::multiplayer::host`]). Signing out keeps it.
+pub fn host_secret(data_dir: &Path, pin: &[u8; 32]) -> String {
+    let mut keys = load_keys(data_dir);
+    let id = base64url(pin);
+    if let Some(key) = keys.get(&id).filter(|k| k.secret.len() >= 43) {
+        return key.secret.clone();
+    }
+    let mut raw = [0u8; 32];
+    secure_random(&mut raw);
+    let secret = base64url(&raw);
+    keys.insert(
+        id,
+        HostKey {
+            secret: secret.clone(),
+            claimed: false,
+        },
+    );
+    if let Err(e) = save_keys(data_dir, &keys) {
+        crate::multiplayer::diag::line(format!("couldn't keep the host server key: {e}"));
+    }
+    secret
+}
+
+/// Claim the session's name on its host server with this launcher's secret, once (a sign-in from
+/// before host servers knew secrets). `Ok(true)` once the name is claimed, `Ok(false)` for the
+/// launcher's own server or a host server that doesn't know claims yet.
+pub fn claim_host_name(data_dir: &Path, session: &Session) -> Result<bool, String> {
+    let Some(endpoint) = session.endpoint() else {
+        return Ok(false);
+    };
+    if load_keys(data_dir)
+        .get(&base64url(&endpoint.pin))
+        .is_some_and(|k| k.claimed)
+    {
+        return Ok(true);
+    }
+    let body = serde_json::json!({ "secret": host_secret(data_dir, &endpoint.pin) }).to_string();
+    let (status, text) = crate::multiplayer::pinned::request(
+        &endpoint,
+        "POST",
+        "/v1/auth/launcher/claim",
+        Some(&session.token),
+        Some(&body),
+        Duration::from_secs(15),
+    )
+    .map_err(|e| format!("couldn't reach the host server {}: {e}", endpoint.authority()))?;
+    match status {
+        200 => {
+            mark_claimed(data_dir, &endpoint.pin);
+            Ok(true)
+        }
+        404 => Ok(false),
+        _ => {
+            let doc: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+            Err(doc["error"].as_str().map_or_else(
+                || format!("the host server refused the name claim (HTTP {status})"),
+                str::to_owned,
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct HostKey {
+    secret: String,
+    #[serde(default)]
+    claimed: bool,
+}
+
+fn keys_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("multiplayer").join("host-keys.json")
+}
+
+fn load_keys(data_dir: &Path) -> std::collections::BTreeMap<String, HostKey> {
+    std::fs::read(keys_path(data_dir))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_keys(data_dir: &Path, keys: &std::collections::BTreeMap<String, HostKey>) -> std::io::Result<()> {
+    let path = keys_path(data_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(keys).unwrap_or_default())?;
+    std::fs::rename(&tmp, &path)
+}
+
+fn mark_claimed(data_dir: &Path, pin: &[u8; 32]) {
+    let mut keys = load_keys(data_dir);
+    if let Some(key) = keys.get_mut(&base64url(pin))
+        && !key.claimed
+    {
+        key.claimed = true;
+        if let Err(e) = save_keys(data_dir, &keys) {
+            crate::multiplayer::diag::line(format!("couldn't keep the host server key: {e}"));
+        }
+    }
+}
+
+/// Bytes from the operating system's random source (falls back to [`getrandom`]).
+fn secure_random(buf: &mut [u8]) {
+    use ring::rand::SecureRandom;
+    if ring::rand::SystemRandom::new().fill(buf).is_err() {
+        getrandom(buf);
+    }
 }
 
 fn base_url() -> String {
@@ -107,6 +223,8 @@ fn save(data_dir: &Path, session: &Session) -> std::io::Result<()> {
     std::fs::write(path, serde_json::to_vec_pretty(session).unwrap_or_default())
 }
 
+/// Drop the saved session. The host server keys (see [`host_secret`]) stay: they are what proves
+/// this PC's claim to its name.
 fn forget(data_dir: &Path) {
     let _ = std::fs::remove_file(session_path(data_dir));
 }
@@ -302,6 +420,12 @@ fn refresh_at(base: &str, data_dir: &Path, session: &Session) -> Option<Session>
         server: session.server.clone(),
     };
     let _ = save(data_dir, &fresh);
+    // A host server sign-in from before secrets claims its name now, before anyone else can.
+    if fresh.server.is_some()
+        && let Err(e) = claim_host_name(data_dir, &fresh)
+    {
+        crate::multiplayer::diag::line(format!("couldn't claim the name on the host server: {e}"));
+    }
     Some(fresh)
 }
 
@@ -464,6 +588,80 @@ mod tests {
 
         assert!(refresh_at(&serve("401 Unauthorized", "not signed in"), &dir, &session).is_none());
         assert!(load(&dir).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn host_keys_survive_sign_out_and_differ_per_server() {
+        let dir = std::env::temp_dir().join(format!("f1mp-host-keys-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let a = host_secret(&dir, &[1; 32]);
+        assert!(a.len() >= 43, "32 bytes of base64url: {a}");
+        assert_eq!(host_secret(&dir, &[1; 32]), a);
+        assert_ne!(host_secret(&dir, &[2; 32]), a);
+        let session = Session {
+            token: "t".into(),
+            name: "Max".into(),
+            allowed: true,
+            server: None,
+        };
+        save(&dir, &session).unwrap();
+        forget(&dir);
+        assert!(load(&dir).is_none());
+        assert_eq!(host_secret(&dir, &[1; 32]), a, "signing out keeps the key");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A launcher that signed in before host servers knew secrets claims its name on the next
+    /// refresh; then only it signs in under that name.
+    #[test]
+    fn a_launcher_claims_its_name_on_refresh_and_keeps_it() {
+        let dir = std::env::temp_dir().join(format!("f1mp-host-claim-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let server = crate::multiplayer::host::HostServer::start(crate::multiplayer::host::Config {
+            dir: dir.join("server"),
+            port: 0,
+            name: "Test host".into(),
+            password: None,
+            public: false,
+            discovery: None,
+            fresh_code: false,
+        })
+        .unwrap();
+        let code = server.code_for("127.0.0.1");
+        let endpoint = crate::multiplayer::pinned::Endpoint::parse(&code).unwrap();
+
+        let fresh = sign_in_host(&dir.join("a"), &code, "Anna", None).unwrap();
+        assert!(load_keys(&dir.join("a")).values().all(|k| k.claimed));
+        let taken = sign_in_host(&dir.join("b"), &code, "anna", None).unwrap_err();
+        assert!(taken.contains("taken"), "{taken}");
+        assert!(sign_in_host(&dir.join("a"), &code, "Anna", None).is_ok());
+        assert!(claim_host_name(&dir.join("a"), &fresh).unwrap());
+
+        // An old launcher's sign-in: no secret.
+        let (status, text) = crate::multiplayer::pinned::request(
+            &endpoint,
+            "POST",
+            "/v1/auth/launcher/direct",
+            None,
+            Some(r#"{"name": "Ben"}"#),
+            Duration::from_secs(15),
+        )
+        .unwrap();
+        assert_eq!(status, 200);
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let old = Session {
+            token: doc["token"].as_str().unwrap().to_owned(),
+            name: "Ben".into(),
+            allowed: true,
+            server: Some(code.clone()),
+        };
+        save(&dir.join("c"), &old).unwrap();
+        assert!(refresh(&dir.join("c"), &old).is_some());
+        assert!(load_keys(&dir.join("c")).values().all(|k| k.claimed));
+        assert!(sign_in_host(&dir.join("d"), &code, "Ben", None).is_err());
+        assert!(sign_in_host(&dir.join("c"), &code, "Ben", None).is_ok());
+        drop(server);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

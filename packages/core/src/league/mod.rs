@@ -14,20 +14,41 @@
 //! [`Action`]s the server applies with [`apply`], so both launchers always see the same career.
 //! The season data comes from Progressive Career (`tools/league/gen_seasons.py`).
 
+pub mod aimarket;
+pub mod consent;
+pub mod driver;
+pub mod gamesync;
+pub mod inbox;
 pub mod lineup;
+pub mod market;
+pub mod objectives;
+pub mod practice;
 pub mod progress;
+pub mod rnd;
 mod sim;
 pub mod solo;
+pub mod texts;
 pub mod udp;
+pub mod weekend;
 
+pub use consent::{Proposal, Vote};
+pub use driver::{Archetype, Form};
+pub use gamesync::{GameIdentity, SeatRename};
+pub use inbox::{Choice, Effect, NewsKind};
 pub use lineup::Change;
+pub use market::{Approach, ApproachStatus, OfferStatus, Terms};
+pub use objectives::{Objective, ObjectiveKind};
 pub use progress::{Attributes, Focus, Part, PracticeLine, Programme, ProgrammeResult, Progress, Upgrade};
+pub use rnd::{CarProfile, Node, Spend};
+pub use texts::{Text, Warning};
+pub use weekend::{GameSettings, LapTelemetry, PracticeFormat, QualiFormat, WeekendRules};
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+use texts::t;
 
 /// The shared-career mode of a league career.
 pub const MODE: &str = "f1mp.league";
@@ -41,6 +62,23 @@ const RATING_MIN: f32 = 60.0;
 const RATING_MAX: f32 = 99.0;
 /// The rating a player starts with.
 pub const START_RATING: f32 = 78.0;
+
+// serde helpers for fields that are left out of the document while they hold their default.
+pub(crate) fn is_false(b: &bool) -> bool {
+    !*b
+}
+pub(crate) fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+pub(crate) fn is_zero_i32(n: &i32) -> bool {
+    *n == 0
+}
+fn yes() -> bool {
+    true
+}
+fn three() -> u8 {
+    3
+}
 
 // ---------------------------------------------------------------------------------------------
 // Season data
@@ -296,6 +334,24 @@ pub struct Player {
     /// The team's number one driver (see [`progress::number_one`]): a tenth more resource points.
     #[serde(default)]
     pub number_one: bool,
+    /// The player left the career: the game's AI drives their seat until the season ends, and
+    /// they get no offers.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub left: bool,
+    /// ISO 3166-1 alpha-3, e.g. "DEU".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nationality: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archetype: Option<Archetype>,
+    /// This season's head-to-head against the rival.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub rival_score: i32,
+    /// A number-one clause: the team's number one driver until this season.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number_one_until: Option<u16>,
+    /// The highest news id the player read.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub mail_read: u32,
 }
 
 fn recognition_start() -> f32 {
@@ -365,6 +421,9 @@ pub struct Classified {
     pub points: f32,
     #[serde(default)]
     pub fastest: bool,
+    /// A player's seat the game's AI drove (the player wasn't in the session).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ai_driven: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -396,6 +455,39 @@ pub struct Round {
     /// What the players had before the round was counted, to restore when it's taken back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<Vec<Progress>>,
+    /// Every game session counted for this round, for spotting the same session reported twice
+    /// and for undo previews.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub counted: Vec<Counted>,
+    /// The ids of the players ready for this round.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objectives: Vec<Objective>,
+    /// The sprint shootout's classification (no points).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shootout_result: Vec<Classified>,
+}
+
+/// One counted game session of a round.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Counted {
+    pub kind: SessionKind,
+    /// The game's session uid, 0 for none.
+    #[serde(default)]
+    pub session: u64,
+    /// See [`fingerprint`].
+    #[serde(default)]
+    pub fingerprint: u64,
+    /// [`RaceReport::at`] (the reporting PC's clock), 0 when unknown.
+    #[serde(default)]
+    pub at: u64,
+    /// The id of the player who reported it.
+    #[serde(default)]
+    pub by: String,
+    /// The game's session type.
+    #[serde(default)]
+    pub session_type: u8,
 }
 
 impl Round {
@@ -403,10 +495,14 @@ impl Round {
         self.state != RoundState::Pending
     }
 
-    /// A session of this round (practice, qualifying or the sprint) is counted, but not the race.
+    /// A session of this round (practice, qualifying, the sprint shootout or the sprint) is
+    /// counted, but not the race.
     pub fn started(&self) -> bool {
         !self.done()
-            && (!self.sprint_result.is_empty() || !self.quali_result.is_empty() || !self.practice.is_empty())
+            && (!self.sprint_result.is_empty()
+                || !self.quali_result.is_empty()
+                || !self.practice.is_empty()
+                || !self.shootout_result.is_empty())
     }
 }
 
@@ -437,6 +533,38 @@ pub struct Offer {
     pub salary_k: u32,
     #[serde(default)]
     pub bonus_k: u32,
+    #[serde(default)]
+    pub status: OfferStatus,
+    /// Negotiation attempts left.
+    #[serde(default = "three")]
+    pub attempts: u8,
+    /// The team's counter-offer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<Terms>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreed: Option<Terms>,
+    /// It came from a mid-season approach.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub early: bool,
+}
+
+impl Offer {
+    /// An open one-year renewal of nothing: the base for building an offer with `..`.
+    pub fn fresh() -> Offer {
+        Offer {
+            player: String::new(),
+            slot: 0,
+            kind: OfferKind::Renew,
+            years: 1,
+            salary_k: 0,
+            bonus_k: 0,
+            status: OfferStatus::Open,
+            attempts: three(),
+            counter: None,
+            agreed: None,
+            early: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -458,6 +586,18 @@ pub struct Season {
     /// The parts the players ordered for their teams.
     #[serde(default)]
     pub upgrades: Vec<Upgrade>,
+    /// Mid-season interest of teams in players.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approaches: Vec<Approach>,
+    /// The AI drivers' in-season rating changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_form: Vec<Form>,
+    /// Resource points spent per team this season (the cost cap).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spent: Vec<Spend>,
+    /// The AI seats a dynamic line-up renamed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renames: Vec<SeatRename>,
 }
 
 impl Season {
@@ -510,6 +650,110 @@ pub struct News {
     /// 0 for season news.
     pub round: u8,
     pub text: String,
+    /// 0 for plain news (and every news item from before ids existed).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub id: u32,
+    #[serde(default)]
+    pub kind: NewsKind,
+    /// The player it is for; `None` for everyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// The English template of `text` (a translation key), with `args` for its placeholders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<(String, String)>,
+    /// A news item of several sentences (or with lists in it): each sentence's template, in place
+    /// of `template` (W4-2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Text>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<Choice>,
+    /// The choice the player answered with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<u8>,
+}
+
+impl News {
+    /// A plain news line for everyone.
+    pub fn plain(year: u16, round: u8, text: String) -> News {
+        News {
+            year,
+            round,
+            text,
+            id: 0,
+            kind: NewsKind::News,
+            to: None,
+            template: None,
+            args: Vec::new(),
+            parts: Vec::new(),
+            choices: Vec::new(),
+            answered: None,
+        }
+    }
+
+    /// A news item for everyone made of the sentences `lines`: the English text with the
+    /// templates (in `template` for one sentence, else in `parts`).
+    pub fn of(year: u16, round: u8, lines: Vec<Text>) -> News {
+        let text = texts::english(&lines).join(" ");
+        let mut news = News::plain(year, round, text);
+        match <[Text; 1]>::try_from(lines) {
+            Ok([line]) if line.lists.is_empty() => {
+                if !line.template.is_empty() {
+                    news.template = Some(line.template);
+                    news.args = line.args;
+                }
+            }
+            Ok([line]) => news.parts = vec![line],
+            Err(lines) => news.parts = lines,
+        }
+        news
+    }
+}
+
+/// Career options the owner sets ([`Action::SetOptions`]), kept apart from [`Setup`] (which the
+/// launcher and CLI build as struct literals).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Options {
+    pub rules: WeekendRules,
+    pub lineups: LineupMode,
+    /// Show the players' names in the game (W2-9; off for careers from before, the launcher turns
+    /// it on for new ones).
+    pub game_identity: bool,
+    /// The league's car pace in the game (W2-10).
+    pub game_performance: bool,
+    /// The experimental per-part feel (W2-10).
+    pub game_parts: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineupMode {
+    /// Each year's real grid.
+    #[default]
+    Historic,
+    /// AI drivers move between teams (W4-1).
+    Dynamic,
+}
+
+/// What taking back the last round (`Action::Undo`) would take back.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UndoPreview {
+    pub round: u8,
+    pub race: String,
+    /// The race is counted (not only sessions of the round).
+    pub race_counted: bool,
+    pub sprint: bool,
+    pub quali: bool,
+    /// The names of the players whose practice goes.
+    pub practice_of: Vec<String>,
+    /// The names of the other players whose sessions go too.
+    pub by_others: Vec<String>,
+    /// Automatic rounds after it that are counted again.
+    pub auto_after: u8,
+    /// Undo reopens a finished season (the contracts are cleared).
+    pub season_end: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -528,6 +772,14 @@ pub struct League {
     /// them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratings_before: Option<Vec<(String, f32)>>,
+    /// The open proposal (simulate, skip or undo) the players vote on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vote: Option<Vote>,
+    #[serde(default)]
+    pub options: Options,
+    /// The last news id given out.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub news_seq: u32,
 }
 
 /// Who applies an action: a signed-in member of the shared career.
@@ -542,8 +794,19 @@ pub struct Actor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeagueError {
+    /// A stable code the launcher maps to a text (older launchers show `message`). Besides the
+    /// older ones: `not_next` (only the next round), `duplicate` (looks like a session counted
+    /// already), `ask_kind` (sprint or Grand Prix?), `vote_open`, `not_voter`, `no_vote`,
+    /// `owner`, `left` (the player left the career), `not_yet` (a later version's feature),
+    /// `bad_offer`, `cost_cap`, `node_locked`, `no_approach`, `walked_away`, `answered`,
+    /// `bad_profile` and `bad_rules`.
     pub reason: &'static str,
+    /// The English text.
     pub message: String,
+    /// The English template of `message` (a translation key, W4-2) with its placeholders'
+    /// values; empty for a refusal without one.
+    pub template: String,
+    pub args: Vec<(String, String)>,
 }
 
 impl fmt::Display for LeagueError {
@@ -554,10 +817,13 @@ impl fmt::Display for LeagueError {
 
 impl std::error::Error for LeagueError {}
 
-fn refuse<T>(reason: &'static str, message: impl Into<String>) -> Result<T, LeagueError> {
+fn refuse<T>(reason: &'static str, text: Text) -> Result<T, LeagueError> {
+    debug_assert!(text.lists.is_empty(), "a refusal has no lists: {}", text.template);
     Err(LeagueError {
         reason,
-        message: message.into(),
+        message: text.english(),
+        template: text.template,
+        args: text.args,
     })
 }
 
@@ -583,6 +849,29 @@ pub fn session_kind(session_type: u8) -> Option<SessionKind> {
     }
 }
 
+/// "race", "sprint", "qualifying" or "practice".
+fn kind_name(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::Race => "race",
+        SessionKind::Sprint => "sprint",
+        SessionKind::Qualifying => "qualifying",
+        SessionKind::Practice => "practice",
+    }
+}
+
+/// The part of qualifying a game session type is: "Q1", "Q2", "Q3", "short qualifying" or
+/// "one-shot qualifying".
+fn quali_name(session_type: u8) -> &'static str {
+    match session_type {
+        5 => "Q1",
+        6 => "Q2",
+        7 => "Q3",
+        8 => "short qualifying",
+        9 => "one-shot qualifying",
+        _ => "qualifying",
+    }
+}
+
 /// A lap the reporting player drove in a practice session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lap {
@@ -592,7 +881,7 @@ pub struct Lap {
 }
 
 /// A race as the game reported it over UDP telemetry (see [`udp::Collector`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RaceReport {
     /// The game's session uid.
     pub session: u64,
@@ -606,6 +895,19 @@ pub struct RaceReport {
     /// The reporting player's laps, for a practice session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub laps: Vec<Lap>,
+    /// The session's laps (the race distance), 0 when unknown.
+    #[serde(default)]
+    pub total_laps: u8,
+    /// The game's weekend structure: the session types of the weekend, in order. Empty when the
+    /// game didn't send it (a Grand Prix often doesn't).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weekend: Vec<u8>,
+    /// The game's settings for the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<GameSettings>,
+    /// The reporting player's laps with what the car used on them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lap_telemetry: Vec<LapTelemetry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -695,6 +997,46 @@ pub enum Action {
     /// Go on to next season (the owner): players who haven't signed stay with their team, or take
     /// their first offer.
     NextSeason,
+    /// Ready (or not) for the next round (W2-1).
+    Ready {
+        #[serde(default = "yes")]
+        ready: bool,
+    },
+    /// Agree (or not) to the open proposal; `force` (the owner) decides it (W2-1).
+    Vote {
+        yes: bool,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Remove a player from the career: the owner removes anyone else, a player themselves.
+    RemovePlayer { player: String },
+    /// Set the career's options (the owner).
+    SetOptions { options: Options },
+    /// The player's driver profile (W2-5).
+    Profile {
+        #[serde(default)]
+        nationality: Option<String>,
+        #[serde(default)]
+        archetype: Option<Archetype>,
+    },
+    /// Meet a team that approached the player (W2-3).
+    Meet { slot: u8 },
+    /// Accept an approach's offer (W2-3).
+    AcceptApproach {
+        slot: u8,
+        #[serde(default)]
+        replaces: Option<String>,
+    },
+    DeclineApproach { slot: u8 },
+    /// Ask an offering team for other terms (W2-3).
+    Negotiate { slot: u8, terms: Terms },
+    /// Answer a mail, event or media question (W2-4).
+    Answer { news: u32, choice: u8 },
+    /// Mark the inbox read up to this news id (W2-4).
+    ReadMail { upto: u32 },
+    /// Order a node of a part's development tree (W2-6). `Develop { part }` orders the next node of
+    /// the part's main branch.
+    DevelopNode { part: Part, node: u8 },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -823,11 +1165,15 @@ pub fn driver_standings(season: &Season) -> Vec<DriverStanding> {
             let Some((row, counts)) = rows.iter_mut().find(|x| x.0.entry == c.entry) else {
                 continue;
             };
+            // The countback counts every classified position, a car that didn't finish where it
+            // was classified.
+            if c.position > 0
+                && let Some(n) = counts.get_mut(c.position as usize - 1)
+            {
+                *n += 1;
+            }
             if c.status == Finish::Finished && c.position > 0 {
                 row.finishes[i] = Some(c.position);
-                if let Some(n) = counts.get_mut(c.position as usize - 1) {
-                    *n += 1;
-                }
                 row.wins += u32::from(c.position == 1);
                 row.podiums += u32::from(c.position <= 3);
             }
@@ -839,7 +1185,8 @@ pub fn driver_standings(season: &Season) -> Vec<DriverStanding> {
 }
 
 /// The constructors' championship, leader first. Each result counts for the team the driver
-/// raced for in that round.
+/// raced for in that round. Ties go to the better race positions of both cars (wins, then second
+/// places, and so on), then to the faster car.
 pub fn team_standings(season: &Season) -> Vec<TeamStanding> {
     let mut rows: Vec<TeamStanding> = season
         .teams
@@ -852,6 +1199,7 @@ pub fn team_standings(season: &Season) -> Vec<TeamStanding> {
             wins: 0,
         })
         .collect();
+    let mut counts: BTreeMap<u8, [u32; 24]> = BTreeMap::new();
     for round in &season.rounds {
         let slot_of = |c: &Classified| {
             season
@@ -861,6 +1209,14 @@ pub fn team_standings(season: &Season) -> Vec<TeamStanding> {
         for c in round.race_result.iter().chain(&round.sprint_result) {
             if let Some(row) = slot_of(c).and_then(|s| rows.iter_mut().find(|t| t.slot == s)) {
                 row.points += c.points;
+            }
+        }
+        for c in &round.race_result {
+            if c.position > 0
+                && let Some(slot) = slot_of(c)
+                && let Some(n) = counts.entry(slot).or_insert([0; 24]).get_mut(c.position as usize - 1)
+            {
+                *n += 1;
             }
         }
         if let Some(c) = round
@@ -873,7 +1229,13 @@ pub fn team_standings(season: &Season) -> Vec<TeamStanding> {
         }
     }
     rows.sort_by_key(|t| season.pace_rank(t.slot));
-    rows.sort_by(|a, b| b.points.total_cmp(&a.points).then(b.wins.cmp(&a.wins)));
+    let none = [0; 24];
+    let of = |slot: u8| counts.get(&slot).unwrap_or(&none);
+    rows.sort_by(|a, b| {
+        b.points
+            .total_cmp(&a.points)
+            .then_with(|| of(b.slot).cmp(of(a.slot)))
+    });
     rows
 }
 
@@ -1089,12 +1451,20 @@ pub struct Briefing {
     /// This player's practice of this round is counted already.
     pub practice_done: bool,
     /// The line-up changes in force this round, which the game's season box doesn't show.
-    pub lineup: Vec<String>,
+    pub lineup: Vec<Text>,
+    /// This player's objectives for this round.
+    pub objectives: Vec<Objective>,
+    /// The weekend's rules the players agreed on.
+    pub rules: WeekendRules,
+    /// The names of the players ready for this round.
+    pub ready: Vec<String>,
+    /// What the game shows for this player; `None` when that option is off.
+    pub game: Option<GameIdentity>,
 }
 
 /// "Stoffel Vandoorne drives Fernando Alonso's McLaren (the game shows Fernando Alonso)" for each
 /// line-up change in force in `round`.
-pub fn lineup_notes(season: &Season, round: u8) -> Vec<String> {
+pub fn lineup_notes(season: &Season, round: u8) -> Vec<Text> {
     season
         .changes()
         .iter()
@@ -1103,9 +1473,11 @@ pub fn lineup_notes(season: &Season, round: u8) -> Vec<String> {
             let driver = season.entry(&c.driver)?;
             let out = season.entry(&c.out)?;
             let team = season.team(c.slot)?;
-            Some(format!(
-                "{} drives {}'s {} (the game shows {})",
-                driver.name, out.name, team.name, out.name
+            Some(t!(
+                "{driver} drives {out}'s {team} (the game shows {out})",
+                driver = driver.name,
+                out = out.name,
+                team = team.name
             ))
         })
         .collect()
@@ -1120,11 +1492,15 @@ impl League {
         {
             return refuse(
                 "bad_setup",
-                format!("the career runs from {FIRST_YEAR} to {LAST_YEAR}; pick years in between"),
+                t!(
+                    "the career runs from {first} to {last}; pick years in between",
+                    first = FIRST_YEAR,
+                    last = LAST_YEAR
+                ),
             );
         }
         if !(5..=100).contains(&setup.distance) {
-            return refuse("bad_setup", "the race distance is a percentage from 5 to 100");
+            return refuse("bad_setup", t!("the race distance is a percentage from 5 to 100"));
         }
         let first = build_season(setup.first_year, &[], setup.lineup_changes)?;
         let mut league = League {
@@ -1136,15 +1512,16 @@ impl League {
             seasons: vec![first],
             news: Vec::new(),
             ratings_before: None,
+            vote: None,
+            options: Options::default(),
+            news_seq: 0,
         };
         league.enter(owner, number)?;
         let first_year = league.setup.first_year;
+        let last_year = league.setup.last_year;
         league.say(
             0,
-            format!(
-                "{} started the career, {first_year} to {}.",
-                owner.name, league.setup.last_year
-            ),
+            t!("{name} started the career, {first_year} to {last_year}.", name = owner.name, first_year, last_year),
         );
         Ok(league)
     }
@@ -1200,7 +1577,16 @@ impl League {
                 .and_then(|p| p.rival.as_deref())
                 .and_then(|id| season.entry(id))
                 .map(|e| e.name.clone()),
-            solo: self.players.len() == 1,
+            solo: self.active_players().len() == 1,
+            objectives: objectives::of(round, player).into_iter().cloned().collect(),
+            rules: self.options.rules.clone(),
+            ready: round
+                .ready
+                .iter()
+                .filter_map(|id| self.player(id))
+                .map(|p| p.name.clone())
+                .collect(),
+            game: gamesync::identity_of(self, player),
             year: season.year,
             round: round.round,
             rounds: season.rounds.len(),
@@ -1216,9 +1602,23 @@ impl League {
         })
     }
 
-    fn say(&mut self, round: u8, text: String) {
+    /// The players who haven't left the career.
+    pub fn active_players(&self) -> Vec<&Player> {
+        self.players.iter().filter(|p| !p.left).collect()
+    }
+
+    /// A news line for everyone.
+    fn say(&mut self, round: u8, text: Text) {
+        self.say_lines(round, vec![text]);
+    }
+
+    /// A news item for everyone made of the sentences `lines` (none when there are none).
+    fn say_lines(&mut self, round: u8, lines: Vec<Text>) {
+        if lines.is_empty() {
+            return;
+        }
         let year = self.seasons.last().map_or(self.setup.first_year, |s| s.year);
-        self.news.push(News { year, round, text });
+        self.news.push(News::of(year, round, lines));
         if self.news.len() > NEWS_MAX {
             let extra = self.news.len() - NEWS_MAX;
             self.news.drain(..extra);
@@ -1226,19 +1626,25 @@ impl League {
     }
 
     fn enter(&mut self, actor: &Actor, number: Option<u8>) -> Result<(), LeagueError> {
-        if self.player(&actor.id).is_some() {
+        if let Some(p) = self.player_mut(&actor.id) {
+            // A player who left comes back (to their seat, while the season it is for runs).
+            if p.left {
+                p.left = false;
+                let name = p.name.clone();
+                self.say(0, t!("{name} is back in the career.", name));
+            }
             return Ok(());
         }
         if self.players.len() >= 22 {
-            return refuse("full", "this career has no free seat");
+            return refuse("full", t!("this career has no free seat"));
         }
         let taken: HashSet<u8> = self.players.iter().map(|p| p.number).collect();
         let number = match number {
             Some(n) if (1..=99).contains(&n) && !taken.contains(&n) => n,
             Some(n) if taken.contains(&n) => {
-                return refuse("number_taken", format!("another player races with number {n}"));
+                return refuse("number_taken", t!("another player races with number {n}", n));
             }
-            Some(_) => return refuse("bad_number", "pick a race number from 1 to 99"),
+            Some(_) => return refuse("bad_number", t!("pick a race number from 1 to 99")),
             None => (2..=99).rev().find(|n| !taken.contains(n)).unwrap_or(99),
         };
         self.players.push(Player {
@@ -1263,14 +1669,17 @@ impl League {
             signed_bonus_k: 0,
             signed_focus: None,
             number_one: false,
+            left: false,
+            nationality: None,
+            archetype: None,
+            rival_score: 0,
+            number_one_until: None,
+            mail_read: 0,
         });
         if self.phase != Phase::Setup {
             self.say(
                 0,
-                format!(
-                    "{} joined the career and gets offers when the season ends.",
-                    actor.name
-                ),
+                t!("{name} joined the career and gets offers when the season ends.", name = actor.name),
             );
         }
         Ok(())
@@ -1288,25 +1697,25 @@ impl League {
         if self.phase != Phase::Setup {
             return refuse(
                 "phase",
-                "seats are picked before the first season; later, sign an offer",
+                t!("seats are picked before the first season; later, sign an offer"),
             );
         }
         if self.player(&actor.id).is_none() {
-            return refuse("not_player", "join the career first");
+            return refuse("not_player", t!("join the career first"));
         }
         let year = self.setup.first_year;
         let cat = catalog_year(year).expect("checked at start");
         let Some(team) = cat.teams.iter().find(|t| t.slot == slot) else {
-            return refuse("bad_team", format!("no team {slot} in {year}"));
+            return refuse("bad_team", t!("no team {slot} in {year}", slot, year));
         };
         if self.setup.team_choice == TeamChoice::Rookie {
             let rank = pace_rank(cat.teams.iter().map(|t| (t.slot, t.pace)), slot);
             if rank * 2 <= cat.teams.len() {
                 return refuse(
                     "rookie",
-                    format!(
-                        "as a rookie you start in the slower half of the grid; {} is too fast",
-                        team.name
+                    t!(
+                        "as a rookie you start in the slower half of the grid; {team} is too fast",
+                        team = team.name
                     ),
                 );
             }
@@ -1328,13 +1737,13 @@ impl League {
 
     fn begin(&mut self, actor: &Actor) -> Result<(), LeagueError> {
         if !actor.owner {
-            return refuse("owner", "only the career's owner starts the first season");
+            return refuse("owner", t!("only the career's owner starts the first season"));
         }
         if self.phase != Phase::Setup {
-            return refuse("phase", "the career has started already");
+            return refuse("phase", t!("the career has started already"));
         }
         if let Some(p) = self.players.iter().find(|p| p.seat.is_none()) {
-            return refuse("no_seat", format!("{} hasn't picked a seat yet", p.name));
+            return refuse("no_seat", t!("{name} hasn't picked a seat yet", name = p.name));
         }
         self.phase = Phase::Racing;
         // The first contract runs for the first season.
@@ -1343,8 +1752,9 @@ impl League {
             p.contract_until = Some(year);
         }
         self.first_salary();
-        let line = self.lineup_line();
-        self.say(0, format!("The {} season begins. {line}", self.year()));
+        let mut lines = vec![t!("The {year} season begins.", year = self.year())];
+        lines.extend(self.lineup_lines());
+        self.say_lines(0, lines);
         self.assign_rivals();
         self.settle();
         Ok(())
@@ -1356,45 +1766,128 @@ impl League {
         let mut lines = Vec::new();
         for p in &mut self.players {
             p.rival = choose_rival(&season, &p.id);
+            p.rival_score = 0;
             if let Some(r) = p.rival.as_deref().and_then(|id| season.entry(id)) {
                 let team = season.team(r.slot).map_or("", |t| t.name.as_str());
-                lines.push(format!("{}'s rival this season: {} ({team}).", p.name, r.name));
+                lines.push(t!(
+                    "{name}'s rival this season: {rival} ({team}).",
+                    name = p.name,
+                    rival = r.name,
+                    team
+                ));
             }
         }
-        if !lines.is_empty() {
-            self.say(0, lines.join(" "));
-        }
+        self.say_lines(0, lines);
     }
 
-    fn lineup_line(&self) -> String {
+    /// "Anna drives for McLaren (#4)." for each player with a seat.
+    fn lineup_lines(&self) -> Vec<Text> {
         let season = self.season();
         self.players
             .iter()
             .filter_map(|p| {
                 let e = season.player_entry(&p.id)?;
                 let team = season.team(e.slot)?;
-                Some(format!("{} drives for {} (#{}).", p.name, team.name, e.number))
+                Some(t!(
+                    "{name} drives for {team} (#{number}).",
+                    name = p.name,
+                    team = team.name,
+                    number = e.number
+                ))
             })
-            .collect::<Vec<_>>()
-            .join(" ")
+            .collect()
     }
 
     fn pending_round(&self, round: Option<u8>) -> Result<u8, LeagueError> {
         if self.phase != Phase::Racing {
-            return refuse("phase", "no season is running");
+            return refuse("phase", t!("no season is running"));
         }
         let season = self.season();
+        let next = season.next_round().map(|r| r.round);
         match round {
             Some(n) => match season.round(n) {
-                Some(r) if !r.done() => Ok(n),
-                Some(_) => refuse("round_done", format!("round {n} is counted already")),
-                None => refuse("bad_round", format!("{} has no round {n}", season.year)),
+                Some(r) if r.done() => refuse("round_done", t!("round {n} is counted already", n)),
+                Some(_) if next == Some(n) => Ok(n),
+                // Rounds are counted in order, so taking one back never takes a later one with it.
+                Some(_) => refuse(
+                    "not_next",
+                    t!(
+                        "only the next round ({next}) can be counted, simulated, skipped or practised",
+                        next = next.unwrap_or(0)
+                    ),
+                ),
+                None => refuse("bad_round", t!("{year} has no round {n}", year = season.year, n)),
             },
-            None => season
-                .next_round()
-                .map(|r| r.round)
-                .map_or_else(|| refuse("round_done", "every round is counted"), Ok),
+            None => next.map_or_else(|| refuse("round_done", t!("every round is counted")), Ok),
         }
+    }
+
+    /// The counted session `report` repeats, if any: the same game session, or (for anything but
+    /// practice) the same classification of the same session type counted this season. Two
+    /// players' practice of one session both count.
+    fn counted_already(&self, actor: &Actor, report: &RaceReport, practice: bool) -> Option<SessionKind> {
+        let season = self.season();
+        let print = fingerprint(report);
+        for r in &season.rounds {
+            if report.session != 0 && !practice && r.sessions.contains(&report.session) {
+                return Some(
+                    r.counted
+                        .iter()
+                        .find(|c| c.session == report.session)
+                        .map_or(SessionKind::Race, |c| c.kind),
+                );
+            }
+            for c in &r.counted {
+                let mine = c.kind != SessionKind::Practice || c.by == actor.id;
+                if report.session != 0 && c.session == report.session && mine {
+                    return Some(c.kind);
+                }
+                if !practice
+                    && c.kind != SessionKind::Practice
+                    && c.session_type == report.session_type
+                    && c.fingerprint == print
+                {
+                    return Some(c.kind);
+                }
+            }
+        }
+        None
+    }
+
+    /// A report that looks like a session counted from another PC moments ago: the same session
+    /// type of the next round or the round before, counted within two minutes (the clocks of two
+    /// PCs, and the time the game takes to send the classification, differ a little).
+    fn looks_counted(&self, report: &RaceReport, n: u8) -> Option<Text> {
+        const WINDOW_S: u64 = 120;
+        if report.at == 0 {
+            return None;
+        }
+        let season = self.season();
+        season
+            .rounds
+            .iter()
+            .filter(|r| r.round == n || r.round + 1 == n)
+            .flat_map(|r| r.counted.iter().map(move |c| (r, c)))
+            .filter(|(_, c)| c.kind != SessionKind::Practice && c.at != 0)
+            .find(|(_, c)| c.session_type == report.session_type && c.at.abs_diff(report.at) <= WINDOW_S)
+            .map(|(r, c)| {
+                let (session, round, race) = (kind_name(c.kind), r.round, &r.race);
+                match self.player(&c.by) {
+                    Some(p) => t!(
+                        "this looks like the {session} of round {round}, the {race}, that {by} counted moments ago; if it is another session, count it anyway",
+                        session,
+                        round,
+                        race,
+                        by = p.name
+                    ),
+                    None => t!(
+                        "this looks like the {session} of round {round}, the {race}, that another player counted moments ago; if it is another session, count it anyway",
+                        session,
+                        round,
+                        race
+                    ),
+                }
+            })
     }
 
     fn report(
@@ -1404,18 +1897,30 @@ impl League {
         kind: Option<SessionKind>,
         force: bool,
         report: RaceReport,
-    ) -> Result<Vec<String>, LeagueError> {
+    ) -> Result<Vec<Text>, LeagueError> {
+        let practice = match kind {
+            Some(k) => k == SessionKind::Practice,
+            None => session_kind(report.session_type) == Some(SessionKind::Practice),
+        };
         if self.phase == Phase::Racing
-            && report.session != 0
-            && self
-                .season()
-                .rounds
-                .iter()
-                .any(|r| r.sessions.contains(&report.session))
+            && let Some(k) = self.counted_already(actor, &report, practice)
         {
-            return Ok(vec!["this race is counted already".into()]);
+            return Ok(vec![match k {
+                SessionKind::Race => t!("this race is counted already"),
+                SessionKind::Sprint => t!("this sprint is counted already"),
+                SessionKind::Qualifying => t!("this qualifying is counted already"),
+                SessionKind::Practice => t!("this practice is counted already"),
+            }]);
         }
         let n = self.pending_round(round)?;
+        // Never count a session a friend's PC reported moments ago into the next round.
+        if round.is_none()
+            && !force
+            && !practice
+            && let Some(message) = self.looks_counted(&report, n)
+        {
+            return refuse("duplicate", message);
+        }
         let (year, rule, sprints) = (self.year(), self.setup.points, self.setup.sprints);
         let r = self.season().round(n).expect("pending").clone();
         if let (Some(at), Some(want)) = (report.track, r.track)
@@ -1424,59 +1929,113 @@ impl League {
         {
             return refuse(
                 "wrong_track",
-                format!(
-                    "this race was at {}, but round {n} is the {}",
-                    track_name(at).unwrap_or("another track"),
-                    r.race
-                ),
+                match track_name(at) {
+                    Some(track) => t!("this race was at {track}, but round {n} is the {race}", track, n, race = r.race),
+                    None => t!("this race was at another track, but round {n} is the {race}", n, race = r.race),
+                },
             );
         }
         let sprint_open = r.sprint && sprints && r.sprint_result.is_empty();
+        if let Some(w) = weekend::shootout(self, n, actor, &report)? {
+            return Ok(w);
+        }
         if kind.is_none() && (10..=14).contains(&report.session_type) {
             return refuse(
                 "not_counted",
-                "a sprint shootout isn't counted; the sprint and the race are",
+                t!("a sprint shootout isn't counted; the sprint and the race are"),
             );
         }
-        let kind = kind.unwrap_or(match session_kind(report.session_type) {
-            Some(SessionKind::Qualifying) => SessionKind::Qualifying,
-            Some(SessionKind::Practice) => SessionKind::Practice,
-            _ if report.session_type == 15 && sprint_open => SessionKind::Sprint,
-            _ => SessionKind::Race,
-        });
+        let kind = match kind {
+            Some(k) => k,
+            None => match session_kind(report.session_type) {
+                Some(SessionKind::Qualifying) => SessionKind::Qualifying,
+                Some(SessionKind::Practice) => SessionKind::Practice,
+                // A sprint weekend's sprint is race 1 (15), its Grand Prix race 2 (16).
+                _ if report.session_type == 15 && report.weekend.contains(&16) => SessionKind::Sprint,
+                _ if report.session_type == 15 && report.weekend.is_empty() && sprint_open => {
+                    return refuse(
+                        "ask_kind",
+                        t!(
+                            "the game didn't say whether this was the sprint or the Grand Prix of round {n}; count it as one of them",
+                            n
+                        ),
+                    );
+                }
+                _ => SessionKind::Race,
+            },
+        };
         if kind == SessionKind::Practice {
             if report.session != 0
                 && r.practice
                     .iter()
                     .any(|l| l.player == actor.id && l.session == report.session)
             {
-                return Ok(vec!["this practice is counted already".into()]);
+                return Ok(vec![t!("this practice is counted already")]);
             }
             let lines = self.count_practice(&actor.id, n, Some(&report))?;
-            self.say(n, lines.join(" "));
-            return Ok(Vec::new());
+            self.say_lines(n, lines);
+            self.count_session(n, actor, &report, SessionKind::Practice);
+            // The agreed settings and practice format are checked for practice too.
+            return Ok(weekend::check(&self.options.rules, &report));
         }
         if kind == SessionKind::Sprint && !(r.sprint && sprints) {
-            return refuse("no_sprint", format!("round {n} has no sprint"));
+            return refuse("no_sprint", t!("round {n} has no sprint", n));
         }
         if kind == SessionKind::Sprint && !r.sprint_result.is_empty() {
-            return refuse(
-                "round_done",
-                format!("the sprint of round {n} is counted already"),
-            );
+            return refuse("round_done", t!("the sprint of round {n} is counted already", n));
+        }
+        // Qualifying is rewarded once; a later part of it (Q3 after Q1) only updates the grid.
+        let quali_again = kind == SessionKind::Qualifying && !r.quali_result.is_empty();
+        if quali_again {
+            let stored = r
+                .counted
+                .iter()
+                .filter(|c| c.kind == SessionKind::Qualifying)
+                .map(|c| c.session_type)
+                .max()
+                .unwrap_or(0);
+            if report.session_type < stored {
+                return Ok(vec![t!("a later part of this qualifying is counted already")]);
+            }
         }
         let mine = self
             .player(&actor.id)
             .filter(|p| p.seat.is_some())
             .map(|p| p.id.clone());
-        let (result, warnings) = classify(self.season(), mine.as_deref(), &report, kind, year, rule, n);
+        let (result, mut warnings) = classify(
+            self.season(),
+            &self.players,
+            mine.as_deref(),
+            &report,
+            kind,
+            year,
+            rule,
+            n,
+        );
+        warnings.extend(weekend::check(&self.options.rules, &report));
         if result.is_empty() {
             return refuse(
                 "no_match",
-                "none of the cars in this race belong to this season's grid",
+                t!("none of the cars in this race belong to this season's grid"),
             );
         }
         let text = result_line(self.season(), &r, kind, &result, &self.players);
+        if quali_again {
+            let round = self
+                .season_mut()
+                .rounds
+                .iter_mut()
+                .find(|x| x.round == n)
+                .expect("pending");
+            round.quali_result = result;
+            if report.session != 0 {
+                round.sessions.push(report.session);
+            }
+            self.count_session(n, actor, &report, kind);
+            let part = quali_name(report.session_type);
+            self.say_lines(n, vec![t!("Qualifying updated ({session}).", session = part), text]);
+            return Ok(warnings);
+        }
         self.keep_progress(n);
         let before = self.clone();
         let season = self.season_mut();
@@ -1494,14 +2053,39 @@ impl League {
         if report.session != 0 {
             round.sessions.push(report.session);
         }
+        self.count_session(n, actor, &report, kind);
         self.say(n, text);
         self.milestones(&before, n);
         let lines = self.grow(n, kind, true);
-        if !lines.is_empty() {
-            self.say(n, lines.join(" "));
+        self.say_lines(n, lines);
+        if kind == SessionKind::Race {
+            self.completed(n);
         }
         self.settle();
         Ok(warnings)
+    }
+
+    /// Note the game session `report` as counted for round `n`.
+    fn count_session(&mut self, n: u8, actor: &Actor, report: &RaceReport, kind: SessionKind) {
+        let counted = Counted {
+            kind,
+            session: report.session,
+            fingerprint: fingerprint(report),
+            at: report.at,
+            by: actor.id.clone(),
+            session_type: report.session_type,
+        };
+        if let Some(round) = self.season_mut().rounds.iter_mut().find(|x| x.round == n) {
+            round.counted.push(counted);
+        }
+    }
+
+    /// Round `n` was completed (raced, simulated or skipped).
+    fn completed(&mut self, n: u8) {
+        rnd::after_round(self, n);
+        market::after_round(self, n);
+        inbox::after_round(self, n);
+        driver::after_round(self, n);
     }
 
     /// News for what players did for the first time (and every tenth win), the team goal of the
@@ -1520,21 +2104,21 @@ impl League {
             let name = &p.name;
             if now.poles > was.poles {
                 lines.push(match now.poles {
-                    1 => format!("{name} takes the first pole position of their career!"),
-                    k => format!("{name}'s pole position number {k}."),
+                    1 => t!("{name} takes the first pole position of their career!", name),
+                    k => t!("{name}'s pole position number {k}.", name, k),
                 });
             }
             if now.wins > was.wins {
-                lines.push(match now.wins {
-                    1 => format!("{name} wins a Grand Prix for the first time!"),
-                    k if k % 10 == 0 => format!("{name}'s Grand Prix win number {k}!"),
-                    _ => String::new(),
-                });
+                match now.wins {
+                    1 => lines.push(t!("{name} wins a Grand Prix for the first time!", name)),
+                    k if k % 10 == 0 => lines.push(t!("{name}'s Grand Prix win number {k}!", name, k)),
+                    _ => {}
+                }
             } else if now.podiums > was.podiums && now.podiums == 1 {
-                lines.push(format!("{name} stands on the podium for the first time."));
+                lines.push(t!("{name} stands on the podium for the first time.", name));
             }
             if now.points > 0.0 && was.points == 0.0 && now.wins == 0 && now.podiums == 0 {
-                lines.push(format!("{name} scores the first points of their career."));
+                lines.push(t!("{name} scores the first points of their career.", name));
             }
             // The race's team goal, once the race is counted.
             if round.done()
@@ -1542,16 +2126,13 @@ impl League {
             {
                 let goal = team_goal_at(&season, entry.slot, n);
                 if c.status == Finish::Finished && c.position <= goal {
-                    lines.push(format!("{name} meets the team's goal (P{goal} or better)."));
+                    lines.push(t!("{name} meets the team's goal (P{goal} or better).", name, goal));
                 } else {
-                    lines.push(format!("{name} misses the team's goal of P{goal}."));
+                    lines.push(t!("{name} misses the team's goal of P{goal}.", name, goal));
                 }
             }
         }
-        let lines: Vec<String> = lines.into_iter().filter(|l| !l.is_empty()).collect();
-        if !lines.is_empty() {
-            self.say(n, lines.join(" "));
-        }
+        self.say_lines(n, lines);
     }
 
     fn simulate(&mut self, round: Option<u8>, auto: bool) -> Result<(), LeagueError> {
@@ -1577,9 +2158,7 @@ impl League {
                 lines.extend(l);
             }
         }
-        if !lines.is_empty() {
-            self.say(n, lines.join(" "));
-        }
+        self.say_lines(n, lines);
         let r = self.season().round(n).expect("pending").clone();
         // Qualifying sets the grid, unless it was driven.
         let quali_driven = !r.quali_result.is_empty();
@@ -1587,6 +2166,12 @@ impl League {
             sim::simulate(self.season(), n, seed, SessionKind::Qualifying, year, rule, None)
         } else {
             r.quali_result.clone()
+        };
+        // A counted sprint shootout sets the sprint's grid, else qualifying does.
+        let sprint_grid = if r.shootout_result.is_empty() {
+            &quali
+        } else {
+            &r.shootout_result
         };
         let sprint = (r.sprint && sprints && r.sprint_result.is_empty()).then(|| {
             sim::simulate(
@@ -1596,7 +2181,7 @@ impl League {
                 SessionKind::Sprint,
                 year,
                 rule,
-                Some(&quali),
+                Some(sprint_grid),
             )
         });
         let race = sim::simulate(
@@ -1608,12 +2193,14 @@ impl League {
             rule,
             Some(&quali),
         );
-        let mut text = result_line(self.season(), &r, SessionKind::Race, &race, &self.players);
-        text.push_str(if auto {
-            " (simulated: the game doesn't have this circuit)"
-        } else {
-            " (simulated)"
-        });
+        let text = vec![
+            result_line(self.season(), &r, SessionKind::Race, &race, &self.players),
+            if auto {
+                t!("(simulated: the game doesn't have this circuit)")
+            } else {
+                t!("(simulated)")
+            },
+        ];
         let before = self.clone();
         let season = self.season_mut();
         let round = season.rounds.iter_mut().find(|x| x.round == n).expect("pending");
@@ -1625,7 +2212,7 @@ impl League {
         round.race_result = race;
         round.state = RoundState::Simulated;
         round.auto = auto;
-        self.say(n, text);
+        self.say_lines(n, text);
         self.milestones(&before, n);
         let mut lines = Vec::new();
         if !quali_driven {
@@ -1635,14 +2222,18 @@ impl League {
             lines.extend(self.grow(n, SessionKind::Sprint, false));
         }
         lines.extend(self.grow(n, SessionKind::Race, false));
-        if !lines.is_empty() {
-            self.say(n, lines.join(" "));
-        }
+        self.say_lines(n, lines);
+        self.completed(n);
         Ok(())
     }
 
     fn skip(&mut self, round: Option<u8>, auto: bool) -> Result<(), LeagueError> {
         let n = self.pending_round(round)?;
+        // What the round's sessions gave so far goes with them (practice, qualifying, a sprint).
+        let snapshot = self.season().round(n).and_then(|r| r.before.clone());
+        if let Some(snapshot) = snapshot {
+            self.restore_progress(snapshot, n);
+        }
         self.keep_progress(n);
         // The salary is paid for a round left out too.
         self.pay(n, false);
@@ -1652,14 +2243,20 @@ impl League {
         round.auto = auto;
         round.sprint_result.clear();
         round.quali_result.clear();
+        round.shootout_result.clear();
+        round.practice.clear();
+        round.sessions.clear();
+        round.counted.clear();
+        round.ready.clear();
         let race = round.race.clone();
-        self.say(n, format!("Round {n}, the {race}, is left out."));
+        self.say(n, t!("Round {n}, the {race}, is left out.", n, race));
+        self.completed(n);
         Ok(())
     }
 
     fn undo(&mut self) -> Result<(), LeagueError> {
         if self.phase == Phase::Setup {
-            return refuse("phase", "nothing to take back");
+            return refuse("phase", t!("nothing to take back"));
         }
         let season = self.season();
         let Some(last) = season
@@ -1667,12 +2264,13 @@ impl League {
             .iter()
             .rposition(|r| (r.done() && !r.auto) || r.started())
         else {
-            return refuse("nothing", "no round of this season to take back");
+            return refuse("nothing", t!("no round of this season to take back"));
         };
         let name = season.rounds[last].race.clone();
         let n = season.rounds[last].round;
         let snapshot = season.rounds[last].before.clone();
         let season = self.season_mut();
+        let mut taken = Vec::new();
         for r in &mut season.rounds[last..] {
             if r.done() || r.started() {
                 r.state = RoundState::Pending;
@@ -1684,15 +2282,27 @@ impl League {
                 r.by = None;
                 r.auto = false;
                 r.before = None;
+                r.counted.clear();
+                r.ready.clear();
+                r.shootout_result.clear();
+                objectives::reset(r);
+                taken.push(r.round);
             }
         }
         season.offers.clear();
+        for t in taken {
+            market::undo(self, t);
+            inbox::undo(self, t);
+        }
         if self.phase != Phase::Racing {
             self.phase = Phase::Racing;
             let year = self.year();
             for p in &mut self.players {
                 p.signed = None;
                 p.signed_until = None;
+                p.signed_salary_k = 0;
+                p.signed_bonus_k = 0;
+                p.signed_focus = None;
                 p.titles.retain(|&y| y != year);
             }
             if let Some(ratings) = self.ratings_before.take() {
@@ -1707,7 +2317,8 @@ impl League {
         if let Some(snapshot) = snapshot {
             self.restore_progress(snapshot, n);
         }
-        self.say(n, format!("Round {n}, the {name}, was taken back."));
+        rnd::undo(self, n);
+        self.say(n, t!("Round {n}, the {race}, was taken back.", n, race = name));
         // Rounds the game doesn't have, right after it, are simulated again with the same result.
         Ok(())
     }
@@ -1720,6 +2331,7 @@ impl League {
                 return;
             };
             self.announce_changes(next.round);
+            objectives::prepare(self, next.round);
             if next.track.is_some() {
                 return;
             }
@@ -1746,29 +2358,27 @@ impl League {
                 continue;
             };
             let race = season.round(c.round).map_or("", |r| r.race.as_str());
-            let back = c
-                .until
-                .and_then(|u| season.round(u))
-                .map(|r| format!(" until {} is back at the {}", out.name, r.race));
-            lines.push(match c.kind.as_str() {
-                "stand_in" => format!(
-                    "From the {race}, {} stands in for {} at {}{}.",
-                    driver.name,
-                    out.name,
-                    team.name,
-                    back.unwrap_or_default()
+            let back = c.until.and_then(|u| season.round(u)).map(|r| r.race.as_str());
+            let (driver, out, team) = (&driver.name, &out.name, &team.name);
+            lines.push(match (c.kind.as_str(), back) {
+                ("stand_in", Some(back)) => t!(
+                    "From the {race}, {driver} stands in for {out} at {team} until {out} is back at the {back}.",
+                    race,
+                    driver,
+                    out,
+                    team,
+                    back
                 ),
-                "move" => format!(
-                    "From the {race}, {} drives for {} in place of {}{}.",
-                    driver.name,
-                    team.name,
-                    out.name,
-                    back.map(|_| " for a while".to_owned()).unwrap_or_default()
+                ("stand_in", None) => t!("From the {race}, {driver} stands in for {out} at {team}.", race, driver, out, team),
+                ("move", Some(_)) => t!(
+                    "From the {race}, {driver} drives for {team} in place of {out} for a while.",
+                    race,
+                    driver,
+                    team,
+                    out
                 ),
-                _ => format!(
-                    "From the {race}, {} replaces {} at {}.",
-                    driver.name, out.name, team.name
-                ),
+                ("move", None) => t!("From the {race}, {driver} drives for {team} in place of {out}.", race, driver, team, out),
+                _ => t!("From the {race}, {driver} replaces {out} at {team}.", race, driver, out, team),
             });
         }
         if told.is_empty() {
@@ -1780,8 +2390,8 @@ impl League {
             }
         }
         if !lines.is_empty() {
-            lines.push("The game's season box still shows its own line-up; the career counts each car for the driver of that seat.".into());
-            self.say(next, lines.join(" "));
+            lines.push(t!("The game's season box still shows its own line-up; the career counts each car for the driver of that seat."));
+            self.say_lines(next, lines);
         }
     }
 
@@ -1793,7 +2403,13 @@ impl League {
             let (d_name, d_points, t_name) = (d.name.clone(), d.points, t.name.clone());
             self.say(
                 0,
-                format!("{d_name} is the {year} world champion with {d_points} points; {t_name} win the constructors' title."),
+                t!(
+                    "{driver} is the {year} world champion with {points} points; {team} win the constructors' title.",
+                    driver = d_name,
+                    year,
+                    points = d_points,
+                    team = t_name
+                ),
             );
         }
         // Ratings move with how each player did against their car and their team-mate.
@@ -1834,7 +2450,7 @@ impl League {
         self.ratings_before = Some(before);
         self.sync_ratings();
         // What each player earned this season.
-        let earned: Vec<String> = self
+        let earned: Vec<Text> = self
             .players
             .iter()
             .filter(|p| season.player_entry(&p.id).is_some())
@@ -1845,17 +2461,15 @@ impl League {
                     .and_then(|r| r.before.as_ref())
                     .and_then(|b| b.iter().find(|s| s.player == p.id))
                     .map_or(0, |s| s.earnings_k);
-                format!(
-                    "{} earned {} this season ({} in the career).",
-                    p.name,
-                    progress::money(p.earnings_k.saturating_sub(start)),
-                    progress::money(p.earnings_k)
+                t!(
+                    "{name} earned {season} this season ({career} in the career).",
+                    name = p.name,
+                    season = progress::money(p.earnings_k.saturating_sub(start)),
+                    career = progress::money(p.earnings_k)
                 )
             })
             .collect();
-        if !earned.is_empty() {
-            self.say(0, earned.join(" "));
-        }
+        self.say_lines(0, earned);
         // How each player did against their team-mate and their rival.
         let mut duels = Vec::new();
         for p in &self.players {
@@ -1865,9 +2479,14 @@ impl League {
             if let Some(h) =
                 team_mate(&season, &entry.id).and_then(|m| head_to_head(&season, &entry.id, &m.id))
             {
-                duels.push(format!(
-                    "{} against team-mate {}: qualifying {}:{}, races {}:{}.",
-                    p.name, h.other_name, h.quali.0, h.quali.1, h.race.0, h.race.1
+                duels.push(t!(
+                    "{name} against team-mate {mate}: qualifying {q1}:{q2}, races {r1}:{r2}.",
+                    name = p.name,
+                    mate = h.other_name,
+                    q1 = h.quali.0,
+                    q2 = h.quali.1,
+                    r1 = h.race.0,
+                    r2 = h.race.1
                 ));
             }
             if let Some(h) = p
@@ -1875,67 +2494,51 @@ impl League {
                 .as_deref()
                 .and_then(|r| head_to_head(&season, &entry.id, r))
             {
-                let verdict = if h.race.0 > h.race.1 {
-                    "won"
-                } else if h.race.0 < h.race.1 {
-                    "lost"
+                let (name, rival, r1, r2) = (&p.name, &h.other_name, h.race.0, h.race.1);
+                duels.push(if r1 > r2 {
+                    t!("{name} won the rivalry with {rival} {r1}:{r2}.", name, rival, r1, r2)
+                } else if r1 < r2 {
+                    t!("{name} lost the rivalry with {rival} {r1}:{r2}.", name, rival, r1, r2)
                 } else {
-                    "drew"
-                };
-                duels.push(format!(
-                    "{} {verdict} the rivalry with {} {}:{}.",
-                    p.name, h.other_name, h.race.0, h.race.1
-                ));
+                    t!("{name} drew the rivalry with {rival} {r1}:{r2}.", name, rival, r1, r2)
+                });
             }
         }
-        if !duels.is_empty() {
-            self.say(0, duels.join(" "));
-        }
+        self.say_lines(0, duels);
         if year >= self.setup.last_year {
             self.phase = Phase::Finished;
-            self.say(0, "The career is complete.".into());
+            self.say(0, t!("The career is complete."));
             return;
         }
         self.phase = Phase::SeasonEnd;
+        market::season_end(self);
         let offers = make_offers(&self.players, &season, &drivers);
-        let lines: Vec<String> = self
-            .players
-            .iter()
-            .map(|p| {
-                let names: Vec<String> = offers
-                    .iter()
-                    .filter(|o| o.player == p.id)
-                    .filter_map(|o| {
-                        let team = catalog_team(year + 1, o.slot)?;
-                        Some(match o.kind {
-                            OfferKind::Contract => format!("{} (under contract)", team.name),
-                            _ => format!(
-                                "{} ({} year{}, {} a season)",
-                                team.name,
-                                o.years,
-                                if o.years == 1 { "" } else { "s" },
-                                progress::money(u64::from(o.salary_k))
-                            ),
-                        })
+        let mut lines = vec![t!("Contracts for {year}:", year = year + 1)];
+        for p in self.players.iter().filter(|p| !p.left) {
+            let names: Vec<Text> = offers
+                .iter()
+                .filter(|o| o.player == p.id)
+                .filter_map(|o| {
+                    let team = &catalog_team(year + 1, o.slot)?.name;
+                    let salary = progress::money(u64::from(o.salary_k));
+                    Some(match (o.kind, o.years) {
+                        (OfferKind::Contract, _) => t!("{team} (under contract)", team),
+                        (_, 1) => t!("{team} (1 year, {salary} a season)", team, salary),
+                        (_, years) => t!("{team} ({years} years, {salary} a season)", team, years, salary),
                     })
-                    .collect();
-                let renewed = offers
-                    .iter()
-                    .any(|o| o.player == p.id && o.kind != OfferKind::Move);
-                let dropped = if renewed || season.player_entry(&p.id).is_none() {
-                    String::new()
-                } else {
-                    let team = season
-                        .player_entry(&p.id)
-                        .and_then(|e| season.team(e.slot))
-                        .map_or("", |t| t.name.as_str());
-                    format!(" {team} doesn't renew the contract.")
-                };
-                format!("{} has offers from {}.{dropped}", p.name, names.join(", "))
-            })
-            .collect();
+                })
+                .collect();
+            lines.push(t!("{name} has offers from {teams}.", name = p.name).list("teams", names));
+            let renewed = offers
+                .iter()
+                .any(|o| o.player == p.id && o.kind != OfferKind::Move);
+            if !renewed && let Some(e) = season.player_entry(&p.id) {
+                let team = season.team(e.slot).map_or("", |t| t.name.as_str());
+                lines.push(t!("{team} doesn't renew the contract.", team));
+            }
+        }
         self.season_mut().offers = offers;
-        self.say(0, format!("Contracts for {}: {}", year + 1, lines.join(" ")));
+        self.say_lines(0, lines);
     }
 
     fn sign(
@@ -1946,7 +2549,7 @@ impl League {
         focus: Option<Focus>,
     ) -> Result<(), LeagueError> {
         if self.phase != Phase::SeasonEnd {
-            return refuse("phase", "contracts are signed when a season is over");
+            return refuse("phase", t!("contracts are signed when a season is over"));
         }
         let Some(offer) = self
             .season()
@@ -1955,11 +2558,14 @@ impl League {
             .find(|o| o.player == actor.id && o.slot == slot)
             .cloned()
         else {
-            return refuse("no_offer", "that team made you no offer");
+            return refuse("no_offer", t!("that team made you no offer"));
         };
         let next = self.year() + 1;
         let until = self.contract_end(&actor.id, &offer);
-        let team = catalog_team(next, slot).expect("offers name next year's teams");
+        // Offers made before an update that changed next year's teams name a team that is gone.
+        let Some(team) = catalog_team(next, slot) else {
+            return refuse("bad_offer", t!("there is no team {slot} in {next} any more", slot, next));
+        };
         let others: Vec<&str> = self
             .players
             .iter()
@@ -1973,27 +2579,24 @@ impl League {
         let p = self.player_mut(&actor.id).expect("has offers");
         p.signed = Some(Seat { slot, replaces });
         p.signed_until = Some(until);
-        let terms = signed_terms(p, &offer, focus);
+        let terms = market::terms(p, &offer, focus);
+        let (player, salary) = (&actor.name, progress::money(u64::from(terms)));
         let text = if offer.kind == OfferKind::Contract {
-            format!(
-                "{} stays with {name} for {next}, under contract until {until}.",
-                actor.name
-            )
+            t!("{player} stays with {team} for {next}, under contract until {until}.", player, team = name, next, until)
         } else if until > next {
-            format!(
-                "{} signs with {name} for {next} to {until}, for {} a season.",
-                actor.name,
-                progress::money(u64::from(terms))
+            t!(
+                "{player} signs with {team} for {next} to {until}, for {salary} a season.",
+                player,
+                team = name,
+                next,
+                until,
+                salary
             )
         } else {
-            format!(
-                "{} signs with {name} for {next}, for {}.",
-                actor.name,
-                progress::money(u64::from(terms))
-            )
+            t!("{player} signs with {team} for {next}, for {salary}.", player, team = name, next, salary)
         };
         self.say(0, text);
-        if self.players.iter().all(|p| p.signed.is_some()) {
+        if self.all_signed() {
             self.next_season()?;
         }
         Ok(())
@@ -2001,16 +2604,16 @@ impl League {
 
     fn force_next_season(&mut self, actor: &Actor) -> Result<(), LeagueError> {
         if !actor.owner {
-            return refuse("owner", "only the career's owner moves on before everyone signed");
+            return refuse("owner", t!("only the career's owner moves on before everyone signed"));
         }
         if self.phase != Phase::SeasonEnd {
-            return refuse("phase", "the season isn't over yet");
+            return refuse("phase", t!("the season isn't over yet"));
         }
         let next = self.year() + 1;
         let unsigned: Vec<String> = self
             .players
             .iter()
-            .filter(|p| p.signed.is_none())
+            .filter(|p| p.signed.is_none() && !p.left)
             .map(|p| p.id.clone())
             .collect();
         for id in unsigned {
@@ -2024,7 +2627,7 @@ impl League {
             let Some(offer) = pick else { continue };
             let slot = offer.slot;
             let until = self.contract_end(&id, &offer);
-            let team = catalog_team(next, slot).expect("offers name next year's teams");
+            let Some(team) = catalog_team(next, slot) else { continue };
             let others: Vec<&str> = self
                 .players
                 .iter()
@@ -2036,10 +2639,107 @@ impl League {
                 let p = self.player_mut(&id).expect("listed");
                 p.signed = Some(Seat { slot, replaces });
                 p.signed_until = Some(until);
-                signed_terms(p, &offer, None);
+                market::terms(p, &offer, None);
             }
         }
         self.next_season()
+    }
+
+    /// Every active player signed for next season.
+    fn all_signed(&self) -> bool {
+        self.players.iter().filter(|p| !p.left).all(|p| p.signed.is_some())
+    }
+
+    /// Remove `player` from the career: in setup entirely; later they leave (the game's AI drives
+    /// their seat until the season ends, they get no offers and keep their history).
+    fn remove_player(&mut self, actor: &Actor, player: &str) -> Result<Vec<Text>, LeagueError> {
+        let Some(p) = self.player(player) else {
+            return refuse("not_player", t!("that player isn't in this career"));
+        };
+        if player != actor.id && !actor.owner {
+            return refuse("owner", t!("only the career's owner removes another player"));
+        }
+        if player == actor.id && actor.owner {
+            return refuse("owner", t!("the career's owner can't leave their own career"));
+        }
+        let name = p.name.clone();
+        if self.phase == Phase::Setup {
+            self.players.retain(|p| p.id != player);
+            let seats = self.seats();
+            let year = self.setup.first_year;
+            *self.season_mut() = build_season(year, &seats, self.setup.lineup_changes)?;
+            self.say(0, t!("{name} left the career.", name));
+            return Ok(Vec::new());
+        }
+        if p.left {
+            return Ok(vec![t!("{name} has left the career already", name)]);
+        }
+        if p.seat.is_none() {
+            // Nothing to keep: they never drove this season.
+            self.players.retain(|p| p.id != player);
+        } else {
+            let p = self.player_mut(player).expect("checked");
+            p.left = true;
+            p.signed = None;
+            p.signed_until = None;
+            p.signed_salary_k = 0;
+            p.signed_bonus_k = 0;
+            p.signed_focus = None;
+        }
+        let season = self.season_mut();
+        season.offers.retain(|o| o.player != player);
+        for r in &mut season.rounds {
+            r.ready.retain(|id| id != player);
+        }
+        if let Some(v) = self.vote.as_mut() {
+            v.yes.retain(|id| id != player);
+        }
+        // A proposal of the player who left lapses with them.
+        consent::changed(self);
+        let text = match self.phase {
+            Phase::Racing => t!(
+                "{name} left the career; the game's AI drives their seat for the rest of the season.",
+                name
+            ),
+            _ => t!("{name} left the career.", name),
+        };
+        self.say(0, text);
+        // The others may all have signed already.
+        if self.phase == Phase::SeasonEnd && !self.active_players().is_empty() && self.all_signed() {
+            self.next_season()?;
+        }
+        Ok(Vec::new())
+    }
+
+    /// Set the career's options (the owner).
+    fn set_options(&mut self, actor: &Actor, mut options: Options) -> Result<Vec<Text>, LeagueError> {
+        if !actor.owner {
+            return refuse("owner", t!("only the career's owner changes the career options"));
+        }
+        weekend::validate(&options.rules)?;
+        // The league's car pace in the game (W2-10) means nothing with equal performance on, so
+        // it is agreed off, and a report where the game ran it on warns (`weekend::check`).
+        let mut warnings = Vec::new();
+        if options.game_performance && options.rules.equal_performance != Some(false) {
+            if options.rules.equal_performance == Some(true) {
+                warnings.push(t!("equal performance is off while the league's car pace is in the game"));
+            }
+            options.rules.equal_performance = Some(false);
+        }
+        // A dynamic line-up (W4-1) shows the players in the game: a player's seat would show its
+        // real driver, who may race for another team by then.
+        if options.lineups == LineupMode::Dynamic && !options.game_identity {
+            if self.options.lineups == LineupMode::Dynamic && self.options.game_identity {
+                warnings.push(t!("the players' names stay in the game while AI drivers move between teams"));
+            }
+            options.game_identity = true;
+        }
+        if options == self.options {
+            return Ok(warnings);
+        }
+        self.options = options;
+        self.say(0, t!("{name} changed the career options.", name = actor.name));
+        Ok(warnings)
     }
 
     /// The last season of the contract `offer` gives `player`.
@@ -2075,20 +2775,31 @@ impl League {
             }
         }
         let seats = self.seats();
-        let mut season = build_season(next, &seats, self.setup.lineup_changes)?;
+        // A dynamic line-up's AI drivers come from the market (W4-1); the historic one is the
+        // year's real grid.
+        let (mut season, moves) = match self.options.lineups {
+            LineupMode::Historic => (build_season(next, &seats, self.setup.lineup_changes)?, Vec::new()),
+            LineupMode::Dynamic => {
+                let plan = aimarket::plan(self, next, &seats)?;
+                (plan.season, plan.moves)
+            }
+        };
         for (slot, c) in carry {
             if let Some(t) = season.teams.iter_mut().find(|t| t.slot == slot) {
                 t.carry = c;
             }
         }
         self.seasons.push(season);
+        aimarket::announce(self, &moves);
+        driver::new_season(self);
         self.first_salary();
         // A new season starts level with the team-mate.
         let _ = self.update_status();
         self.ratings_before = None;
         self.phase = Phase::Racing;
-        let line = self.lineup_line();
-        self.say(0, format!("The {next} season begins. {line}"));
+        let mut lines = vec![t!("The {year} season begins.", year = next)];
+        lines.extend(self.lineup_lines());
+        self.say_lines(0, lines);
         self.assign_rivals();
         self.settle();
         Ok(())
@@ -2096,18 +2807,28 @@ impl League {
 }
 
 /// Apply `action` by `actor` to the league. Returns warnings worth showing (cars of a reported
-/// race that matched no driver, say).
+/// race that matched no driver, say), in English; [`apply_t`] returns them with their templates.
 pub fn apply(league: &mut League, actor: &Actor, action: Action) -> Result<Vec<String>, LeagueError> {
+    apply_t(league, actor, action).map(|w| texts::english(&w))
+}
+
+/// [`apply`], with the warnings' templates (W4-2).
+pub fn apply_t(league: &mut League, actor: &Actor, action: Action) -> Result<Vec<Warning>, LeagueError> {
     if league.schema > SCHEMA {
         return refuse(
             "newer",
-            "this career was saved by a newer F1 Multiplayer; update it first",
+            t!("this career was saved by a newer F1 Multiplayer; update it first"),
         );
     }
     let is_player = league.player(&actor.id).is_some();
     let needs_player = !matches!(action, Action::Enter { .. } | Action::Start { .. });
     if needs_player && !is_player {
-        return refuse("not_player", "join the career first");
+        return refuse("not_player", t!("join the career first"));
+    }
+    if league.player(&actor.id).is_some_and(|p| p.left)
+        && !matches!(action, Action::Enter { .. } | Action::RemovePlayer { .. })
+    {
+        return refuse("left", t!("you left this career; join it again first"));
     }
     // Careers started before rivals and contract lengths existed get them now.
     if league.phase == Phase::Racing {
@@ -2152,7 +2873,7 @@ pub fn apply(league: &mut League, actor: &Actor, action: Action) -> Result<Vec<S
         }
     }
     match action {
-        Action::Start { .. } => refuse("started", "this career has started already"),
+        Action::Start { .. } => refuse("started", t!("this career has started already")),
         Action::Enter { number } => league.enter(actor, number).map(|()| Vec::new()),
         Action::Seat { slot, replaces } => league.pick_seat(actor, slot, replaces).map(|()| Vec::new()),
         Action::Begin => league.begin(actor).map(|()| Vec::new()),
@@ -2161,23 +2882,43 @@ pub fn apply(league: &mut League, actor: &Actor, action: Action) -> Result<Vec<S
             kind,
             force,
             report,
-        } => league.report(actor, round, kind, force, report),
-        Action::Simulate { round } => league.simulate(round, false).map(|()| {
+        } => {
+            let warnings = league.report(actor, round, kind, force, report)?;
+            consent::changed(league);
+            Ok(warnings)
+        }
+        Action::Simulate { round } => {
+            if let Some(w) = consent::gate(league, actor, Proposal::Simulate, round)? {
+                return Ok(w);
+            }
+            league.simulate(round, false)?;
             league.settle();
-            Vec::new()
-        }),
-        Action::Skip { round } => league.skip(round, false).map(|()| {
+            consent::changed(league);
+            Ok(Vec::new())
+        }
+        Action::Skip { round } => {
+            if let Some(w) = consent::gate(league, actor, Proposal::Skip, round)? {
+                return Ok(w);
+            }
+            league.skip(round, false)?;
             league.settle();
-            Vec::new()
-        }),
-        Action::Undo => league.undo().map(|()| {
+            consent::changed(league);
+            Ok(Vec::new())
+        }
+        Action::Undo => {
+            if let Some(w) = consent::gate(league, actor, Proposal::Undo, None)? {
+                return Ok(w);
+            }
+            league.undo()?;
             league.settle();
-            Vec::new()
-        }),
+            consent::changed(league);
+            Ok(Vec::new())
+        }
         Action::Practice { round } => {
             let n = league.pending_round(round)?;
             let lines = league.count_practice(&actor.id, n, None)?;
-            league.say(n, lines.join(" "));
+            league.say_lines(n, lines);
+            consent::changed(league);
             Ok(Vec::new())
         }
         Action::Develop { part } => league.develop(&actor.id, part).map(|_| Vec::new()),
@@ -2187,7 +2928,83 @@ pub fn apply(league: &mut League, actor: &Actor, action: Action) -> Result<Vec<S
             focus,
         } => league.sign(actor, slot, replaces, focus).map(|()| Vec::new()),
         Action::NextSeason => league.force_next_season(actor).map(|()| Vec::new()),
+        Action::Ready { ready } => consent::ready(league, actor, ready),
+        Action::Vote { yes, force } => consent::vote(league, actor, yes, force),
+        Action::RemovePlayer { player } => league.remove_player(actor, &player),
+        Action::SetOptions { options } => league.set_options(actor, options),
+        Action::Profile {
+            nationality,
+            archetype,
+        } => driver::profile(league, actor, nationality, archetype),
+        Action::Meet { slot } => market::meet(league, actor, slot),
+        Action::AcceptApproach { slot, replaces } => market::accept(league, actor, slot, replaces),
+        Action::DeclineApproach { slot } => market::decline(league, actor, slot),
+        Action::Negotiate { slot, terms } => market::negotiate(league, actor, slot, terms),
+        Action::Answer { news, choice } => inbox::answer(league, actor, news, choice),
+        Action::ReadMail { upto } => inbox::read(league, actor, upto),
+        Action::DevelopNode { part, node } => rnd::develop_node(league, actor, part, node),
     }
+}
+
+/// A fingerprint of a reported session's classification, the same whichever PC reported it: an
+/// FNV-1a hash over the cars in position order, each as (position, number, laps, status, grid,
+/// best lap). Names, which car is whose and the times are left out.
+pub fn fingerprint(report: &RaceReport) -> u64 {
+    let mut cars: Vec<&ReportCar> = report.cars.iter().collect();
+    cars.sort_by_key(|c| (c.position, c.number));
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for c in cars {
+        eat(&[c.position, c.number, c.laps, c.status, c.grid]);
+        eat(&c.best_lap_ms.to_le_bytes());
+    }
+    h
+}
+
+/// What taking back the last round would take back; `None` when there is nothing to take back.
+/// `by_others` lists everyone whose sessions go; the launcher leaves its own player out.
+pub fn undo_preview(league: &League) -> Option<UndoPreview> {
+    if league.phase == Phase::Setup {
+        return None;
+    }
+    let season = league.season();
+    let last = season
+        .rounds
+        .iter()
+        .rposition(|r| (r.done() && !r.auto) || r.started())?;
+    let r = &season.rounds[last];
+    let name = |id: &str| league.player(id).map_or_else(|| id.to_owned(), |p| p.name.clone());
+    let practice_of: Vec<String> = r.practice.iter().map(|l| name(&l.player)).collect();
+    let mut by_others: Vec<String> = Vec::new();
+    let reporters = r
+        .counted
+        .iter()
+        .map(|c| name(&c.by))
+        .chain(practice_of.iter().cloned())
+        .chain(r.by.iter().cloned());
+    for who in reporters {
+        if !who.is_empty() && !by_others.contains(&who) {
+            by_others.push(who);
+        }
+    }
+    Some(UndoPreview {
+        round: r.round,
+        race: r.race.clone(),
+        race_counted: r.done(),
+        sprint: !r.sprint_result.is_empty(),
+        quali: !r.quali_result.is_empty(),
+        practice_of,
+        by_others,
+        auto_after: season.rounds[last + 1..]
+            .iter()
+            .filter(|x| x.done() && x.auto)
+            .count() as u8,
+        season_end: league.phase != Phase::Racing,
+    })
 }
 
 /// Settle the terms of the contract `p` signs with `offer`: the salary (a quarter more when they
@@ -2220,10 +3037,10 @@ fn choose_replaced(team: &CatalogTeam, asked: Option<&str>, taken: &[&str]) -> R
     match asked {
         Some(key) => {
             if !team.drivers.iter().any(|d| d.key == key) {
-                return refuse("bad_driver", format!("{key} doesn't drive for {}", team.name));
+                return refuse("bad_driver", t!("{key} doesn't drive for {team}", key, team = team.name));
             }
             if taken.contains(&key) {
-                return refuse("seat_taken", "another player has that seat");
+                return refuse("seat_taken", t!("another player has that seat"));
             }
             Ok(key.to_owned())
         }
@@ -2235,7 +3052,7 @@ fn choose_replaced(team: &CatalogTeam, asked: Option<&str>, taken: &[&str]) -> R
                 .collect();
             free.sort_by(|a, b| a.rating.total_cmp(&b.rating));
             free.first().map(|d| d.key.clone()).map_or_else(
-                || refuse("team_full", format!("both seats at {} are taken", team.name)),
+                || refuse("team_full", t!("both seats at {team} are taken", team = team.name)),
                 Ok,
             )
         }
@@ -2246,11 +3063,11 @@ fn choose_replaced(team: &CatalogTeam, asked: Option<&str>, taken: &[&str]) -> R
 /// the real mid-season line-up changes that don't touch the players' seats.
 fn build_season(year: u16, seats: &[(Player, Seat)], lineup_changes: bool) -> Result<Season, LeagueError> {
     let Some(cat) = catalog_year(year) else {
-        return refuse("bad_year", format!("no season data for {year}"));
+        return refuse("bad_year", t!("no season data for {year}", year));
     };
     for (p, s) in seats {
         if catalog_driver(year, s.slot, &s.replaces).is_none() {
-            return refuse("bad_seat", format!("{}'s seat doesn't exist in {year}", p.name));
+            return refuse("bad_seat", t!("{name}'s seat doesn't exist in {year}", name = p.name, year));
         }
     }
     let mut entries = Vec::new();
@@ -2316,12 +3133,20 @@ fn build_season(year: u16, seats: &[(Player, Seat)], lineup_changes: bool) -> Re
                 auto: false,
                 practice: Vec::new(),
                 before: None,
+                counted: Vec::new(),
+                ready: Vec::new(),
+                objectives: Vec::new(),
+                shootout_result: Vec::new(),
             })
             .collect(),
         offers: Vec::new(),
         reserves,
         changes: Some(changes),
         upgrades: Vec::new(),
+        approaches: Vec::new(),
+        ai_form: Vec::new(),
+        spent: Vec::new(),
+        renames: Vec::new(),
     })
 }
 
@@ -2329,7 +3154,8 @@ fn build_season(year: u16, seats: &[(Player, Seat)], lineup_changes: bool) -> Re
 /// reaches (any team for the champion). A player whose contract runs on stays with their team
 /// unless one of the teams faster than theirs buys them out. The best team reached offers one
 /// year, the next ones two and three; the own team two years after a season above the car's
-/// level, else one.
+/// level, else one. A player who signed early with a team during the season (see [`market`]) is
+/// offered only that contract.
 fn make_offers(players: &[Player], season: &Season, drivers: &[DriverStanding]) -> Vec<Offer> {
     let next = season.year + 1;
     let Some(cat) = catalog_year(next) else {
@@ -2338,13 +3164,14 @@ fn make_offers(players: &[Player], season: &Season, drivers: &[DriverStanding]) 
     let mut ranked: Vec<&CatalogTeam> = cat.teams.iter().collect();
     ranked.sort_by(|a, b| a.pace.total_cmp(&b.pace).then(a.slot.cmp(&b.slot)));
     let mut offers = Vec::new();
-    for p in players {
+    for p in players.iter().filter(|p| !p.left) {
+        // A player who signed early during the season is under that contract.
+        if let Some(early) = market::early_offer(season, p) {
+            offers.push(early);
+            continue;
+        }
         let champion = drivers.first().and_then(|d| d.player.as_deref()) == Some(p.id.as_str());
-        let reach = if champion {
-            1
-        } else {
-            ((11.0 - (p.rating - 70.0) / 2.5).ceil() as usize).clamp(1, ranked.len())
-        };
+        let reach = market::reach(p.rating, champion, ranked.len());
         let own = season
             .player_entry(&p.id)
             .map(|e| e.slot)
@@ -2365,6 +3192,7 @@ fn make_offers(players: &[Player], season: &Season, drivers: &[DriverStanding]) 
                 years,
                 salary_k,
                 bonus_k,
+                ..Offer::fresh()
             }
         };
         let mut mine = Vec::new();
@@ -2382,6 +3210,7 @@ fn make_offers(players: &[Player], season: &Season, drivers: &[DriverStanding]) 
                     years: (p.contract_until.unwrap_or(next) - next + 1) as u8,
                     salary_k: p.salary_k,
                     bonus_k: p.bonus_k,
+                    ..Offer::fresh()
                 });
             } else if p.recognition >= progress::RECOGNITION_RENEW {
                 // A team that doesn't value its driver lets the contract run out.
@@ -2407,6 +3236,7 @@ fn make_offers(players: &[Player], season: &Season, drivers: &[DriverStanding]) 
                     // A team that wants a driver pays a little more.
                     salary_k: salary_k / 50 * 50 + salary_k / 20 / 50 * 50,
                     bonus_k,
+                    ..Offer::fresh()
                 }
             });
         mine.extend(moves);
@@ -2463,19 +3293,23 @@ fn finish(status: u8) -> Finish {
 /// cars are the other players (by name, or the only one left), AI cars are matched by race
 /// number and name to the seat they start the season in, and count for whoever has that seat in
 /// the round (see [`lineup`]).
+#[allow(clippy::too_many_arguments)]
 fn classify(
     season: &Season,
+    players: &[Player],
     reporter: Option<&str>,
     report: &RaceReport,
     kind: SessionKind,
     year: u16,
     rule: PointsRule,
     round: u8,
-) -> (Vec<Classified>, Vec<String>) {
+) -> (Vec<Classified>, Vec<Text>) {
     let mut cars: Vec<&ReportCar> = report.cars.iter().filter(|c| c.position > 0).collect();
     cars.sort_by_key(|c| c.position);
     let mut used: HashSet<&str> = HashSet::new();
     let mut matched: Vec<Option<&Entry>> = vec![None; cars.len()];
+    let mut ai_driven: Vec<bool> = vec![false; cars.len()];
+    let mut warnings = Vec::new();
     let humans: Vec<&Entry> = season.entries.iter().filter(|e| e.player.is_some()).collect();
     let ai: Vec<&Entry> = season
         .entries
@@ -2504,6 +3338,48 @@ fn classify(
             used.insert(e.id.as_str());
         }
     }
+    // A player who wasn't in the session: the game's AI drove their seat, under the name and
+    // number of the driver whose seat it is, or under the player's own when the league's game
+    // identity overlay renamed that driver (`gamesync::identity`). The overlay's numbers are
+    // unique on the year's grid, so no other car shows the player's, and the check holds
+    // whether the option is on, or was on when the overlay the game loaded was prepared.
+    let shown = gamesync::identity::shown(season, players);
+    // A dynamic line-up's renamed seats (W4-1) that the game showed with their real drivers: it
+    // didn't have the market's overlay, so those cars are matched by seat.
+    let box_shown = aimarket::box_shown(season, &cars);
+    for p in players {
+        if reporter == Some(p.id.as_str()) {
+            continue;
+        }
+        let (Some(seat), Some(e)) = (p.seat.as_ref(), season.player_entry(&p.id)) else {
+            continue;
+        };
+        if used.contains(e.id.as_str()) {
+            continue;
+        }
+        let Some(real) = catalog_driver(year, seat.slot, &seat.replaces) else {
+            continue;
+        };
+        let own = shown.iter().find(|s| s.player == p.id);
+        // The seat's real driver races elsewhere in a dynamic line-up, under their own name.
+        let real_shown_here = season.entry(&seat.replaces).is_none() || box_shown;
+        if let Some(i) = (0..cars.len()).find(|&i| {
+            matched[i].is_none()
+                && cars[i].ai
+                && ((real_shown_here && cars[i].number == real.number && same_driver(&cars[i].name, &real.name))
+                    || own.is_some_and(|s| {
+                        cars[i].number == s.number
+                            && (same_driver(&cars[i].name, &s.full) || words(&cars[i].name) == words(&s.last))
+                    }))
+        }) {
+            matched[i] = Some(e);
+            ai_driven[i] = true;
+            used.insert(e.id.as_str());
+            warnings.push(t!("{name}'s seat was driven by the game's AI", name = p.name));
+        }
+    }
+    // The last human car left is the last player left, unless the car is named like one of the
+    // grid's AI drivers.
     let open_cars: Vec<usize> = (0..cars.len())
         .filter(|&i| matched[i].is_none() && !cars[i].ai)
         .collect();
@@ -2512,9 +3388,34 @@ fn classify(
         .copied()
         .filter(|e| !used.contains(e.id.as_str()))
         .collect();
-    if open_cars.len() == 1 && open_humans.len() == 1 {
-        matched[open_cars[0]] = Some(open_humans[0]);
-        used.insert(open_humans[0].id.as_str());
+    if let ([car], [e]) = (&open_cars[..], &open_humans[..])
+        && !ai.iter().any(|a| same_driver(&cars[*car].name, &a.name))
+    {
+        matched[*car] = Some(e);
+        used.insert(e.id.as_str());
+        let shown = if cars[*car].name.is_empty() { "?" } else { &cars[*car].name };
+        warnings.push(t!("matched {shown} to {name} by elimination", shown, name = e.name));
+    }
+    // Without the market's overlay, a renamed seat's car shows its real driver: it counts for the
+    // league's driver of that seat.
+    if box_shown {
+        let mut by_seat = 0;
+        for (i, c) in cars.iter().enumerate() {
+            if matched[i].is_some() || !c.ai {
+                continue;
+            }
+            if let Some(e) = aimarket::box_holder(season, c).filter(|e| !used.contains(e.id.as_str())) {
+                matched[i] = Some(e);
+                used.insert(e.id.as_str());
+                by_seat += 1;
+            }
+        }
+        if by_seat > 0 {
+            warnings.push(t!(
+                "the game showed the real drivers in {by_seat} seats the AI market changed; they count for the league's drivers of those seats (prepare the game sync to see them in the game)",
+                by_seat
+            ));
+        }
     }
     // AI cars: number and name, then number alone, then name alone.
     for pass in 0..3 {
@@ -2555,16 +3456,15 @@ fn classify(
         .filter(|(_, c)| c.best_lap_ms > 0)
         .min_by_key(|(_, c)| c.best_lap_ms)
         .map(|(i, _)| i);
-    let mut warnings = Vec::new();
     let mut out = Vec::new();
     for (i, c) in cars.iter().enumerate() {
         let Some(e) = matched[i] else {
-            warnings.push(format!(
-                "P{} {} (#{}) matched no driver of {} and isn't counted",
-                c.position,
-                if c.name.is_empty() { "?" } else { &c.name },
-                c.number,
-                season.year
+            warnings.push(t!(
+                "P{position} {name} (#{number}) matched no driver of {year} and isn't counted",
+                position = c.position,
+                name = if c.name.is_empty() { "?" } else { &c.name },
+                number = c.number,
+                year = season.year
             ));
             continue;
         };
@@ -2586,6 +3486,7 @@ fn classify(
             penalty_s: c.penalty_s,
             points: pts,
             fastest: is_fastest,
+            ai_driven: ai_driven[i],
         });
     }
     (out, warnings)
@@ -2598,7 +3499,7 @@ fn result_line(
     kind: SessionKind,
     result: &[Classified],
     players: &[Player],
-) -> String {
+) -> Text {
     let name = |id: &str| season.entry(id).map_or(id.to_owned(), |e| e.name.clone());
     let winner = result
         .iter()
@@ -2609,34 +3510,59 @@ fn result_line(
         let Some(e) = season.player_entry(&p.id) else {
             continue;
         };
+        let name = &p.name;
         match result.iter().find(|c| c.entry == e.id) {
             Some(c) if c.position == 1 && c.status == Finish::Finished => {}
-            Some(c) if c.status == Finish::Finished => parts.push(format!("{} P{}", p.name, c.position)),
-            Some(_) if kind == SessionKind::Qualifying => parts.push(format!("{} no time", p.name)),
-            Some(_) => parts.push(format!("{} out", p.name)),
+            Some(c) if c.status == Finish::Finished => parts.push(t!("{name} P{position}", name, position = c.position)),
+            Some(_) if kind == SessionKind::Qualifying => parts.push(t!("{name} no time", name)),
+            Some(_) => parts.push(t!("{name} out", name)),
             None => {}
         }
     }
-    let what = match kind {
-        SessionKind::Race => "",
-        SessionKind::Sprint => " sprint",
-        SessionKind::Qualifying => " qualifying",
-        SessionKind::Practice => " practice",
+    let (n, race) = (round.round, &round.race);
+    // Practice is never a result line; it reads like a race.
+    let head = match (kind, winner) {
+        (SessionKind::Qualifying, Some(w)) => t!("Round {n}, {race} qualifying: {winner} on pole", n, race, winner = w),
+        (SessionKind::Qualifying, None) => t!("Round {n}, {race} qualifying: no pole time", n, race),
+        (SessionKind::Sprint, Some(w)) => t!("Round {n}, {race} sprint: {winner} wins", n, race, winner = w),
+        (SessionKind::Sprint, None) => t!("Round {n}, {race} sprint: no winner classified", n, race),
+        (_, Some(w)) => t!("Round {n}, {race}: {winner} wins", n, race, winner = w),
+        (_, None) => t!("Round {n}, {race}: no winner classified", n, race),
     };
-    let mut line = format!("Round {}, {}{what}: ", round.round, round.race);
-    match (winner, kind) {
-        (Some(w), SessionKind::Qualifying) => line.push_str(&format!("{w} on pole")),
-        (Some(w), _) => line.push_str(&format!("{w} wins")),
-        (None, SessionKind::Qualifying) => line.push_str("no pole time"),
-        (None, _) => line.push_str("no winner classified"),
+    if parts.is_empty() {
+        t!("{result}.").list("result", vec![head])
+    } else {
+        t!("{result}; {players}.")
+            .list("result", vec![head])
+            .list("players", parts)
     }
-    if !parts.is_empty() {
-        line.push_str("; ");
-        line.push_str(&parts.join(", "));
-    }
-    line.push('.');
-    line
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_aimarket;
+#[cfg(test)]
+mod tests_consent;
+#[cfg(test)]
+mod tests_driver;
+#[cfg(test)]
+mod tests_gamesync;
+#[cfg(test)]
+mod tests_gamesync_identity;
+#[cfg(test)]
+mod tests_gamesync_performance;
+#[cfg(test)]
+mod tests_inbox;
+#[cfg(test)]
+mod tests_market;
+#[cfg(test)]
+mod tests_objectives;
+#[cfg(test)]
+mod tests_practice;
+#[cfg(test)]
+mod tests_rnd;
+#[cfg(test)]
+mod tests_texts;
+#[cfg(test)]
+mod tests_weekend;

@@ -1,56 +1,6 @@
-//! The launcher's language. The source text is English: `tr("Turn off all")` returns the German
-//! text when the German language is on and the table has the string, and the English otherwise,
-//! so a string without a translation yet still shows.
+//! The German texts of everything the launcher had before the career packages.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use gpui_kit::component::WindowExt;
-use gpui_kit::component::notification::Notification;
-use gpui_kit::*;
-
-use crate::shell::Shell;
-
-static GERMAN: AtomicBool = AtomicBool::new(false);
-
-/// Sets the language from the config's code. An unknown or missing code is English.
-pub fn set(code: Option<&str>) {
-    GERMAN.store(code == Some("de"), Ordering::Relaxed);
-}
-
-pub fn is_german() -> bool {
-    GERMAN.load(Ordering::Relaxed)
-}
-
-/// The text to show for an English source string.
-pub fn tr(text: &'static str) -> &'static str {
-    if !is_german() {
-        return text;
-    }
-    table().get(text).copied().unwrap_or(text)
-}
-
-impl Shell {
-    /// Switches the launcher's language and saves it in the config.
-    pub(crate) fn set_language(&mut self, code: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let mut config = self.store.config();
-        config.language = Some(code.to_owned());
-        set(Some(code));
-        if let Err(e) = self.store.save_config(&config) {
-            crate::app_log::action("save language").failed(&e);
-            window.push_notification(Notification::error(e.to_string()), cx);
-        }
-        cx.notify();
-    }
-}
-
-fn table() -> &'static HashMap<&'static str, &'static str> {
-    static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    TABLE.get_or_init(|| DE.iter().copied().collect())
-}
-
-const DE: &[(&str, &str)] = &[
+pub(super) const DE: &[(&str, &str)] = &[
     // Pages and the sidebar
     ("News", "Neuigkeiten"),
     ("Addons", "Addons"),
@@ -376,28 +326,64 @@ const DE: &[(&str, &str)] = &[
         "Fahre mit Spielern, die dieselben Addons nutzen. Der Host wählt die Strecken in der LAN-Lobby von F1 25.",
     ),
     ("Invite code", "Einladungscode"),
+    // The career's record and standings (W4-2)
+    ("STARTS", "STARTS"),
+    ("WINS", "SIEGE"),
+    ("PODIUMS", "PODIEN"),
+    ("POLES", "POLES"),
+    ("FASTEST LAPS", "SCHNELLSTE RUNDEN"),
+    ("POINTS", "PUNKTE"),
+    ("TITLES", "TITEL"),
+    ("BEST FINISH", "BESTES ERGEBNIS"),
+    ("{points} pts", "{points} Pkt."),
+    (
+        "{wins} wins · {podiums} podiums · {poles} poles · {starts} starts",
+        "{wins} Siege · {podiums} Podien · {poles} Poles · {starts} Starts",
+    ),
+    ("running", "läuft"),
+    ("{year} DUELS", "DUELLE {year}"),
+    (
+        "Team-mate {name}: qualifying {q1}:{q2}, races {r1}:{r2}, points {p1}:{p2}",
+        "Teamkollege {name}: Qualifying {q1}:{q2}, Rennen {r1}:{r2}, Punkte {p1}:{p2}",
+    ),
+    (
+        "Rival {name}: qualifying {q1}:{q2}, races {r1}:{r2}, points {p1}:{p2}",
+        "Rivale {name}: Qualifying {q1}:{q2}, Rennen {r1}:{r2}, Punkte {p1}:{p2}",
+    ),
+    ("1 win", "1 Sieg"),
+    ("{n} wins", "{n} Siege"),
+    ("1 podium", "1 Podium"),
+    ("{n} podiums", "{n} Podien"),
+    ("1 pole", "1 Pole"),
+    ("{n} poles", "{n} Poles"),
+    ("practice {grade}", "Training {grade}"),
+    ("sprint counted", "Sprint gewertet"),
+    ("qualifying counted", "Qualifying gewertet"),
+    ("practice counted", "Training gewertet"),
+    ("raced", "gefahren"),
+    ("raced ({name})", "gefahren ({name})"),
+    ("simulated (not in the game)", "simuliert (nicht im Spiel)"),
+    ("simulated", "simuliert"),
+    ("left out", "ausgelassen"),
+    ("{name} (solo)", "{name} (solo)"),
+    (
+        "Race results: the game sends a telemetry packet this launcher can't read (packet {id}, {size} bytes). Set \
+         the telemetry format to 2025 in the game (Settings > Telemetry).",
+        "Rennergebnisse: Das Spiel sendet ein Telemetrie-Paket, das dieser Launcher nicht lesen kann (Paket {id}, \
+         {size} Bytes). Stell das Telemetrie-Format im Spiel auf 2025 (Einstellungen > Telemetrie).",
+    ),
+    (
+        "Race results: the game is sending telemetry to {addr}.",
+        "Rennergebnisse: Das Spiel sendet Telemetrie an {addr}.",
+    ),
+    (
+        "Race results: listening on {addr} for the game's telemetry.",
+        "Rennergebnisse: Lausche auf {addr} auf die Telemetrie des Spiels.",
+    ),
+    (
+        "Race results need the game's UDP telemetry. Turn it on here (with the game closed) or in the game under \
+         Settings > Telemetry.",
+        "Rennergebnisse brauchen die UDP-Telemetrie des Spiels. Schalte sie hier ein (bei geschlossenem Spiel) oder \
+         im Spiel unter Einstellungen > Telemetrie.",
+    ),
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::{DE, set, tr};
-
-    #[test]
-    fn german_keys_are_unique_and_filled() {
-        let mut seen = std::collections::HashSet::new();
-        for (en, de) in DE {
-            assert!(seen.insert(*en), "duplicate key {en}");
-            assert!(!de.trim().is_empty(), "empty German text for {en}");
-        }
-    }
-
-    #[test]
-    fn english_is_the_default_and_german_translates() {
-        set(None);
-        assert_eq!(tr("Turn off all"), "Turn off all");
-        set(Some("de"));
-        assert_eq!(tr("Turn off all"), "Alle ausschalten");
-        assert_eq!(tr("Not in the table"), "Not in the table");
-        set(None);
-    }
-}

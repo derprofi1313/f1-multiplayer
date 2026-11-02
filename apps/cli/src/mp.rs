@@ -18,8 +18,13 @@ use swofty_core::store::Store;
 
 #[derive(Subcommand)]
 pub enum MpCommand {
-    #[command(about = "Run a host server on this PC so friends can join your rooms and shared careers")]
+    #[command(
+        about = "Run a host server on this PC so friends can join your rooms and shared careers",
+        args_conflicts_with_subcommands = true
+    )]
     Host {
+        #[command(subcommand)]
+        action: Option<HostAction>,
         #[arg(long, default_value_t = host::DEFAULT_PORT, help = "TCP and UDP port to listen on")]
         port: u16,
         #[arg(long, help = "Ask everyone who signs in for this password")]
@@ -96,9 +101,37 @@ pub enum MpCommand {
     Logout,
 }
 
-pub fn command(store: &Store, cmd: MpCommand) -> Result<()> {
+#[derive(Subcommand)]
+pub enum HostAction {
+    #[command(
+        about = "Free a driver name claimed on your host server, so its driver can sign in again from another PC"
+    )]
+    Release {
+        #[arg(help = "The driver name")]
+        name: String,
+        #[arg(long, help = "The host server's data folder (default: this launcher's)")]
+        dir: Option<std::path::PathBuf>,
+    },
+}
+
+pub fn command(store: &Store, profile: &str, cmd: MpCommand) -> Result<()> {
     match cmd {
         MpCommand::Host {
+            action: Some(HostAction::Release { name, dir }),
+            ..
+        } => {
+            let dir = dir.unwrap_or_else(|| store.root.join(host::DATA_DIR));
+            let released = host::release_name(&dir, &name)
+                .with_context(|| format!("reading the host server's sign-ins in {}", dir.display()))?;
+            if released {
+                println!("released \"{name}\": its driver can sign in again from any PC, which then claims it");
+            } else {
+                println!("nobody has claimed \"{name}\" on this host server");
+            }
+            Ok(())
+        }
+        MpCommand::Host {
+            action: None,
             port,
             password,
             name,
@@ -137,7 +170,7 @@ pub fn command(store: &Store, cmd: MpCommand) -> Result<()> {
             probe,
             game,
         ),
-        MpCommand::Career(cmd) => crate::mp_career::command(store, cmd),
+        MpCommand::Career(cmd) => crate::mp_career::command(store, profile, cmd),
         MpCommand::Status => {
             match mpauth::load(&store.root) {
                 Some(s) => println!(
@@ -420,4 +453,56 @@ fn clock() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     format!("{:02}:{:02}:{:02}", secs / 3600 % 24, secs / 60 % 60, secs % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+    use crate::mp_career::CareerCommand;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        mp: MpCommand,
+    }
+
+    fn parse(args: &[&str]) -> MpCommand {
+        Cli::try_parse_from(std::iter::once("mp").chain(args.iter().copied()))
+            .unwrap_or_else(|e| panic!("{args:?}: {e}"))
+            .mp
+    }
+
+    #[test]
+    fn host_runs_the_server_or_releases_a_name() {
+        assert!(matches!(
+            parse(&["host", "--port", "1234", "--no-upnp"]),
+            MpCommand::Host { action: None, port: 1234, no_upnp: true, .. }
+        ));
+        let MpCommand::Host { action: Some(HostAction::Release { name, dir }), .. } =
+            parse(&["host", "release", "Max Power", "--dir", "/tmp/h"])
+        else {
+            panic!("host release");
+        };
+        assert_eq!((name.as_str(), dir), ("Max Power", Some(std::path::PathBuf::from("/tmp/h"))));
+        assert!(Cli::try_parse_from(["mp", "host", "--port", "1", "release", "Max"]).is_err());
+    }
+
+    #[test]
+    fn career_leave_remove_and_delete_parse() {
+        assert!(matches!(
+            parse(&["career", "leave", "--career", "c-1"]),
+            MpCommand::Career(CareerCommand::Leave { career: Some(_) })
+        ));
+        let MpCommand::Career(CareerCommand::Remove { player, career: None }) = parse(&["career", "remove", "Ben"])
+        else {
+            panic!("career remove");
+        };
+        assert_eq!(player, "Ben");
+        assert!(matches!(
+            parse(&["career", "delete", "c-1"]),
+            MpCommand::Career(CareerCommand::Delete { .. })
+        ));
+    }
 }

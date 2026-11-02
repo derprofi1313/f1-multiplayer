@@ -45,6 +45,11 @@ pub struct ApiError {
     /// With `in_lobby`: the lobby the caller is already in.
     pub lobby: Option<String>,
     pub retry_after: Option<u64>,
+    /// A league's refusal: the English template of `message` with its placeholders' values, for
+    /// the launcher to show in its language (W4-2; `None` from older host servers).
+    pub text: Option<Box<crate::league::Text>>,
+    /// With `stale`: the career's version now.
+    pub version: Option<u64>,
 }
 
 impl fmt::Display for ApiError {
@@ -63,6 +68,8 @@ impl ApiError {
             message,
             lobby: None,
             retry_after: None,
+            text: None,
+            version: None,
         }
     }
 
@@ -91,6 +98,11 @@ impl ApiError {
             message: text("error").unwrap_or_else(|| format!("{fallback} (HTTP {status})")),
             lobby: text("lobby"),
             retry_after: doc.get("retry_after").and_then(Value::as_u64),
+            text: doc
+                .get("template")
+                .and_then(|_| serde_json::from_value(doc.clone()).ok())
+                .map(Box::new),
+            version: doc.get("version").and_then(Value::as_u64),
         }
     }
 
@@ -443,6 +455,8 @@ impl Api {
             message: "the server's TURN answer has no turn: server with credentials".into(),
             lobby: None,
             retry_after: None,
+            text: None,
+            version: None,
         })
     }
 
@@ -501,12 +515,52 @@ impl Api {
 
     /// Apply a league action; the server answers with the league as it is now.
     pub fn league_action(&self, id: &str, action: &crate::league::Action) -> Result<LeagueState, ApiError> {
-        let body = serde_json::json!({ "action": action }).to_string();
+        self.league_action_at(id, action, None)
+    }
+
+    /// Apply a league action decided on the career's version `base`. When the career moved on
+    /// since, the server refuses it with `stale` (and the version it is at, in
+    /// [`ApiError::version`]). `None` applies it to whatever the career is now. Host servers from
+    /// before ignore `base`.
+    pub fn league_action_at(
+        &self,
+        id: &str,
+        action: &crate::league::Action,
+        base: Option<u64>,
+    ) -> Result<LeagueState, ApiError> {
+        let body = match base {
+            Some(base) => serde_json::json!({ "action": action, "base": base }),
+            None => serde_json::json!({ "action": action }),
+        };
         self.call(
             "POST",
             &format!("/v1/mp/careers/{}/league", career_id(id)?),
-            Some(body),
+            Some(body.to_string()),
         )
+    }
+
+    /// Leave a shared career; in a league that has started, its seat stays, driven by the game's
+    /// AI. The owner can't leave (`owner`).
+    pub fn leave_career(&self, id: &str) -> Result<(), ApiError> {
+        let path = format!("/v1/mp/careers/{}/leave", career_id(id)?);
+        self.call::<Value>("POST", &path, Some(String::new())).map(|_| ())
+    }
+
+    /// Remove the member `user` (their user id) from the career (the owner); in a league that
+    /// has started, they leave it as with [`Api::leave_career`].
+    pub fn remove_member(&self, id: &str, user: &str) -> Result<LeagueState, ApiError> {
+        let path = format!(
+            "/v1/mp/careers/{}/members/{}/remove",
+            career_id(id)?,
+            user_segment(user)?
+        );
+        self.call("POST", &path, Some(String::new()))
+    }
+
+    /// Delete the career (the owner). The host server keeps it aside, out of every list.
+    pub fn delete_career(&self, id: &str) -> Result<(), ApiError> {
+        let path = format!("/v1/mp/careers/{}/delete", career_id(id)?);
+        self.call::<Value>("POST", &path, Some(String::new())).map(|_| ())
     }
 
     /// The lobby websocket's URL: `ws://` for an `http://` server, `wss://` for `https://`.
@@ -570,6 +624,8 @@ impl Api {
                     ),
                     lobby: None,
                     retry_after: None,
+                    text: None,
+            version: None,
                 });
             }
         }
@@ -625,6 +681,8 @@ impl Api {
             message: format!("the server's answer to {method} {path} is not valid: {e}"),
             lobby: None,
             retry_after: None,
+            text: None,
+            version: None,
         })
     }
 }
@@ -686,6 +744,20 @@ pub struct LeagueState {
     /// What the last action wants the player to know (cars that matched no driver, say).
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// The same warnings with their templates (W4-2; empty from older host servers).
+    #[serde(default)]
+    pub warnings_t: Vec<crate::league::Warning>,
+}
+
+impl LeagueState {
+    /// The warnings with their templates; from an older host server, its English warnings.
+    pub fn warning_texts(&self) -> Vec<crate::league::Warning> {
+        if self.warnings_t.len() == self.warnings.len() {
+            self.warnings_t.clone()
+        } else {
+            self.warnings.iter().cloned().map(crate::league::Text::plain).collect()
+        }
+    }
 }
 
 fn career_id(id: &str) -> Result<&str, ApiError> {
@@ -698,6 +770,28 @@ fn career_id(id: &str) -> Result<&str, ApiError> {
             message: format!("'{id}' is not a career id"),
             lobby: None,
             retry_after: None,
+            text: None,
+            version: None,
+        })
+    }
+}
+
+/// A user id as a path segment: letters, digits, dashes and underscores only.
+fn user_segment(user: &str) -> Result<&str, ApiError> {
+    if !user.is_empty()
+        && user.len() <= 64
+        && user.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        Ok(user)
+    } else {
+        Err(ApiError {
+            status: 0,
+            reason: "bad_user".into(),
+            message: format!("'{user}' is not a player id"),
+            lobby: None,
+            retry_after: None,
+            text: None,
+            version: None,
         })
     }
 }
@@ -712,6 +806,8 @@ fn path_code(code: &str) -> Result<String, ApiError> {
             message: format!("'{code}' is not an invite code (like F1-7KQ2MX)"),
             lobby: None,
             retry_after: None,
+            text: None,
+            version: None,
         });
     }
     Ok(code.to_ascii_uppercase())
@@ -801,6 +897,8 @@ mod tests {
         assert_eq!(e.retry_after, Some(12));
         assert!(e.transient());
         assert_eq!(ApiError::from_body(502, "<html>").reason, "server_error");
+        let e = ApiError::from_body(409, r#"{"error": "moved on", "reason": "stale", "version": 7}"#);
+        assert_eq!((e.reason.as_str(), e.version), ("stale", Some(7)));
     }
 
     #[test]
@@ -861,5 +959,55 @@ mod tests {
             body,
             json!({"public": true, "max_members": 20, "category": "f1-2026"})
         );
+    }
+    /// The career calls against a real host server: a stale base, removing a member, leaving and
+    /// deleting.
+    #[test]
+    fn career_calls_reach_a_host_server() {
+        use crate::league::Action;
+        let dir = std::env::temp_dir().join(format!("f1mp-rooms-careers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let server = crate::multiplayer::host::HostServer::start(crate::multiplayer::host::Config {
+            dir: dir.join("server"),
+            port: 0,
+            name: "Test host".into(),
+            password: None,
+            public: false,
+            discovery: None,
+            fresh_code: false,
+        })
+        .unwrap();
+        let code = server.code_for("127.0.0.1");
+        let sign = |who: &str| {
+            Api::for_session(&crate::mpauth::sign_in_host(&dir.join(who), &code, who, None).unwrap())
+        };
+        let (anna, ben, cleo) = (sign("Anna"), sign("Ben"), sign("Cleo"));
+        let career = anna.create_career("Liga", crate::league::MODE, Value::Null).unwrap();
+        anna.league_action(&career.id, &Action::Start { setup: Default::default(), number: Some(7) })
+            .unwrap();
+        ben.join_career(&career.code).unwrap();
+        cleo.join_career(&career.code).unwrap();
+        let entered = ben
+            .league_action_at(&career.id, &Action::Enter { number: Some(8) }, Some(1))
+            .unwrap();
+        assert_eq!(entered.version, 2);
+        let stale = ben.league_action_at(&career.id, &Action::Undo, Some(1)).unwrap_err();
+        assert_eq!((stale.status, stale.reason.as_str(), stale.version), (409, "stale", Some(2)));
+
+        let ben_id = ben.me().unwrap().id;
+        assert_eq!(ben.remove_member(&career.id, &anna.me().unwrap().id).unwrap_err().reason, "owner");
+        let removed = anna.remove_member(&career.id, &ben_id).unwrap();
+        assert_eq!(removed.version, 3);
+        assert!(removed.league.unwrap().player(&ben_id).is_none(), "gone in setup");
+        assert_eq!(ben.league(&career.id).unwrap_err().reason, "not_found");
+        assert_eq!(anna.remove_member(&career.id, "../x").unwrap_err().reason, "bad_user");
+
+        cleo.leave_career(&career.id).unwrap();
+        assert_eq!(anna.careers().unwrap()[0].members.len(), 1);
+        assert_eq!(cleo.delete_career(&career.id).unwrap_err().reason, "not_found");
+        anna.delete_career(&career.id).unwrap();
+        assert!(anna.careers().unwrap().is_empty());
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -146,16 +146,15 @@ impl Season {
         self.pace_at(slot, self.current_round())
     }
 
-    /// What the upgrades on the car in `round` gain, in percent of a lap.
+    /// What the upgrades on the car in `round` gain, in percent of a lap: the arrived parts that
+    /// didn't fail, nodes of the development tree with their gain and older linear levels with
+    /// [`Part::gain`] ([`super::rnd::gain`]).
     pub fn upgrade_gain(&self, slot: u8, round: u8) -> f32 {
-        self.upgrades
-            .iter()
-            .filter(|u| u.slot == slot && u.ready <= round)
-            .map(|u| u.part.gain())
-            .sum()
+        super::rnd::gain(self, slot, round)
     }
 
-    /// The level of `part` the team has ordered this season.
+    /// The level of `part` the team has ordered this season: every part it ordered, failed ones
+    /// too (what it can order next is [`super::rnd::available`]).
     pub fn part_level(&self, slot: u8, part: Part) -> u8 {
         self.upgrades
             .iter()
@@ -163,14 +162,10 @@ impl Season {
             .count() as u8
     }
 
-    /// How often the car breaks down in `round`, relative to an undeveloped one.
+    /// How often the car breaks down in `round`, relative to an undeveloped one: less with each
+    /// durability part on the car that didn't fail ([`super::rnd::car_profile`]), never below 30%.
     pub fn breakdowns(&self, slot: u8, round: u8) -> f32 {
-        let fitted = self
-            .upgrades
-            .iter()
-            .filter(|u| u.slot == slot && u.part == Part::Durability && u.ready <= round)
-            .count() as f32;
-        (1.0 - 0.12 * fitted).max(0.3)
+        (1.0 - super::rnd::car_profile(self, slot, round).durability).max(0.3)
     }
 }
 

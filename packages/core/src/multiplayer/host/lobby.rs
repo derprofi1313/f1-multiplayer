@@ -2,14 +2,21 @@
 //! credentials. It speaks the `/v1/auth/launcher` and `/v1/mp` API the launcher already uses with
 //! SwoftyLauncherServer (see [`crate::multiplayer::rooms`] and [`crate::multiplayer::session`]),
 //! with a name-and-password sign-in (`POST /v1/auth/launcher/direct`) instead of Discord.
+//!
+//! **Identity.** A user's id comes from their name, so the same name keeps its careers on any PC.
+//! A launcher also sends a per-server secret (see [`crate::mpauth::host_secret`]); the first
+//! secret that signs in under a name *claims* it, and from then on only that secret signs in under
+//! it (`name_claimed` for another secret, `secret_required` for an old launcher that sends none).
+//! A launcher that signed in before claims with its session token (`POST /v1/auth/launcher/claim`).
+//! Unclaimed names sign in by name alone, as before. The host frees a name with [`release_name`].
 
 use std::collections::HashMap;
 use std::io::{self, Cursor, Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -24,6 +31,12 @@ const HEAD_LIMIT: usize = 16 * 1024;
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 const NAME_MAX: usize = 32;
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+/// Sessions one user keeps at once when signing in with their secret (the launcher and the CLI,
+/// a reinstall); the oldest goes first.
+const SESSIONS_PER_USER: usize = 8;
+/// The shortest secret accepted: 32 bytes in unpadded base64url.
+const SECRET_MIN: usize = 43;
+const SECRET_MAX: usize = 256;
 
 pub(super) type TlsStream = rustls::StreamOwned<rustls::ServerConnection, TcpStream>;
 
@@ -31,12 +44,81 @@ pub(super) type TlsStream = rustls::StreamOwned<rustls::ServerConnection, TcpStr
 struct User {
     id: String,
     name: String,
+    /// The order sessions were made in, so the oldest goes first; 0 for sessions from before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    since: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// Who holds a name: the hash of the secret that claimed it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct UserRecord {
+    /// The name the user signed in with last.
+    name: String,
+    /// SHA-256 of the user's secret, `None` once the host released the name.
+    #[serde(default)]
+    secret_hash: Option<String>,
+    #[serde(default)]
+    claimed_at: u64,
 }
 
 #[derive(Serialize, Deserialize, Default)]
 struct Saved {
     /// SHA-256 of a session token → the user it signs in.
     sessions: HashMap<String, User>,
+    /// User id → the record of who claimed the name.
+    #[serde(default)]
+    users: HashMap<String, UserRecord>,
+}
+
+impl Saved {
+    /// The user who holds `name` with a secret: the one whose id it is, or the one who uses it as
+    /// their display name now.
+    fn holder(&self, name: &str) -> Option<&str> {
+        let id = user_id(name);
+        if self.users.get(&id).is_some_and(|r| r.secret_hash.is_some()) {
+            return Some(self.users.get_key_value(&id)?.0);
+        }
+        let wanted = normal(name);
+        self.users
+            .iter()
+            .find(|(_, r)| r.secret_hash.is_some() && normal(&r.name) == wanted)
+            .map(|(id, _)| id.as_str())
+    }
+
+    /// The user whose secret hashes to `hash`.
+    fn by_secret(&self, hash: &str) -> Option<String> {
+        self.users
+            .iter()
+            .find(|(_, r)| r.secret_hash.as_deref() == Some(hash))
+            .map(|(id, _)| id.clone())
+    }
+
+    /// Add a session for `user`, keeping at most [`SESSIONS_PER_USER`] of theirs.
+    fn add_session(&mut self, token: &str, mut user: User) {
+        let mine: Vec<(String, u64)> = self
+            .sessions
+            .iter()
+            .filter(|(_, u)| u.id == user.id)
+            .map(|(k, u)| (k.clone(), u.since))
+            .collect();
+        user.since = self.sessions.values().map(|u| u.since).max().unwrap_or(0) + 1;
+        let mut mine = mine;
+        mine.sort_by_key(|(_, since)| *since);
+        let excess = (mine.len() + 1).saturating_sub(SESSIONS_PER_USER);
+        for (key, _) in mine.into_iter().take(excess) {
+            self.sessions.remove(&key);
+        }
+        self.sessions.insert(token_hash(token), user);
+    }
+}
+
+/// A name as it is compared: trimmed and lowercase.
+fn normal(name: &str) -> String {
+    name.trim().to_lowercase()
 }
 
 struct Member {
@@ -83,6 +165,9 @@ enum Out {
 #[derive(Default)]
 struct State {
     saved: Saved,
+    /// `sessions.json`'s modification time when this server last read or wrote it: a newer one
+    /// was changed from outside (see [`release_name`]) and is read again.
+    stamp: Option<(SystemTime, u64)>,
     rooms: HashMap<String, Room>,
     /// User id → the code of the room they are in.
     member_of: HashMap<String, String>,
@@ -129,6 +214,75 @@ fn error(status: u16, reason: &str, text: &str) -> (u16, Value) {
     (status, json!({"error": text, "reason": reason}))
 }
 
+fn name_claimed() -> (u16, Value) {
+    error(
+        409,
+        "name_claimed",
+        "this name is taken on this host server; sign in from the PC you used before, or ask the host to release it",
+    )
+}
+
+/// The request's session token.
+fn bearer(req: &Request) -> Option<&str> {
+    req.headers
+        .get("authorization")
+        .and_then(|a| a.strip_prefix("Bearer "))
+}
+
+/// The launcher's secret in a sign-in or claim body: `None` when it sends none (an older
+/// launcher), an error when it isn't base64url of at least 32 bytes.
+fn secret_of(doc: &Value) -> Result<Option<String>, (u16, Value)> {
+    match doc.get("secret") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s))
+            if (SECRET_MIN..=SECRET_MAX).contains(&s.len())
+                && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') =>
+        {
+            Ok(Some(s.clone()))
+        }
+        Some(_) => Err(error(
+            400,
+            "bad_secret",
+            "the launcher's secret must be at least 32 bytes in base64url",
+        )),
+    }
+}
+
+const SESSIONS_FILE: &str = "sessions.json";
+
+fn read_saved(file: &Path) -> Option<Saved> {
+    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
+}
+
+/// The file's modification time and length, to tell when something else changed it.
+fn modified(file: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(file).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Free the name `name` on the host server whose data folder is `dir` (see
+/// [`super::DATA_DIR`]), so its user can claim it again from another PC: the claim's secret is
+/// forgotten and the name's sessions end. A running server reads the change on its next request.
+/// `false` when nobody had claimed the name.
+pub fn release_name(dir: &Path, name: &str) -> io::Result<bool> {
+    let file = dir.join(SESSIONS_FILE);
+    let mut saved = match std::fs::read(&file) {
+        Ok(bytes) => serde_json::from_slice::<Saved>(&bytes).map_err(io::Error::other)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let Some(id) = saved.holder(name).map(str::to_owned) else {
+        return Ok(false);
+    };
+    if let Some(record) = saved.users.get_mut(&id) {
+        record.secret_hash = None;
+    }
+    saved.sessions.retain(|_, u| u.id != id);
+    let bytes = serde_json::to_vec_pretty(&saved).map_err(io::Error::other)?;
+    super::careers::write_atomic(&file, &bytes)?;
+    Ok(true)
+}
+
 /// A user's id from their name, so the same name signs in as the same player (and keeps their
 /// careers) on any machine.
 fn user_id(name: &str) -> String {
@@ -148,40 +302,47 @@ impl Lobby {
         turn_port: u16,
         dir: &std::path::Path,
     ) -> Lobby {
-        let file = dir.join("sessions.json");
-        let saved = std::fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let file = dir.join(SESSIONS_FILE);
+        let saved = read_saved(&file).unwrap_or_default();
         Lobby {
             name,
             password: password.filter(|p| !p.is_empty()),
             turn_secret,
             turn_port,
-            file,
             state: Mutex::new(State {
                 saved,
+                stamp: modified(&file),
                 ..State::default()
             }),
+            file,
             careers: Careers::new(dir.join("careers")),
         }
     }
 
-    fn save(&self, s: &State) {
+    fn save(&self, s: &mut State) {
         if let Ok(bytes) = serde_json::to_vec_pretty(&s.saved) {
-            let tmp = self.file.with_extension("json.tmp");
-            if std::fs::write(&tmp, bytes).is_ok() {
-                let _ = std::fs::rename(&tmp, &self.file);
+            let _ = super::careers::write_atomic(&self.file, &bytes);
+        }
+        s.stamp = modified(&self.file);
+    }
+
+    /// Read `sessions.json` again when something else changed it since (the host releasing a
+    /// name from the CLI while the server runs).
+    fn fresh(&self, s: &mut State) {
+        let stamp = modified(&self.file);
+        if stamp.is_some() && stamp != s.stamp {
+            if let Some(saved) = read_saved(&self.file) {
+                s.saved = saved;
             }
+            s.stamp = stamp;
         }
     }
 
     fn user(&self, req: &Request) -> Option<User> {
-        let token = req
-            .headers
-            .get("authorization")
-            .and_then(|a| a.strip_prefix("Bearer "))?;
-        lock(&self.state).saved.sessions.get(&token_hash(token)).cloned()
+        let token = bearer(req)?;
+        let mut s = lock(&self.state);
+        self.fresh(&mut s);
+        s.saved.sessions.get(&token_hash(token)).cloned()
     }
 
     /// Serve one connection: an HTTP request, or a websocket upgrade.
@@ -228,7 +389,8 @@ impl Lobby {
         match (req.method.as_str(), path) {
             ("GET", "/v1/host/info") => (
                 200,
-                json!({"name": self.name, "password": self.password.is_some(), "version": 1}),
+                json!({"name": self.name, "password": self.password.is_some(), "version": 2,
+                       "identity": "secret"}),
             ),
             ("GET", "/v1/auth/launcher/start") => (
                 200,
@@ -265,20 +427,105 @@ impl Lobby {
         {
             return error(403, "wrong_password", "the host server's password is wrong");
         }
-        let user = User {
-            id: user_id(&name),
-            name,
+        let secret = match secret_of(&doc) {
+            Ok(s) => s,
+            Err(e) => return e,
         };
         let token = random_text(32);
         let mut s = lock(&self.state);
-        s.saved.sessions.retain(|_, u| u.id != user.id);
-        s.saved.sessions.insert(token_hash(&token), user.clone());
-        self.save(&s);
+        self.fresh(&mut s);
+        let secret = secret.as_deref().map(token_hash).map(|h| (s.saved.by_secret(&h), h));
+        let (id, claimed) = match secret {
+            // (a) A known secret signs in as its user, under any name nobody else holds.
+            Some((Some(id), _)) => {
+                if s.saved.holder(&name).is_some_and(|h| h != id) {
+                    return name_claimed();
+                }
+                if let Some(record) = s.saved.users.get_mut(&id) {
+                    record.name = name.clone();
+                }
+                (id, true)
+            }
+            // (b) A new secret claims a name nobody holds; the name's older sessions go, as
+            // they may be someone else's.
+            Some((None, hash)) => {
+                if s.saved.holder(&name).is_some() {
+                    return name_claimed();
+                }
+                let id = user_id(&name);
+                s.saved.sessions.retain(|_, u| u.id != id);
+                s.saved.users.insert(
+                    id.clone(),
+                    UserRecord {
+                        name: name.clone(),
+                        secret_hash: Some(hash),
+                        claimed_at: now_secs(),
+                    },
+                );
+                (id, true)
+            }
+            // (d) An old launcher, under a claimed name.
+            None if s.saved.holder(&name).is_some() => {
+                return error(
+                    409,
+                    "secret_required",
+                    "this name is claimed on this host server; update F1 Multiplayer to sign in",
+                );
+            }
+            // (e) An old launcher under a free name: one session per name, as before.
+            None => {
+                let id = user_id(&name);
+                s.saved.sessions.retain(|_, u| u.id != id);
+                (id, false)
+            }
+        };
+        let user = User { id, name, since: 0 };
+        s.saved.add_session(&token, user.clone());
+        self.save(&mut s);
         (
             200,
             json!({"token": token, "user": {"id": user.id, "name": user.name, "avatar": null},
-                   "multiplayer_allowed": true}),
+                   "multiplayer_allowed": true, "claimed": claimed}),
         )
+    }
+
+    /// `POST /v1/auth/launcher/claim`: a user signed in from before claims their name with their
+    /// launcher's secret. Their other sessions go, as they may be someone else's.
+    fn claim(&self, req: &Request, user: &User) -> (u16, Value) {
+        let doc: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+        let hash = match secret_of(&doc) {
+            Ok(Some(secret)) => token_hash(&secret),
+            Ok(None) => return error(400, "bad_secret", "a claim needs the launcher's secret"),
+            Err(e) => return e,
+        };
+        let mut s = lock(&self.state);
+        self.fresh(&mut s);
+        if let Some(owner) = s.saved.by_secret(&hash) {
+            return if owner == user.id {
+                (200, json!({"claimed": true}))
+            } else {
+                name_claimed()
+            };
+        }
+        if s.saved.holder(&user.name).is_some_and(|h| h != user.id)
+            || s.saved.users.get(&user.id).is_some_and(|r| r.secret_hash.is_some())
+        {
+            return name_claimed();
+        }
+        s.saved.users.insert(
+            user.id.clone(),
+            UserRecord {
+                name: user.name.clone(),
+                secret_hash: Some(hash),
+                claimed_at: now_secs(),
+            },
+        );
+        let mine = bearer(req).map(token_hash);
+        s.saved
+            .sessions
+            .retain(|k, u| u.id != user.id || Some(k) == mine.as_ref());
+        self.save(&mut s);
+        (200, json!({"claimed": true}))
     }
 
     fn route_signed_in(&self, req: &Request, path: &str, user: &User) -> (u16, Value) {
@@ -288,10 +535,15 @@ impl Lobby {
                 json!({"user": {"id": user.id, "name": user.name, "avatar": null},
                        "multiplayer_allowed": true, "multiplayer_known": true}),
             ),
+            ("POST", "/v1/auth/launcher/claim") => self.claim(req, user),
             ("POST", "/v1/auth/launcher/logout") => {
                 let mut s = lock(&self.state);
-                s.saved.sessions.retain(|_, u| u.id != user.id);
-                self.save(&s);
+                self.fresh(&mut s);
+                // Only this session ends: the user's other PCs stay signed in.
+                if let Some(mine) = bearer(req).map(token_hash) {
+                    s.saved.sessions.remove(&mine);
+                }
+                self.save(&mut s);
                 (204, Value::Null)
             }
             ("POST", "/v1/mp/turn") => self.turn(req, user),
@@ -843,6 +1095,8 @@ fn reason_phrase(status: u16) -> &'static str {
         404 => "Not Found",
         409 => "Conflict",
         413 => "Payload Too Large",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
         _ => "Error",
     }
 }
@@ -901,5 +1155,189 @@ pub(super) fn accept_loop(
             }
             Err(_) => thread::sleep(Duration::from_millis(20)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lobby(tag: &str) -> (Lobby, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("f1mp-lobby-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (Lobby::new("Test".into(), None, vec![0; 32], 1, &dir), dir)
+    }
+
+    fn secret(n: u8) -> String {
+        crate::mpauth::base64url(&[n; 32])
+    }
+
+    fn sign(l: &Lobby, name: &str, secret: Option<&str>) -> (u16, Value) {
+        let body = match secret {
+            Some(s) => json!({"name": name, "secret": s}),
+            None => json!({"name": name}),
+        };
+        l.sign_in(&serde_json::to_vec(&body).unwrap())
+    }
+
+    fn req(method: &str, path: &str, token: &str, body: Value) -> Request {
+        Request {
+            method: method.into(),
+            path: path.into(),
+            headers: HashMap::from([("authorization".to_owned(), format!("Bearer {token}"))]),
+            body: serde_json::to_vec(&body).unwrap(),
+        }
+    }
+
+    /// `GET /me` with `token`: its status and the user's id.
+    fn me(l: &Lobby, token: &str) -> (u16, Option<String>) {
+        let r = req("GET", "/v1/auth/launcher/me", token, Value::Null);
+        let user = l.user(&r);
+        let (status, body) = l.route(&r, user.as_ref());
+        (status, body["user"]["id"].as_str().map(str::to_owned))
+    }
+
+    fn claim(l: &Lobby, token: &str, secret: &str) -> (u16, Value) {
+        let r = req("POST", "/v1/auth/launcher/claim", token, json!({ "secret": secret }));
+        let user = l.user(&r);
+        l.route(&r, user.as_ref())
+    }
+
+    fn token(answer: &(u16, Value)) -> String {
+        answer.1["token"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn a_secret_claims_the_name_and_keeps_the_old_id() {
+        let (l, dir) = lobby("claim");
+        let legacy = sign(&l, "Max", None);
+        assert_eq!((legacy.0, legacy.1["claimed"].as_bool()), (200, Some(false)));
+        let old_id = legacy.1["user"]["id"].as_str().unwrap().to_owned();
+        let claimed = sign(&l, "Max", Some(&secret(1)));
+        assert_eq!(claimed.0, 200);
+        assert_eq!(claimed.1["user"]["id"].as_str(), Some(old_id.as_str()));
+        assert_eq!(claimed.1["claimed"].as_bool(), Some(true));
+        // The legacy session may have been someone else's: it ends.
+        assert_eq!(me(&l, &token(&legacy)).0, 401);
+        assert_eq!(me(&l, &token(&claimed)), (200, Some(old_id.clone())));
+
+        let other = sign(&l, "Max", Some(&secret(2)));
+        assert_eq!((other.0, other.1["reason"].as_str()), (409, Some("name_claimed")));
+        let old = sign(&l, "Max", None);
+        assert_eq!((old.0, old.1["reason"].as_str()), (409, Some("secret_required")));
+        let bad = sign(&l, "Max", Some("short"));
+        assert_eq!((bad.0, bad.1["reason"].as_str()), (400, Some("bad_secret")));
+        // The claim survives a restart.
+        drop(l);
+        let l = Lobby::new("Test".into(), None, vec![0; 32], 1, &dir);
+        assert_eq!(sign(&l, "Max", Some(&secret(2))).0, 409);
+        assert_eq!(me(&l, &token(&claimed)), (200, Some(old_id)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn names_are_claimed_case_insensitively() {
+        let (l, dir) = lobby("case");
+        assert_eq!(sign(&l, "Max", Some(&secret(1))).0, 200);
+        let other = sign(&l, " max ", Some(&secret(2)));
+        assert_eq!((other.0, other.1["reason"].as_str()), (409, Some("name_claimed")));
+        // The holder signs in under another spelling, and under a new name nobody holds; the
+        // new name is then held too, and the id stays.
+        let again = sign(&l, "MAX", Some(&secret(1)));
+        assert_eq!(again.0, 200);
+        let renamed = sign(&l, "Maxi", Some(&secret(1)));
+        assert_eq!(renamed.1["user"]["id"], again.1["user"]["id"]);
+        assert_eq!(sign(&l, "maxi", None).1["reason"].as_str(), Some("secret_required"));
+        assert_eq!(sign(&l, "Ben", Some(&secret(3))).0, 200);
+        assert_eq!(sign(&l, "Ben", Some(&secret(1))).1["reason"].as_str(), Some("name_claimed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_same_secret_keeps_other_sessions_up_to_eight() {
+        let (l, dir) = lobby("eight");
+        let tokens: Vec<String> = (0..SESSIONS_PER_USER + 1)
+            .map(|_| token(&sign(&l, "Max", Some(&secret(1)))))
+            .collect();
+        assert_eq!(me(&l, &tokens[0]).0, 401, "the oldest session goes");
+        for t in &tokens[1..] {
+            assert_eq!(me(&l, t).0, 200);
+        }
+        // Signing out ends only that session.
+        let r = req("POST", "/v1/auth/launcher/logout", &tokens[1], Value::Null);
+        let user = l.user(&r);
+        assert_eq!(l.route(&r, user.as_ref()).0, 204);
+        assert_eq!(me(&l, &tokens[1]).0, 401);
+        assert_eq!(me(&l, &tokens[2]).0, 200);
+        // Old launchers keep one session per name, as before.
+        let a = token(&sign(&l, "Ben", None));
+        let b = token(&sign(&l, "Ben", None));
+        assert_eq!((me(&l, &a).0, me(&l, &b).0), (401, 200));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_signed_in_user_claims_with_their_token() {
+        let (l, dir) = lobby("token");
+        let mine = token(&sign(&l, "Max", None));
+        let theirs = token(&sign(&l, "Ana", None));
+        let (s, body) = claim(&l, &mine, &secret(1));
+        assert_eq!((s, body["claimed"].as_bool()), (200, Some(true)));
+        assert_eq!(claim(&l, &mine, &secret(1)).0, 200, "claiming again is fine");
+        assert_eq!(me(&l, &mine).0, 200, "the claiming session stays");
+        let again = sign(&l, "Max", Some(&secret(1)));
+        assert_eq!((again.0, again.1["claimed"].as_bool()), (200, Some(true)));
+        assert_eq!(sign(&l, "Max", None).1["reason"].as_str(), Some("secret_required"));
+        assert_eq!(me(&l, &theirs).0, 200);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn claim_fails_when_someone_else_holds_the_name() {
+        let (l, dir) = lobby("taken");
+        let legacy = token(&sign(&l, "Max", None));
+        assert_eq!(sign(&l, "Max", Some(&secret(1))).0, 200);
+        // The legacy session ended with the claim; a session from before it can't claim either.
+        assert_eq!(claim(&l, &legacy, &secret(2)).0, 401);
+        let ana = token(&sign(&l, "Ana", None));
+        let (s, body) = claim(&l, &ana, &secret(1));
+        assert_eq!((s, body["reason"].as_str()), (409, Some("name_claimed")), "Max's secret isn't Ana's");
+        assert_eq!(claim(&l, &ana, &secret(2)).0, 200);
+        assert_eq!(claim(&l, &ana, &secret(3)).1["reason"].as_str(), Some("name_claimed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_released_name_can_be_claimed_again() {
+        let (l, dir) = lobby("release");
+        let first = token(&sign(&l, "Max", Some(&secret(1))));
+        let id = me(&l, &first).1;
+        assert!(!release_name(&dir, "Nobody").unwrap());
+        assert!(release_name(&dir, "max").unwrap());
+        // The running server reads the change: the old sessions end, and a new PC claims.
+        assert_eq!(me(&l, &first).0, 401);
+        let second = sign(&l, "Max", Some(&secret(2)));
+        assert_eq!(second.0, 200);
+        assert_eq!(me(&l, &token(&second)).1, id, "the id stays, so the careers do");
+        assert_eq!(sign(&l, "Max", Some(&secret(1))).1["reason"].as_str(), Some("name_claimed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sessions_from_before_keep_working() {
+        let (_, dir) = lobby("upgrade");
+        let token = "old-token";
+        std::fs::write(
+            dir.join(SESSIONS_FILE),
+            json!({"sessions": {token_hash(token): {"id": "u-1", "name": "Max"}}}).to_string(),
+        )
+        .unwrap();
+        let l = Lobby::new("Test".into(), None, vec![0; 32], 1, &dir);
+        assert_eq!(me(&l, token), (200, Some("u-1".to_owned())));
+        let r = req("GET", "/v1/host/info", token, Value::Null);
+        let (s, info) = l.route(&r, None);
+        assert_eq!((s, info["version"].as_u64(), info["identity"].as_str()), (200, Some(2), Some("secret")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

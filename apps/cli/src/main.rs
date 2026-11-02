@@ -283,7 +283,23 @@ enum SettingsCommand {
     Merge,
 }
 
+/// The stack the command runs on: building clap's command tree of every subcommand takes more
+/// than Windows' 1 MiB main-thread stack in a debug build.
+const STACK: usize = 16 << 20;
+
 fn main() -> ExitCode {
+    match std::thread::Builder::new()
+        .name("f1mp".into())
+        .stack_size(STACK)
+        .spawn(run_main)
+    {
+        // A panic was printed already.
+        Ok(t) => t.join().unwrap_or(ExitCode::FAILURE),
+        Err(_) => run_main(),
+    }
+}
+
+fn run_main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let store = data_dir_arg(&args)
         .map(Store::new)
@@ -594,8 +610,8 @@ fn dispatch(store: &Store, cli: Cli) -> Result<ExitCode> {
         Command::Update { check } => update::update(check),
         Command::Registry(cmd) => registry::command(&store, &profile, cmd),
         Command::Careers => registry::careers(&store, &profile).map(|_| ExitCode::SUCCESS),
-        Command::Mp(cmd) => mp::command(&store, cmd).map(|_| ExitCode::SUCCESS),
-        Command::League(cmd) => mp_career::command(&store, cmd).map(|_| ExitCode::SUCCESS),
+        Command::Mp(cmd) => mp::command(&store, &profile, cmd).map(|_| ExitCode::SUCCESS),
+        Command::League(cmd) => mp_career::command(&store, &profile, cmd).map(|_| ExitCode::SUCCESS),
     }
 }
 

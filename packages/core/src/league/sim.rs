@@ -40,6 +40,36 @@ pub(super) fn base(pace: f32, rating: f32) -> f32 {
     pace + (94.0 - rating).max(0.0) * 0.11
 }
 
+/// The race DNF chance a focus of 75 has; each point of focus above it takes
+/// [`FOCUS_PER_POINT`] off (and each point below adds it), in a sprint half of that.
+const RACE_DNF: f32 = 0.06;
+const FOCUS_PER_POINT: f32 = 0.002;
+
+/// A player's focus before `round` (from what they had before the round was counted), else
+/// their rating.
+pub(super) fn focus_before(season: &Season, entry: &super::Entry, round: u8) -> f32 {
+    let Some(player) = entry.player.as_deref() else {
+        return entry.rating;
+    };
+    season
+        .round(round)
+        .and_then(|r| r.before.as_ref())
+        .and_then(|b| b.iter().find(|p| p.player == player))
+        .map_or(entry.rating, |p| {
+            p.attributes.and_then(|a| a.focus).unwrap_or(p.rating)
+        })
+}
+
+/// The chance the car of `entry` doesn't finish (before its car's reliability): a player's focus
+/// makes it smaller or larger; AI drivers keep the session's.
+fn dnf_chance_of(season: &Season, entry: &super::Entry, round: u8, chance: f32) -> f32 {
+    if entry.player.is_none() || chance == 0.0 {
+        return chance;
+    }
+    let focus = focus_before(season, entry, round);
+    (chance * (1.0 - (focus - 75.0) * FOCUS_PER_POINT / RACE_DNF)).max(0.0)
+}
+
 /// Simulate a session of `round`. A race or sprint starts from `grid` (a qualifying
 /// classification) when given, else from a qualifying of its own.
 pub(super) fn simulate(
@@ -59,7 +89,7 @@ pub(super) fn simulate(
     };
     let mut rng = Rng::new(seed ^ (u64::from(year) << 32) ^ (u64::from(round) << 8) ^ session);
     let dnf_chance = match kind {
-        SessionKind::Race => 0.06,
+        SessionKind::Race => RACE_DNF,
         SessionKind::Sprint => 0.03,
         SessionKind::Qualifying | SessionKind::Practice => 0.0,
     };
@@ -75,12 +105,16 @@ pub(super) fn simulate(
         .iter()
         .enumerate()
         .map(|(index, (e, slot))| {
-            let b = base(season.pace_at(*slot, round), e.rating);
+            let b = base(
+                season.pace_at(*slot, round),
+                super::driver::rating_of(season, e, round),
+            );
+            let chance = dnf_chance_of(season, e, round, dnf_chance);
             Car {
                 index,
                 quali: b + rng.normal() * 0.25,
                 race: b + rng.normal() * 0.45,
-                out: rng.unit() < dnf_chance * season.breakdowns(*slot, round),
+                out: rng.unit() < chance * season.breakdowns(*slot, round),
             }
         })
         .collect();
@@ -101,6 +135,7 @@ pub(super) fn simulate(
                 penalty_s: 0,
                 points: 0.0,
                 fastest: false,
+                ai_driven: false,
             })
             .collect();
     }
@@ -148,6 +183,7 @@ pub(super) fn simulate(
                     points(year, rule, kind, position, is_fastest)
                 },
                 fastest: is_fastest,
+                ai_driven: false,
             }
         })
         .collect()

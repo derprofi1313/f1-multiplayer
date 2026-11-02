@@ -8,6 +8,7 @@ pub mod build;
 pub mod builtin;
 pub mod busy;
 pub mod cache;
+pub mod careersync;
 pub mod catalog;
 pub mod compat;
 pub mod conflicts;

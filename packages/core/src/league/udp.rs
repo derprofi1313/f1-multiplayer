@@ -12,6 +12,10 @@
 //! game's 2026 season update) sends 24 cars instead of 22 (its lap data is 29 + 24 × 57 + 2
 //! bytes, `Game_TelemetryUdp_Send2026` in `re/db`), and its participant records grew three bytes
 //! before the name (checked against packets the game sent, `tests/udp-2026/`).
+//!
+//! During a session the collector also follows the player's car lap by lap (lap data, car status
+//! and car damage packets): the fuel, the ERS energy and the tyre wear each lap used, for the
+//! practice programmes ([`LapTelemetry`]).
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -22,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use super::{Lap, RaceReport, ReportCar, SessionKind};
+use super::{GameSettings, Lap, LapTelemetry, RaceReport, ReportCar, SessionKind};
 
 pub const HEADER_LEN: usize = 29;
 /// Cars per packet in formats 2024 and 2025.
@@ -30,10 +34,18 @@ pub const MAX_CARS: usize = 22;
 /// Cars per packet from format 2026 on.
 pub const MAX_CARS_2026: usize = 24;
 pub const PACKET_SESSION: u8 = 1;
+pub const PACKET_LAP_DATA: u8 = 2;
 pub const PACKET_EVENT: u8 = 3;
 pub const PACKET_PARTICIPANTS: u8 = 4;
+pub const PACKET_CAR_STATUS: u8 = 7;
 pub const PACKET_FINAL_CLASSIFICATION: u8 = 8;
+pub const PACKET_CAR_DAMAGE: u8 = 10;
 pub const PACKET_SESSION_HISTORY: u8 = 11;
+/// Bytes a lap data packet sends after its car records: the time trial's personal-best and
+/// rival car indices.
+const LAP_DATA_TAIL: usize = 2;
+/// Laps of telemetry kept per session (a lap number is one byte).
+const TELEMETRY_LAPS: usize = 255;
 /// Laps a session history packet holds.
 const HISTORY_LAPS: usize = 100;
 /// Tyre stints a session history packet holds after the laps, three bytes each.
@@ -67,6 +79,11 @@ fn f64_at(b: &[u8], at: usize) -> Option<f64> {
     Some(f64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?))
 }
 
+/// A finite `f32` (the game's floats; anything else reads as missing).
+fn f32_at(b: &[u8], at: usize) -> Option<f32> {
+    Some(f32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?)).filter(|x| x.is_finite())
+}
+
 pub fn header(b: &[u8]) -> Option<Header> {
     if b.len() < HEADER_LEN {
         return None;
@@ -88,17 +105,67 @@ pub struct SessionInfo {
     pub track: Option<u8>,
     pub session_type: u8,
     pub total_laps: u8,
+    /// The weekend's session types (`weekend_len` of them), see [`SessionInfo::weekend`].
+    pub weekend_types: [u8; WEEKEND_MAX],
+    pub weekend_len: u8,
+    /// The game's settings, when the packet is long enough to hold them.
+    pub settings: Option<GameSettings>,
 }
+
+impl SessionInfo {
+    /// The weekend structure the game sent: its session types in order. Empty when the game sent
+    /// none (a Grand Prix may send a count of 0).
+    pub fn weekend(&self) -> Vec<u8> {
+        self.weekend_types[..usize::from(self.weekend_len)].to_vec()
+    }
+}
+
+/// Session types a weekend structure holds.
+pub const WEEKEND_MAX: usize = 12;
+/// Where the session body (after the header) keeps the weekend structure: a count, then
+/// [`WEEKEND_MAX`] session types (the F1 24 layout, which F1 25 keeps).
+const WEEKEND_AT: usize = 703;
 
 pub fn session(b: &[u8]) -> Option<SessionInfo> {
     let at = HEADER_LEN;
     let total_laps = *b.get(at + 3)?;
     let session_type = *b.get(at + 6)?;
     let track = *b.get(at + 7)? as i8;
+    let mut weekend_types = [0u8; WEEKEND_MAX];
+    let mut weekend_len = 0;
+    if let Some(&count) = b.get(at + WEEKEND_AT)
+        && let Some(types) = b.get(at + WEEKEND_AT + 1..at + WEEKEND_AT + 1 + WEEKEND_MAX)
+        && (1..=WEEKEND_MAX as u8).contains(&count)
+        && types[..usize::from(count)].iter().all(|&t| (1..=18).contains(&t))
+    {
+        weekend_types.copy_from_slice(types);
+        weekend_len = count;
+    }
+    // The settings bytes, at their F1 24 body offsets (0 can mean the game didn't send one).
+    let byte = |off: usize| b.get(at + off).copied();
+    let settings = (|| {
+        Some(GameSettings {
+            weather: byte(0)?,
+            network_game: byte(125)?,
+            ai_difficulty: byte(640)?,
+            game_mode: byte(665)?,
+            rule_set: byte(666)?,
+            session_length: byte(671)?,
+            equal_performance: byte(679)?,
+            car_damage: byte(687)?,
+            parc_ferme: byte(694)?,
+            safety_car: byte(696)?,
+            formation_lap: byte(698)?,
+            red_flags: byte(700)?,
+        })
+    })();
     Some(SessionInfo {
         track: u8::try_from(track).ok(),
         session_type,
         total_laps,
+        weekend_types,
+        weekend_len,
+        settings,
     })
 }
 
@@ -260,6 +327,157 @@ pub fn session_history(b: &[u8]) -> Option<(u8, Vec<Lap>)> {
     Some((car, list))
 }
 
+/// The player's record of a packet whose car records follow the header directly (lap data, car
+/// status, car damage), with `tail` bytes after them: 22 or 24 records, their size from the
+/// packet length, at least `min` bytes each. `None` for a spectator (player car 255).
+fn player_record(b: &[u8], tail: usize, min: usize) -> Option<&[u8]> {
+    let h = header(b)?;
+    let body = b.len().checked_sub(HEADER_LEN + tail)?;
+    let first = if h.format >= 2026 {
+        [MAX_CARS_2026, MAX_CARS]
+    } else {
+        [MAX_CARS, MAX_CARS_2026]
+    };
+    let (cars, stride) = first
+        .into_iter()
+        .find(|&cars| body % cars == 0 && body / cars >= min)
+        .map(|cars| (cars, body / cars))?;
+    let car = usize::from(h.player_car);
+    if car >= cars {
+        return None;
+    }
+    b.get(HEADER_LEN + car * stride..HEADER_LEN + (car + 1) * stride)
+}
+
+/// The player's car in a lap data packet (packet 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LapState {
+    /// The lap being driven (`m_currentLapNum`), from 1.
+    pub lap: u8,
+    /// The last completed lap's time (`m_lastLapTimeInMS`).
+    pub last_lap_ms: u32,
+    /// The lap being driven left the track limits (`m_currentLapInvalid`).
+    pub invalid: bool,
+    /// In the pit lane or garage, or on an out or in lap (`m_pitStatus`, `m_driverStatus`).
+    pub pit: bool,
+}
+
+/// The player's car in a lap data packet. Records of 57 bytes in formats 2024 to 2026 (22 or 24
+/// of them, then two bytes): the last lap's time at 0, the lap number at 33, the pit status at
+/// 34, the lap's invalid flag at 37 and the driver status at 44.
+pub fn lap_data(b: &[u8]) -> Option<LapState> {
+    let r = player_record(b, LAP_DATA_TAIL, 45)?;
+    // Driver status: 0 garage, 1 flying lap, 2 in lap, 3 out lap, 4 on track.
+    let driver = r[44];
+    Some(LapState {
+        lap: r[33],
+        last_lap_ms: u32_at(r, 0)?,
+        invalid: r[37] != 0,
+        pit: r[34] != 0 || matches!(driver, 0 | 2 | 3),
+    })
+}
+
+/// The player's car in a car status packet (packet 7).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CarStatus {
+    /// `m_fuelInTank`, kg.
+    pub fuel_kg: f32,
+    /// `m_ersStoreEnergy`, joules.
+    pub ers_store_j: f32,
+    /// `m_ersDeployedThisLap`, joules.
+    pub ers_deployed_j: f32,
+}
+
+/// The player's car in a car status packet. Records of 55 bytes (formats 2024 and 2025): the fuel
+/// in the tank at 5, the ERS store at 37, the ERS deployed this lap at 50.
+pub fn car_status(b: &[u8]) -> Option<CarStatus> {
+    let r = player_record(b, 0, 54)?;
+    Some(CarStatus {
+        fuel_kg: f32_at(r, 5)?,
+        ers_store_j: f32_at(r, 37)?,
+        ers_deployed_j: f32_at(r, 50)?,
+    })
+}
+
+/// The player's tyre wear in percent (`m_tyresWear`: rear left, rear right, front left, front
+/// right), from a car damage packet (packet 10; records of 46 bytes in 2025, 42 in 2024, the wear
+/// first).
+pub fn car_damage(b: &[u8]) -> Option<[f32; 4]> {
+    let r = player_record(b, 0, 16)?;
+    Some([f32_at(r, 0)?, f32_at(r, 4)?, f32_at(r, 8)?, f32_at(r, 12)?])
+}
+
+/// Follows the player's car lap by lap: at each lap completed, what it used.
+#[derive(Debug, Default, Clone)]
+struct LapTracker {
+    /// The lap being driven, 0 before the first lap data.
+    lap: u8,
+    /// The lap being driven was seen from its start, with the car's state there.
+    whole: bool,
+    invalid: bool,
+    pit: bool,
+    fuel_start: f32,
+    wear_start: Option<f32>,
+    /// The most ERS energy the lap's counter showed.
+    ers_deployed: f32,
+    /// The latest fuel, ERS store and mean tyre wear.
+    fuel: Option<f32>,
+    ers_store: Option<f32>,
+    wear: Option<f32>,
+    laps: Vec<LapTelemetry>,
+}
+
+impl LapTracker {
+    fn status(&mut self, s: CarStatus) {
+        self.fuel = Some(s.fuel_kg);
+        self.ers_store = Some(s.ers_store_j);
+        self.ers_deployed = self.ers_deployed.max(s.ers_deployed_j);
+    }
+
+    fn damage(&mut self, wear: [f32; 4]) {
+        self.wear = Some(wear.iter().sum::<f32>() / 4.0);
+    }
+
+    fn lap_data(&mut self, s: LapState) {
+        if s.lap == self.lap {
+            self.invalid |= s.invalid;
+            self.pit |= s.pit;
+            return;
+        }
+        let crossed = self.lap > 0 && s.lap == self.lap + 1;
+        if crossed
+            && self.whole
+            && let Some(fuel) = self.fuel
+            && self.laps.len() < TELEMETRY_LAPS
+        {
+            let wear = match (self.wear_start, self.wear) {
+                (Some(start), Some(end)) => (end - start).max(0.0),
+                _ => 0.0,
+            };
+            self.laps.push(LapTelemetry {
+                lap: self.lap,
+                ms: s.last_lap_ms,
+                fuel_used_kg: (self.fuel_start - fuel).max(0.0),
+                ers_deployed_mj: self.ers_deployed / 1e6,
+                ers_store_end_mj: self.ers_store.unwrap_or(0.0) / 1e6,
+                tyre_wear_pct: wear,
+                valid: !self.invalid && !self.pit,
+            });
+        }
+        if s.lap < self.lap {
+            // A flashback (or a restart) across the line: the laps from there on are driven again.
+            self.laps.retain(|l| l.lap < s.lap);
+        }
+        self.lap = s.lap;
+        self.whole = crossed && self.fuel.is_some();
+        self.fuel_start = self.fuel.unwrap_or(0.0);
+        self.wear_start = self.wear;
+        self.ers_deployed = 0.0;
+        self.invalid = s.invalid;
+        self.pit = s.pit;
+    }
+}
+
 /// An event packet's four-letter code (`SEND` when a session ends).
 pub fn event_code(b: &[u8]) -> Option<[u8; 4]> {
     b.get(HEADER_LEN..HEADER_LEN + 4)?.try_into().ok()
@@ -272,6 +490,8 @@ struct SessionState {
     /// Each car's laps (practice sessions), by car index.
     history: HashMap<u8, Vec<Lap>>,
     player_car: u8,
+    /// The player's laps with what the car used on them.
+    telemetry: LapTracker,
 }
 
 /// A stand-in session uid for a classification the game sent without one (a race it simulated
@@ -362,6 +582,17 @@ fn practice_cars(state: &SessionState) -> Vec<ReportCar> {
         .collect()
 }
 
+/// A report's fields that come from the session packet: the race distance, the weekend
+/// structure and the game's settings.
+fn report_of_session(info: &SessionInfo) -> RaceReport {
+    RaceReport {
+        total_laps: info.total_laps,
+        weekend: info.weekend(),
+        settings: info.settings,
+        ..RaceReport::default()
+    }
+}
+
 /// Turns the game's packets into a [`RaceReport`] at the end of each race, qualifying and
 /// practice session.
 #[derive(Default)]
@@ -402,7 +633,11 @@ impl Collector {
             None => practice_cars(&state),
         };
         let laps = state.history.get(&state.player_car).cloned().unwrap_or_default();
-        if laps.is_empty() && !cars.iter().any(|c| c.mine && (c.laps > 0 || c.best_lap_ms > 0)) {
+        let lap_telemetry = state.telemetry.laps;
+        if laps.is_empty()
+            && lap_telemetry.is_empty()
+            && !cars.iter().any(|c| c.mine && (c.laps > 0 || c.best_lap_ms > 0))
+        {
             return None;
         }
         self.reported.insert(report_as);
@@ -413,6 +648,8 @@ impl Collector {
             cars,
             at: now,
             laps,
+            lap_telemetry,
+            ..report_of_session(&info)
         })
     }
 
@@ -447,6 +684,23 @@ impl Collector {
                 let state = self.sessions.entry(h.session).or_default();
                 state.player_car = h.player_car;
                 state.history.insert(car, laps);
+                None
+            }
+            // The player's car lap by lap, in a session of its own (the practice programmes).
+            PACKET_LAP_DATA | PACKET_CAR_STATUS | PACKET_CAR_DAMAGE => {
+                if h.session == 0 || self.reported.contains(&h.session) {
+                    return None;
+                }
+                let tracker = &mut self.sessions.entry(h.session).or_default().telemetry;
+                let read = match h.packet_id {
+                    PACKET_LAP_DATA => lap_data(b).map(|l| tracker.lap_data(l)),
+                    PACKET_CAR_STATUS => car_status(b).map(|c| tracker.status(c)),
+                    _ => car_damage(b).map(|w| tracker.damage(w)),
+                };
+                // A spectator's packets (player car 255) have no car of the player's.
+                if read.is_none() && h.player_car != 255 {
+                    self.unread = unread;
+                }
                 None
             }
             PACKET_EVENT => {
@@ -509,10 +763,15 @@ impl Collector {
                         if !looks_like_race(&cars) {
                             return None;
                         }
-                        let info = SessionInfo {
-                            session_type: *RACE_SESSIONS.start(),
-                            ..state.info?
+                        // A sprint weekend's race after its sprint is race 2.
+                        let seen = state.info?;
+                        let weekend = seen.weekend();
+                        let session_type = if weekend.contains(&16) && seen.session_type == 15 {
+                            16
+                        } else {
+                            *RACE_SESSIONS.start()
                         };
+                        let info = SessionInfo { session_type, ..seen };
                         (uid, state, info)
                     }
                 };
@@ -524,6 +783,7 @@ impl Collector {
                     cars: classified_cars(&cars, &state, h.player_car),
                     at: now,
                     laps: Vec::new(),
+                    ..report_of_session(&info)
                 })
             }
             _ => None,

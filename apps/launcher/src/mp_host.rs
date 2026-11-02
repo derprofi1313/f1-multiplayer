@@ -13,7 +13,7 @@ use swofty_core::mpauth;
 use swofty_core::multiplayer::host::{self, HostServer, upnp};
 use swofty_core::multiplayer::servercode;
 
-use crate::i18n::tr;
+use crate::i18n::{tr, tr_owned};
 use crate::pages::{GUTTER, label};
 use crate::shell::{Page, Shell};
 use crate::theme::{Palette, ScrollArea};
@@ -25,6 +25,8 @@ pub(crate) struct Hosting {
     /// The code friends use, once the public address is known.
     pub(crate) code: Option<String>,
     pub(crate) note: Option<String>,
+    /// The server asks for a password.
+    pub(crate) password: bool,
 }
 
 pub(crate) struct HostPanel {
@@ -32,18 +34,37 @@ pub(crate) struct HostPanel {
     pub(crate) name: Entity<InputState>,
     pub(crate) password: Entity<InputState>,
     pub(crate) address: Entity<InputState>,
+    /// A driver name to release on this PC's host server.
+    pub(crate) release: Entity<InputState>,
+    /// What releasing a name did.
+    pub(crate) release_note: Option<String>,
     pub(crate) hosting: Option<Hosting>,
     pub(crate) busy: Option<&'static str>,
     pub(crate) error: Option<String>,
-    _inputs: [Subscription; 4],
+    _inputs: [Subscription; 5],
+}
+
+/// A refused sign-in in the launcher's language. The sign-in gives the host server's message;
+/// the two refusals about claimed driver names are known by their wording.
+pub(crate) fn sign_in_error_text(error: &str) -> String {
+    let reason = if error.contains("this name is taken on this host server") {
+        "name_claimed"
+    } else if error.contains("update F1 Multiplayer to sign in") {
+        "secret_required"
+    } else {
+        return error.to_owned();
+    };
+    crate::career::reason_text(reason).map_or_else(|| error.to_owned(), |t| tr(t).to_owned())
 }
 
 impl HostPanel {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
-        let code = cx.new(|cx| InputState::new(window, cx).placeholder("Server code (123 456) or host code"));
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Your driver name"));
-        let password = cx.new(|cx| InputState::new(window, cx).placeholder("Server password (optional)"));
-        let address = cx.new(|cx| InputState::new(window, cx).placeholder("Your public IP or DNS name"));
+        let code =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr("Server code (123 456) or host code")));
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Your driver name")));
+        let password = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Server password (optional)")));
+        let address = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Your public IP or DNS name")));
+        let release = cx.new(|cx| InputState::new(window, cx).placeholder(tr("Driver name to release")));
         let changed = |cx: &mut Context<Shell>, input: &Entity<InputState>| {
             cx.subscribe(input, |_, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
@@ -56,12 +77,15 @@ impl HostPanel {
             changed(cx, &name),
             changed(cx, &password),
             changed(cx, &address),
+            changed(cx, &release),
         ];
         Self {
             code,
             name,
             password,
             address,
+            release,
+            release_note: None,
             hosting: None,
             busy: None,
             error: None,
@@ -114,27 +138,35 @@ impl Shell {
                         discovery: Some(servercode::DISCOVERY_PORT),
                         fresh_code: false,
                     })
-                    .map_err(|e| format!("Couldn't start the server on port {}: {e}", host::DEFAULT_PORT))?;
+                    .map_err(|e| {
+                        tr_owned("Couldn't start the server on port {port}: {error}")
+                            .replace("{port}", &host::DEFAULT_PORT.to_string())
+                            .replace("{error}", &e.to_string())
+                    })?;
                     let session =
-                        mpauth::sign_in_host(&dir, &server.local_endpoint().code(), &name, password.as_deref())?;
+                        mpauth::sign_in_host(&dir, &server.local_endpoint().code(), &name, password.as_deref())
+                            .map_err(|e| sign_in_error_text(&e))?;
                     let (forwarded, mut note) = match upnp::forward(server.port()) {
                         Ok(f) if f.behind_another_nat() => (
                             Some(f),
                             Some(
-                                "Your router forwarded the port, but your internet connection sits behind another \
-                                 router or carrier NAT, so friends may not reach you. Ask your provider for a public \
-                                 IPv4 address, or let a friend with one host."
-                                    .to_owned(),
+                                tr("Your router forwarded the port, but your internet connection sits behind another \
+                                    router or carrier NAT, so friends may not reach you. Ask your provider for a \
+                                    public IPv4 address, or let a friend with one host.")
+                                .to_owned(),
                             ),
                         ),
                         Ok(f) => (Some(f), None),
                         Err(e) => (
                             None,
-                            Some(format!(
-                                "The router didn't forward the port automatically ({e}). Forward TCP and UDP port {} \
-                                 to this PC in your router's settings.",
-                                server.port()
-                            )),
+                            Some(
+                                tr_owned(
+                                    "The router didn't forward the port automatically ({error}). Forward TCP and UDP \
+                                     port {port} to this PC in your router's settings.",
+                                )
+                                .replace("{error}", &e.to_string())
+                                .replace("{port}", &server.port().to_string()),
+                            ),
                         ),
                     };
                     let public = address.or_else(|| {
@@ -150,7 +182,7 @@ impl Shell {
                     if let Some(code) = &code
                         && let Err(e) = server.publish_code(code)
                     {
-                        note = Some(format!("The code directory: {e}"));
+                        note = Some(tr_owned("The code directory: {error}").replace("{error}", &e.to_string()));
                     }
                     Ok::<_, String>((
                         Hosting {
@@ -158,6 +190,7 @@ impl Shell {
                             forwarded,
                             code,
                             note,
+                            password: password.is_some(),
                         },
                         session,
                     ))
@@ -199,6 +232,27 @@ impl Shell {
                 .detach();
             cx.notify();
         }
+    }
+
+    /// Free a driver name on this PC's host server, so its driver can claim it again from another
+    /// PC (they lost the PC they signed in from, say).
+    pub(crate) fn mp_host_release_name(&mut self, cx: &mut Context<Self>) {
+        let name = value(&self.mp_page.host.release, cx);
+        if name.is_empty() {
+            self.mp_page.host.release_note = Some(tr("Type the driver name to release.").into());
+            cx.notify();
+            return;
+        }
+        let dir = self.store.root.join(host::DATA_DIR);
+        self.mp_page.host.release_note = Some(match host::release_name(&dir, &name) {
+            Ok(true) => tr_owned("{name} is free again: the next sign-in with that name claims it.")
+                .replace("{name}", &name),
+            Ok(false) => tr_owned("Nobody has claimed {name} on your server.").replace("{name}", &name),
+            Err(e) => tr_owned("Couldn't release {name}: {error}")
+                .replace("{name}", &name)
+                .replace("{error}", &e.to_string()),
+        });
+        cx.notify();
     }
 
     /// Stop the host server: every room on it closes.
@@ -244,7 +298,10 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { mpauth::sign_in_host(&dir, &code, &name, password.as_deref()) })
+                .spawn(async move {
+                    mpauth::sign_in_host(&dir, &code, &name, password.as_deref())
+                        .map_err(|e| sign_in_error_text(&e))
+                })
                 .await;
             this.update(cx, |s, cx| {
                 s.mp_page.host.busy = None;
@@ -281,14 +338,21 @@ impl Shell {
                 )
                 .child(div().text_size(px(13.)).text_color(p.text_muted).child(body))
         };
+        let no_password = value(&panel.password, cx).is_empty();
         let host_card = card(
-            "Host a server",
-            "Run the multiplayer server on this PC. It gets a six-digit server code; your friends join with it \
-             (or with the longer host code over the internet). \
-             Your router needs to forward one port (TCP and UDP); the launcher asks it to.",
+            tr("Host a server"),
+            tr("Run the multiplayer server on this PC. It gets a six-digit server code; your friends join with it \
+                (or with the longer host code over the internet). \
+                Your router needs to forward one port (TCP and UDP); the launcher asks it to."),
         )
         .child(Input::new(&panel.name).small())
         .child(Input::new(&panel.password).small())
+        .when(no_password, |d| {
+            d.child(div().text_size(px(12.)).text_color(p.warning).child(tr(
+                "Without a password, anyone on the internet who finds your server can sign in to it. Set one \
+                 and send it to your friends.",
+            )))
+        })
         .child(Input::new(&panel.address).small())
         .child(
             Button::new("mp-host-start")
@@ -301,9 +365,9 @@ impl Shell {
                 .on_click(cx.listener(|this, _, _, cx| this.mp_host_start(cx))),
         );
         let join_card = card(
-            "Join a friend's server",
-            "Type the six-digit server code (or paste the host code) your friend sent you, with your driver name and \
-             the server's password if it has one.",
+            tr("Join a friend's server"),
+            tr("Type the six-digit server code (or paste the host code) your friend sent you, with your driver name \
+                and the server's password if it has one."),
         )
         .child(Input::new(&panel.code).small())
         .child(Input::new(&panel.name).small())
@@ -351,28 +415,29 @@ impl Shell {
             .endpoint()
             .is_some_and(|e| e.authority().starts_with("127.0.0.1"));
         let panel = &self.mp_page.host;
-        let body =
-            match (&panel.hosting, local) {
-                (Some(h), _) => {
-                    let (rooms, relays) = h.server.load();
-                    let code = h.code.clone();
-                    let short = servercode::display(h.server.server_code());
-                    v_flex()
+        let body = match (&panel.hosting, local) {
+            (Some(h), _) => {
+                let (rooms, relays) = h.server.load();
+                let code = h.code.clone();
+                let short = servercode::display(h.server.server_code());
+                v_flex()
                         .gap(px(8.))
                         .child(
                             h_flex()
                                 .gap(px(10.))
                                 .items_center()
                                 .child(label(
-                                    format!("YOUR SERVER IS RUNNING \u{00b7} PORT {}", h.server.port()),
+                                    tr_owned("YOUR SERVER IS RUNNING · PORT {port}")
+                                        .replace("{port}", &h.server.port().to_string()),
                                     p,
                                 ))
                                 .child(div().flex_1())
                                 .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(p.text_muted)
-                                        .child(format!("{rooms} room(s), {relays} relay(s)")),
+                                    div().text_size(px(12.)).text_color(p.text_muted).child(
+                                        tr_owned("{rooms} room(s), {relays} relay(s)")
+                                            .replace("{rooms}", &rooms.to_string())
+                                            .replace("{relays}", &relays.to_string()),
+                                    ),
                                 )
                                 .child(
                                     Button::new("mp-host-stop")
@@ -407,11 +472,15 @@ impl Shell {
                                 ),
                         )
                         .when(!h.server.answers_lookups(), |d| {
-                            d.child(div().text_size(px(13.)).text_color(p.text_muted).child(format!(
-                                "UDP port {} is taken on this PC, so the server code can't be looked up; \
-                                 use the host code.",
-                                servercode::DISCOVERY_PORT
-                            )))
+                            d.child(
+                                div().text_size(px(13.)).text_color(p.text_muted).child(
+                                    tr_owned(
+                                        "UDP port {port} is taken on this PC, so the server code can't be looked \
+                                         up; use the host code.",
+                                    )
+                                    .replace("{port}", &servercode::DISCOVERY_PORT.to_string()),
+                                ),
+                            )
                         })
                         .child(match code {
                             Some(code) => h_flex()
@@ -449,36 +518,70 @@ impl Shell {
                         .when_some(h.note.clone(), |d, n| {
                             d.child(div().text_size(px(13.)).text_color(p.text_muted).child(n))
                         })
-                }
-                (None, true) => v_flex().gap(px(8.)).child(
-                    h_flex()
-                        .gap(px(10.))
-                        .items_center()
+                        .when(h.forwarded.is_some() && !h.password, |d| {
+                            d.child(div().text_size(px(13.)).text_color(p.warning).child(tr(
+                                "Your router forwards the server's port and the server has no password: anyone \
+                                 who finds it can sign in. Stop it and start it again with a password.",
+                            )))
+                        })
                         .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(13.))
-                                .text_color(p.text_muted)
-                                .child(tr("Your host server isn't running. Start it again to open rooms.")),
+                            h_flex()
+                                .gap(px(8.))
+                                .items_center()
+                                .child(div().w(px(220.)).child(Input::new(&panel.release).small()))
+                                .child(
+                                    Button::new("mp-host-release")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::KeyRound)
+                                        .label(tr("Release a driver name"))
+                                        .on_click(cx.listener(|this, _, _, cx| this.mp_host_release_name(cx))),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(px(12.))
+                                        .text_color(p.text_muted)
+                                        .child(panel.release_note.clone().unwrap_or_else(|| {
+                                            tr("A driver who lost the PC they signed in from can claim their name \
+                                                again once you release it.")
+                                            .to_owned()
+                                        })),
+                                ),
                         )
-                        .child(
-                            Button::new("mp-host-restart")
-                                .primary()
-                                .small()
-                                .label(tr("Start server"))
-                                .loading(panel.busy == Some("host"))
-                                // Starting signs in afresh and replaces the stale loopback sign-in;
-                                // until then that sign-in still names the driver.
-                                .on_click(cx.listener(|this, _, _, cx| this.mp_host_start(cx))),
-                        ),
+            }
+            (None, true) => v_flex().gap(px(8.)).child(
+                h_flex()
+                    .gap(px(10.))
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.))
+                            .text_color(p.text_muted)
+                            .child(tr(
+                                "Your host server isn't running. Start it again to open rooms.",
+                            )),
+                    )
+                    .child(
+                        Button::new("mp-host-restart")
+                            .primary()
+                            .small()
+                            .label(tr("Start server"))
+                            .loading(panel.busy == Some("host"))
+                            // Starting signs in afresh and replaces the stale loopback sign-in;
+                            // until then that sign-in still names the driver.
+                            .on_click(cx.listener(|this, _, _, cx| this.mp_host_start(cx))),
+                    ),
+            ),
+            (None, false) => v_flex().child(
+                div().text_size(px(13.)).text_color(p.text_muted).child(
+                    tr_owned("Connected to the host server {server}")
+                        .replace("{server}", server.split('#').next().unwrap_or("")),
                 ),
-                (None, false) => {
-                    v_flex().child(div().text_size(px(13.)).text_color(p.text_muted).child(format!(
-                        "Connected to the host server {}",
-                        server.split('#').next().unwrap_or("")
-                    )))
-                }
-            };
+            ),
+        };
         Some(
             v_flex()
                 .p(px(14.))

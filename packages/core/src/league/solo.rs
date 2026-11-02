@@ -131,20 +131,47 @@ pub fn list(root: &Path) -> Vec<SoloCareer> {
     all
 }
 
+/// Load the solo career `id`. When its file is damaged (a crash while it was written, say), the
+/// newest readable version of its history is loaded instead; the next change is saved over it.
 pub fn load(root: &Path, id: &str) -> Result<SoloCareer, SoloError> {
     let bytes = match std::fs::read(path(root, id)) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(SoloError::NotFound(id.to_owned())),
         Err(e) => return Err(e.into()),
     };
-    serde_json::from_slice(&bytes).map_err(|e| SoloError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))
+    let damaged = match serde_json::from_slice(&bytes) {
+        Ok(career) => return Ok(career),
+        Err(e) => e,
+    };
+    let history = dir(root).join("history").join(id);
+    let mut old: Vec<PathBuf> = std::fs::read_dir(&history)
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    old.sort();
+    for file in old.iter().rev() {
+        if let Some(career) = std::fs::read(file)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SoloCareer>(&b).ok())
+        {
+            eprintln!(
+                "solo career {id} is damaged ({damaged}); loaded its version from {}",
+                file.display()
+            );
+            return Ok(career);
+        }
+    }
+    Err(SoloError::Io(io::Error::new(io::ErrorKind::InvalidData, damaged)))
 }
 
 fn write(root: &Path, career: &SoloCareer) -> io::Result<()> {
     let file = path(root, &career.id);
     std::fs::create_dir_all(dir(root))?;
-    // The version this one replaces goes to the history first.
-    if file.is_file() {
+    // The version this one replaces goes to the history first (unless it is damaged).
+    if file.is_file()
+        && std::fs::read(&file)
+            .ok()
+            .is_some_and(|b| serde_json::from_slice::<SoloCareer>(&b).is_ok())
+    {
         let history = dir(root).join("history").join(&career.id);
         std::fs::create_dir_all(&history)?;
         std::fs::copy(
@@ -157,8 +184,14 @@ fn write(root: &Path, career: &SoloCareer) -> io::Result<()> {
             let _ = std::fs::remove_file(old.remove(0));
         }
     }
+    // Written in full and synced before it replaces the old file, so a crash leaves one of them.
     let tmp = file.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(career).unwrap_or_default())?;
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&serde_json::to_vec_pretty(career).unwrap_or_default())?;
+        f.sync_all()?;
+    }
     std::fs::rename(&tmp, &file)
 }
 
@@ -185,15 +218,16 @@ pub fn create(
     Ok(career)
 }
 
-/// Apply `action` to the solo career `id` and save it. Returns the career and the warnings.
-pub fn act(root: &Path, id: &str, action: Action) -> Result<(SoloCareer, Vec<String>), SoloError> {
+/// Apply `action` to the solo career `id` and save it. Returns the career and the warnings, with
+/// their templates (W4-2).
+pub fn act(root: &Path, id: &str, action: Action) -> Result<(SoloCareer, Vec<super::Warning>), SoloError> {
     let mut career = load(root, id)?;
     let name = career
         .league
         .player(ME)
         .map_or_else(|| "You".to_owned(), |p| p.name.clone());
     let before = career.league.clone();
-    let warnings = super::apply(&mut career.league, &actor(&name), action)?;
+    let warnings = super::apply_t(&mut career.league, &actor(&name), action)?;
     if career.league != before {
         career.version += 1;
         career.updated = now_secs();

@@ -16,6 +16,25 @@ fn ben() -> Actor {
     }
 }
 
+/// `action` by `who`, then agreed to by every other active player: in a shared career Simulate,
+/// Skip and Undo wait for everyone (W2-1).
+pub(super) fn agreed(l: &mut League, who: &Actor, action: Action) -> Vec<String> {
+    let warnings = apply(l, who, action).unwrap();
+    let others: Vec<Actor> = l
+        .waiting_for()
+        .iter()
+        .map(|p| Actor {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            owner: false,
+        })
+        .collect();
+    for a in others {
+        apply(l, &a, Action::Vote { yes: true, force: false }).unwrap();
+    }
+    warnings
+}
+
 /// A league (from 2016 by default) with Anna and Ben both at Ferrari.
 fn ferrari_2016(setup: Setup) -> League {
     let mut l = League::start(setup, &anna(), Some(7), 42).unwrap();
@@ -49,7 +68,8 @@ fn report_of(season: &Season, session: u64, track: u8, reporter: &str) -> RaceRe
     for (i, e) in season.entries.iter().enumerate() {
         let human = e.player.is_some();
         cars.push(ReportCar {
-            name: if human {
+            // The other players' cars carry their LAN names (the launcher sets the driver's name).
+            name: if e.player.as_deref() == Some(reporter) {
                 "Player".into()
             } else {
                 e.name.to_uppercase()
@@ -83,6 +103,7 @@ fn report_of(season: &Season, session: u64, track: u8, reporter: &str) -> RaceRe
         cars,
         at: 0,
         laps: Vec::new(),
+        ..RaceReport::default()
     }
 }
 
@@ -341,7 +362,7 @@ fn circuits_the_game_lacks_are_simulated_on_the_way() {
     let mut l = ferrari_2016(Setup::default());
     // Drive rounds 1 to 11 by simulating them; round 12 (Hockenheim) follows on its own.
     for _ in 0..11 {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
     let season = l.season();
     assert_eq!(season.rounds[11].circuit, "hockenheimring");
@@ -350,7 +371,7 @@ fn circuits_the_game_lacks_are_simulated_on_the_way() {
     assert_eq!(season.next_round().unwrap().circuit, "spa");
 
     // Taking back round 11 takes back the automatic round after it too.
-    apply(&mut l, &ben(), Action::Undo).unwrap();
+    agreed(&mut l, &ben(), Action::Undo);
     let season = l.season();
     assert_eq!(season.next_round().unwrap().round, 11);
     assert_eq!(season.rounds[11].state, RoundState::Pending);
@@ -361,18 +382,22 @@ fn circuits_the_game_lacks_are_simulated_on_the_way() {
     };
     let mut s = ferrari_2016(skipping);
     for _ in 0..11 {
-        apply(&mut s, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut s, &anna(), Action::Simulate { round: None });
     }
     assert_eq!(s.season().rounds[11].state, RoundState::Skipped);
 }
 
 #[test]
 fn simulations_are_the_same_everywhere() {
-    let a = ferrari_2016(Setup::default());
+    // Rounds are counted in order: simulate rounds 1 to 4, then round 5 on two copies.
+    let mut a = ferrari_2016(Setup::default());
+    for _ in 0..4 {
+        agreed(&mut a, &anna(), Action::Simulate { round: None });
+    }
     let mut x = a.clone();
     let mut y = a.clone();
-    apply(&mut x, &anna(), Action::Simulate { round: Some(5) }).unwrap();
-    apply(&mut y, &ben(), Action::Simulate { round: Some(5) }).unwrap();
+    agreed(&mut x, &anna(), Action::Simulate { round: Some(5) });
+    agreed(&mut y, &ben(), Action::Simulate { round: Some(5) });
     assert_eq!(x.season().rounds[4].race_result, y.season().rounds[4].race_result);
     let r = &x.season().rounds[4].race_result;
     assert_eq!(r.len(), 22);
@@ -396,9 +421,10 @@ fn sprints_count_at_sprint_weekends() {
         .unwrap()
         .round;
     while l.season().next_round().unwrap().round < silverstone {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
-    let report = report_of(l.season(), 10, 7, "u-anna");
+    let mut report = report_of(l.season(), 10, 7, "u-anna");
+    report.weekend = vec![1, 10, 11, 12, 15, 16];
     apply(
         &mut l,
         &anna(),
@@ -440,7 +466,7 @@ fn a_season_ends_with_offers_and_the_next_one_starts_with_the_signed_seats() {
     };
     let mut l = ferrari_2016(setup);
     while l.phase == Phase::Racing {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
     assert_eq!(l.phase, Phase::SeasonEnd);
     assert!(l.news.iter().any(|n| n.text.contains("2025 world champion")));
@@ -492,7 +518,7 @@ fn a_season_ends_with_offers_and_the_next_one_starts_with_the_signed_seats() {
     assert_eq!(season.entries.len(), 22);
     // 2026's Madrid round isn't in the game: it's simulated when the season gets there.
     while l.phase == Phase::Racing {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
     assert_eq!(l.phase, Phase::Finished);
     assert_eq!(l.seasons.len(), 2);
@@ -513,7 +539,7 @@ fn the_owner_can_move_on_for_players_who_dont_sign() {
     };
     let mut l = ferrari_2016(setup);
     while l.phase == Phase::Racing {
-        apply(&mut l, &ben(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &ben(), Action::Simulate { round: None });
     }
     assert_eq!(
         apply(&mut l, &ben(), Action::NextSeason).unwrap_err().reason,
@@ -534,13 +560,13 @@ fn undo_at_season_end_reopens_the_last_round_and_restores_ratings() {
     };
     let mut l = ferrari_2016(setup);
     while l.phase == Phase::Racing {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
     assert!(l.ratings_before.is_some());
     let before = l.season().rounds[23].before.clone().unwrap();
     let was = before.iter().find(|p| p.player == "u-anna").unwrap();
     assert_ne!(l.player("u-anna").unwrap().rating, was.rating);
-    apply(&mut l, &anna(), Action::Undo).unwrap();
+    agreed(&mut l, &anna(), Action::Undo);
     assert_eq!(l.phase, Phase::Racing);
     assert!(l.season().offers.is_empty());
     // Ratings, resource points and pay are as before the last round.
@@ -555,7 +581,7 @@ fn undo_at_season_end_reopens_the_last_round_and_restores_ratings() {
 #[test]
 fn the_document_round_trips_as_json() {
     let mut l = ferrari_2016(Setup::default());
-    apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+    agreed(&mut l, &anna(), Action::Simulate { round: None });
     let text = serde_json::to_string(&l).unwrap();
     let back: League = serde_json::from_str(&text).unwrap();
     assert_eq!(back, l);
@@ -1210,11 +1236,11 @@ fn practice_programmes_earn_resource_points_and_train_the_driver() {
     assert_eq!(again, ["this practice is counted already"]);
     assert!(l.season().rounds[0].started());
     // Taking it back gives the points back.
-    apply(&mut l, &anna(), Action::Undo).unwrap();
+    agreed(&mut l, &anna(), Action::Undo);
     assert!(l.season().rounds[0].practice.is_empty());
     assert_eq!((player(&l, "u-anna").rp, player(&l, "u-ben").rp), (0, 0));
     // Simulating a round simulates the practice of everyone who didn't drive it.
-    apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+    agreed(&mut l, &anna(), Action::Simulate { round: None });
     assert_eq!(l.season().rounds[0].practice.len(), 2);
 }
 
@@ -1262,13 +1288,13 @@ fn resource_points_develop_the_car_and_new_parts_arrive_two_rounds_later() {
     let rp = player(&l, "u-anna").rp;
     apply(&mut l, &anna(), Action::Develop { part: Part::Chassis }).unwrap();
     assert_eq!(l.season().upgrades.len(), 4);
-    apply(&mut l, &anna(), Action::Undo).unwrap();
+    agreed(&mut l, &anna(), Action::Undo);
     assert_eq!(l.season().upgrades.len(), 3);
     assert!(player(&l, "u-anna").rp < rp, "the practice's points went too");
 
     // Late in the season a new part wouldn't be ready.
     while l.season().next_round().unwrap().round < 20 {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
     l.players[0].rp = 50_000;
     let err = apply(
@@ -1283,7 +1309,7 @@ fn resource_points_develop_the_car_and_new_parts_arrive_two_rounds_later() {
 
     // What a team developed carries into next season: a sixth in 2017, when the rules changed.
     while l.phase == Phase::Racing {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
     let gain = l.season().upgrade_gain(2, u8::MAX);
     apply(&mut l, &anna(), Action::NextSeason).unwrap();
@@ -1297,14 +1323,23 @@ fn resource_points_develop_the_car_and_new_parts_arrive_two_rounds_later() {
 }
 
 #[test]
-fn a_part_can_be_developed_ten_times_a_season() {
+fn develop_orders_the_main_branch_until_the_cost_cap() {
+    // W2-6: a part's main branch has five nodes, and a team spends at most rnd::COST_CAP a
+    // season; the chassis' main branch costs 6,500, three aero nodes 3,150 more (9,650 of
+    // 10,000), and the fourth (1,550) would go over.
     let mut l = ferrari_2016(Setup::default());
     l.players[0].rp = 1_000_000;
-    for _ in 0..progress::UPGRADE_LEVELS {
+    for _ in 0..5 {
         apply(&mut l, &anna(), Action::Develop { part: Part::Chassis }).unwrap();
     }
     let err = apply(&mut l, &anna(), Action::Develop { part: Part::Chassis }).unwrap_err();
     assert_eq!(err.reason, "max_level");
+    for _ in 0..3 {
+        apply(&mut l, &anna(), Action::Develop { part: Part::Aero }).unwrap();
+    }
+    assert_eq!(rnd::spent(l.season(), 2), 9_650);
+    let err = apply(&mut l, &anna(), Action::Develop { part: Part::Aero }).unwrap_err();
+    assert_eq!(err.reason, "cost_cap");
 }
 
 #[test]
@@ -1331,7 +1366,7 @@ fn salaries_are_paid_each_round_with_a_bonus_per_point() {
         u64::from(start.salary_k) / rounds + 25 * u64::from(start.bonus_k)
     );
     // A round left out pays the salary, no bonus.
-    apply(&mut l, &anna(), Action::Skip { round: None }).unwrap();
+    agreed(&mut l, &anna(), Action::Skip { round: None });
     assert_eq!(
         player(&l, "u-anna").earnings_k,
         earned + u64::from(start.salary_k) / rounds
@@ -1348,7 +1383,7 @@ fn salaries_are_paid_each_round_with_a_bonus_per_point() {
     };
     let mut l = ferrari_2016(setup);
     while l.phase == Phase::Racing {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
     assert!(l.news.iter().any(|n| n.text.contains("earned $")));
     let offer = l.offers("u-anna")[0].clone();
@@ -1400,10 +1435,10 @@ fn recognition_makes_a_number_one_driver_and_a_team_can_let_a_driver_go() {
     };
     let mut l = ferrari_2016(setup);
     while l.season().next_round().is_some_and(|r| r.round < 24) {
-        apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
     }
     l.players[0].recognition = 5.0;
-    apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+    agreed(&mut l, &anna(), Action::Simulate { round: None });
     assert_eq!(l.phase, Phase::SeasonEnd);
     assert!(l.offers("u-anna").iter().all(|o| o.kind == OfferKind::Move));
     assert!(
@@ -1459,7 +1494,7 @@ fn the_real_line_up_changes_happen_during_the_season() {
         "{:?}",
         b.lineup
     );
-    apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+    agreed(&mut l, &anna(), Action::Simulate { round: None });
     assert!(l.news.iter().any(|n| n.text.contains(
         "Stoffel Vandoorne stands in for Fernando Alonso at McLaren until Fernando Alonso is back at the Chinese Grand Prix"
     )));
@@ -1531,7 +1566,7 @@ fn the_real_line_up_changes_happen_during_the_season() {
 #[test]
 fn a_career_from_before_gets_ratings_a_salary_and_line_up_changes_from_the_next_round() {
     let mut l = ferrari_2016(Setup::default());
-    apply(&mut l, &anna(), Action::Simulate { round: None }).unwrap();
+    agreed(&mut l, &anna(), Action::Simulate { round: None });
     // As an older version saved it.
     for p in &mut l.players {
         p.attributes = None;
@@ -1612,4 +1647,788 @@ fn the_collector_reports_a_practice_session_from_the_laps() {
     c.feed(&packet(1, p3, 0, &session_body(3, 1)), 7);
     c.feed(&packet(4, p3, 0, &participants_body(&[(false, 7, "Player")])), 7);
     assert!(c.feed(&packet(3, p3, 0, &send), 8).is_none());
+}
+
+// ---------------------------------------------------------------------------------------------
+// The career contract: old documents, new actions, leaving players
+
+#[test]
+fn old_documents_still_load() {
+    // A 2016 to 2017 career saved before the career contract existed: 2016 played through with
+    // practice, qualifying, a reported race, an upgrade and offers, then three rounds of 2017.
+    let text = include_str!("fixtures/league-v1.json");
+    let mut l: League = serde_json::from_str(text).unwrap();
+    assert_eq!((l.year(), l.phase), (2017, Phase::Racing));
+    assert!(!l.seasons[0].offers.is_empty());
+    assert!(!l.seasons[0].upgrades.is_empty() && !l.seasons[1].upgrades.is_empty());
+    assert_eq!(l.seasons[0].offers[0].attempts, 3);
+    assert_eq!(l.options, Options::default());
+    assert!(l.news.iter().all(|n| n.id == 0 && n.kind == NewsKind::News));
+    // It round-trips as it loaded.
+    let back: League = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+    assert_eq!(back, l);
+    agreed(&mut l, &anna(), Action::Simulate { round: None });
+    assert_eq!(l.season().next_round().unwrap().round, 5);
+}
+
+#[test]
+fn new_actions_round_trip_as_json() {
+    let all = [
+        Action::Ready { ready: true },
+        Action::Vote {
+            yes: false,
+            force: true,
+        },
+        Action::RemovePlayer {
+            player: "u-ben".into(),
+        },
+        Action::SetOptions {
+            options: Options {
+                rules: WeekendRules {
+                    ai_difficulty: Some(90),
+                    quali: Some(QualiFormat::OneShot),
+                    ..WeekendRules::default()
+                },
+                game_identity: true,
+                ..Options::default()
+            },
+        },
+        Action::Profile {
+            nationality: Some("DEU".into()),
+            archetype: Some(Archetype::Veteran),
+        },
+        Action::Meet { slot: 3 },
+        Action::AcceptApproach {
+            slot: 3,
+            replaces: Some("max_verstappen".into()),
+        },
+        Action::DeclineApproach { slot: 4 },
+        Action::Negotiate {
+            slot: 3,
+            terms: Terms {
+                salary_k: 2_000,
+                years: 2,
+                number_one: true,
+            },
+        },
+        Action::Answer { news: 12, choice: 1 },
+        Action::ReadMail { upto: 40 },
+        Action::DevelopNode {
+            part: Part::Aero,
+            node: 2,
+        },
+    ];
+    for a in all {
+        let text = serde_json::to_string(&a).unwrap();
+        let back: Action = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, a, "{text}");
+    }
+    // Defaults an older or shorter request leaves out.
+    let a: Action = serde_json::from_str(r#"{"op":"ready"}"#).unwrap();
+    assert_eq!(a, Action::Ready { ready: true });
+    let a: Action = serde_json::from_str(r#"{"op":"vote","yes":true}"#).unwrap();
+    assert_eq!(
+        a,
+        Action::Vote {
+            yes: true,
+            force: false
+        }
+    );
+    let a: Action = serde_json::from_str(r#"{"op":"set_options","options":{}}"#).unwrap();
+    assert_eq!(
+        a,
+        Action::SetOptions {
+            options: Options::default()
+        }
+    );
+    // A refusal carries a reason old launchers show as text.
+    let mut l = ferrari_2016(Setup::default());
+    let err = apply(&mut l, &ben(), Action::Meet { slot: 1 }).unwrap_err();
+    assert_eq!(err.reason, "no_approach");
+    assert!(!err.message.is_empty());
+}
+
+#[test]
+fn removing_a_player_in_setup_lets_the_owner_begin() {
+    let mut l = League::start(Setup::default(), &anna(), Some(7), 42).unwrap();
+    apply(&mut l, &ben(), Action::Enter { number: Some(8) }).unwrap();
+    apply(
+        &mut l,
+        &anna(),
+        Action::Seat {
+            slot: 2,
+            replaces: None,
+        },
+    )
+    .unwrap();
+    apply(
+        &mut l,
+        &ben(),
+        Action::Seat {
+            slot: 2,
+            replaces: None,
+        },
+    )
+    .unwrap();
+    assert!(l.season().player_entry("u-ben").is_some());
+    // Only the owner removes someone else, and the owner can't leave.
+    let cleo = Actor {
+        id: "u-cleo".into(),
+        name: "Cleo".into(),
+        owner: false,
+    };
+    apply(&mut l, &cleo, Action::Enter { number: None }).unwrap();
+    let err = apply(
+        &mut l,
+        &cleo,
+        Action::RemovePlayer {
+            player: "u-ben".into(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.reason, "owner");
+    let err = apply(
+        &mut l,
+        &anna(),
+        Action::RemovePlayer {
+            player: "u-anna".into(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.reason, "owner");
+    // Cleo never picked a seat and leaves herself; the owner removes Ben.
+    apply(
+        &mut l,
+        &cleo,
+        Action::RemovePlayer {
+            player: "u-cleo".into(),
+        },
+    )
+    .unwrap();
+    apply(
+        &mut l,
+        &anna(),
+        Action::RemovePlayer {
+            player: "u-ben".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(l.players.len(), 1);
+    assert!(l.season().player_entry("u-ben").is_none());
+    assert!(
+        l.season().entry("sebastian_vettel").is_some(),
+        "Vettel is back in his seat"
+    );
+    apply(&mut l, &anna(), Action::Begin).unwrap();
+    assert_eq!(l.phase, Phase::Racing);
+}
+
+#[test]
+fn a_player_who_leaves_mid_season_keeps_the_seat_and_needs_not_sign() {
+    let setup = Setup {
+        first_year: 2024,
+        last_year: 2025,
+        ..Setup::default()
+    };
+    let mut l = ferrari_2016(setup);
+    agreed(&mut l, &anna(), Action::Simulate { round: None });
+    apply(
+        &mut l,
+        &ben(),
+        Action::RemovePlayer {
+            player: "u-ben".into(),
+        },
+    )
+    .unwrap();
+    let b = player(&l, "u-ben");
+    assert!(b.left && b.seat.is_some());
+    assert_eq!(l.active_players().len(), 1);
+    assert!(l.season().player_entry("u-ben").is_some(), "the seat stays");
+    assert!(l.briefing("u-anna").unwrap().solo);
+    assert!(l.news.iter().any(|n| n.text.contains("Ben left the career")));
+    // A player who left acts only to come back.
+    let err = apply(&mut l, &ben(), Action::Simulate { round: None }).unwrap_err();
+    assert_eq!(err.reason, "left");
+    while l.phase == Phase::Racing {
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
+    }
+    // Ben's results count, but he gets no offers; Anna's signature alone starts the next season.
+    assert!(l.offers("u-ben").is_empty());
+    let mine = l.offers("u-anna")[0].slot;
+    apply(
+        &mut l,
+        &anna(),
+        Action::Sign {
+            slot: mine,
+            replaces: None,
+            focus: None,
+        },
+    )
+    .unwrap();
+    assert_eq!((l.year(), l.phase), (2025, Phase::Racing));
+    assert!(player(&l, "u-ben").seat.is_none());
+    assert!(l.season().player_entry("u-ben").is_none());
+    assert_eq!(
+        career_stats(&l, "u-ben").seasons.len(),
+        1,
+        "Ben keeps his history"
+    );
+}
+
+#[test]
+fn a_left_player_who_enters_again_is_back() {
+    let mut l = ferrari_2016(Setup::default());
+    apply(
+        &mut l,
+        &anna(),
+        Action::RemovePlayer {
+            player: "u-ben".into(),
+        },
+    )
+    .unwrap();
+    assert!(player(&l, "u-ben").left);
+    apply(&mut l, &ben(), Action::Enter { number: None }).unwrap();
+    assert!(!player(&l, "u-ben").left);
+    assert!(l.news.iter().any(|n| n.text.contains("Ben is back")));
+    apply(&mut l, &ben(), Action::Practice { round: None }).unwrap();
+}
+
+#[test]
+fn the_owner_sets_the_career_options() {
+    let mut l = ferrari_2016(Setup::default());
+    let options = Options {
+        game_identity: true,
+        ..Options::default()
+    };
+    let err = apply(
+        &mut l,
+        &ben(),
+        Action::SetOptions {
+            options: options.clone(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.reason, "owner");
+    apply(
+        &mut l,
+        &anna(),
+        Action::SetOptions {
+            options: options.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(l.options, options);
+    assert!(
+        l.news
+            .iter()
+            .any(|n| n.text == "Anna changed the career options.")
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Integrity: each session counts once, in the right round and as the right kind
+
+fn report(l: &mut League, who: &Actor, report: RaceReport) -> Result<Vec<String>, LeagueError> {
+    apply(
+        l,
+        who,
+        Action::Report {
+            round: None,
+            kind: None,
+            force: false,
+            report,
+        },
+    )
+}
+
+#[test]
+fn the_same_race_from_two_players_counts_once() {
+    // (a) The same game session from Ben's launcher.
+    let mut l = ferrari_2016(Setup::default());
+    let anna_race = report_of(l.season(), 0xa1, 0, "u-anna");
+    report(&mut l, &anna(), anna_race.clone()).unwrap();
+    let again = report(&mut l, &ben(), anna_race.clone()).unwrap();
+    assert_eq!(again, ["this race is counted already"]);
+    assert!(l.season().rounds[1].race_result.is_empty());
+    assert_eq!(l.season().rounds[0].counted.len(), 1);
+    assert_eq!(l.season().rounds[0].counted[0].by, "u-anna");
+
+    // (b) Another session uid, the same classification (Ben's game numbered the session itself).
+    let mut ben_race = anna_race.clone();
+    ben_race.session = 0xb1;
+    for c in &mut ben_race.cars {
+        c.mine = c.name == "BEN";
+        c.name = if c.mine { "Player".into() } else { c.name.clone() };
+    }
+    assert_eq!(fingerprint(&ben_race), fingerprint(&anna_race));
+    let again = report(&mut l, &ben(), ben_race).unwrap();
+    assert_eq!(again, ["this race is counted already"]);
+    assert!(l.season().rounds[1].race_result.is_empty());
+
+    // (c) A 2020 double header at the Red Bull Ring: Ben's copy of round 1 (another uid, other
+    // times) arrives a minute after Anna's and isn't counted as round 2.
+    let setup = Setup {
+        first_year: 2020,
+        ..Setup::default()
+    };
+    let mut l = ferrari_2016(setup);
+    let mut anna_race = report_of(l.season(), 0xa2, 17, "u-anna");
+    anna_race.at = 1_000;
+    report(&mut l, &anna(), anna_race).unwrap();
+    let mut ben_race = report_of(l.season(), 0xb2, 17, "u-ben");
+    ben_race.at = 1_060;
+    let err = report(&mut l, &ben(), ben_race.clone()).unwrap_err();
+    assert_eq!(err.reason, "duplicate");
+    assert!(err.message.contains("round 1") && err.message.contains("Anna"), "{}", err.message);
+    assert!(l.season().rounds[1].race_result.is_empty());
+    // (e) Counting it anyway counts it as round 2.
+    apply(
+        &mut l,
+        &ben(),
+        Action::Report {
+            round: None,
+            kind: None,
+            force: true,
+            report: ben_race,
+        },
+    )
+    .unwrap();
+    assert_eq!(l.season().rounds[1].state, RoundState::Raced);
+
+    // (d) A sprint weekend: Ben's copy of the sprint (no weekend structure) arrives after Anna's
+    // sprint was counted; it isn't counted as the Grand Prix.
+    let setup = Setup {
+        first_year: 2021,
+        ..Setup::default()
+    };
+    let mut l = ferrari_2016(setup);
+    while l.season().next_round().unwrap().round < 10 {
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
+    }
+    let mut sprint = report_of(l.season(), 0xa3, 7, "u-anna");
+    sprint.at = 5_000;
+    apply(
+        &mut l,
+        &anna(),
+        Action::Report {
+            round: None,
+            kind: Some(SessionKind::Sprint),
+            force: false,
+            report: sprint,
+        },
+    )
+    .unwrap();
+    let mut ben_sprint = report_of(l.season(), 0xb3, 7, "u-ben");
+    ben_sprint.at = 5_030;
+    let err = report(&mut l, &ben(), ben_sprint).unwrap_err();
+    assert_eq!(err.reason, "duplicate");
+    assert!(err.message.contains("sprint"), "{}", err.message);
+    let r = l.season().round(10).unwrap();
+    assert!(r.race_result.is_empty() && !r.sprint_result.is_empty());
+}
+
+#[test]
+fn qualifying_rewards_once() {
+    let mut l = ferrari_2016(Setup::default());
+    let mut q1 = report_of(l.season(), 0x51, 0, "u-anna");
+    q1.session_type = 5;
+    report(&mut l, &anna(), q1).unwrap();
+    let rp = (player(&l, "u-anna").rp, player(&l, "u-ben").rp);
+    assert!(rp.0 > 0 && rp.1 > 0);
+    let pole = |l: &League| {
+        l.season().rounds[0]
+            .quali_result
+            .iter()
+            .find(|c| c.position == 1)
+            .unwrap()
+            .entry
+            .clone()
+    };
+    assert_eq!(pole(&l), "p:u-anna");
+    // Q3 (Ben on pole) replaces the classification without paying again.
+    let mut q3 = report_of(l.season(), 0x53, 0, "u-ben");
+    q3.session_type = 7;
+    report(&mut l, &ben(), q3.clone()).unwrap();
+    assert_eq!(pole(&l), "p:u-ben");
+    assert_eq!((player(&l, "u-anna").rp, player(&l, "u-ben").rp), rp);
+    assert!(l.news.iter().any(|n| n.text.starts_with("Qualifying updated (Q3).")));
+    // Anna's copy of Q3 is the same classification: counted already.
+    let mut copy = q3.clone();
+    copy.session = 0x63;
+    let again = report(&mut l, &anna(), copy).unwrap();
+    assert_eq!(again, ["this qualifying is counted already"]);
+    // An earlier part after a later one isn't counted over it.
+    let mut q2 = report_of(l.season(), 0x52, 0, "u-anna");
+    q2.session_type = 6;
+    let again = report(&mut l, &anna(), q2).unwrap();
+    assert_eq!(again, ["a later part of this qualifying is counted already"]);
+    assert_eq!(pole(&l), "p:u-ben");
+}
+
+#[test]
+fn sprint_or_race_follows_the_weekend() {
+    let setup = Setup {
+        first_year: 2021,
+        ..Setup::default()
+    };
+    let mut base = ferrari_2016(setup);
+    while base.season().next_round().unwrap().round < 10 {
+        agreed(&mut base, &anna(), Action::Simulate { round: None });
+    }
+    let race_of = |weekend: &[u8], session_type: u8| {
+        let mut r = report_of(base.season(), 0x77, 7, "u-anna");
+        r.session_type = session_type;
+        r.weekend = weekend.to_vec();
+        r
+    };
+    // 15 on a sprint weekend is the sprint.
+    let mut l = base.clone();
+    report(&mut l, &anna(), race_of(&[1, 10, 11, 12, 15, 16], 15)).unwrap();
+    let r = l.season().round(10).unwrap();
+    assert!(!r.sprint_result.is_empty() && r.state == RoundState::Pending);
+    // 15 on a weekend without a second race is the Grand Prix.
+    let mut l = base.clone();
+    report(&mut l, &anna(), race_of(&[1, 2, 3, 5, 6, 7, 15], 15)).unwrap();
+    let r = l.season().round(10).unwrap();
+    assert!(r.sprint_result.is_empty() && r.state == RoundState::Raced);
+    // 15 without a weekend structure on an open sprint: the player is asked.
+    let mut l = base.clone();
+    let err = report(&mut l, &anna(), race_of(&[], 15)).unwrap_err();
+    assert_eq!(err.reason, "ask_kind");
+    // 16 is always the race.
+    let mut l = base.clone();
+    report(&mut l, &anna(), race_of(&[], 16)).unwrap();
+    assert_eq!(l.season().round(10).unwrap().state, RoundState::Raced);
+}
+
+#[test]
+fn the_weekend_structure_and_settings_read_from_the_session_packet() {
+    // The game's own Grand Prix packet: no weekend structure, game mode 4.
+    let s = udp::session(real_2026::QUALI_SESSION).unwrap();
+    assert!(s.weekend().is_empty());
+    assert_eq!(s.settings.unwrap().game_mode, 4);
+    assert_eq!(s.total_laps, real_2026::QUALI_SESSION[udp::HEADER_LEN + 3]);
+    // A weekend of five sessions.
+    let mut body = session_body(7, 15);
+    body[703] = 5;
+    body[704..709].copy_from_slice(&[1, 10, 11, 15, 16]);
+    body[640] = 95;
+    let s = udp::session(&packet(1, 1, 0, &body)).unwrap();
+    assert_eq!(s.weekend(), [1, 10, 11, 15, 16]);
+    assert_eq!(s.settings.unwrap().ai_difficulty, 95);
+    // A count the packet can't hold is no structure.
+    body[703] = 13;
+    assert!(udp::session(&packet(1, 1, 0, &body)).unwrap().weekend().is_empty());
+}
+
+#[test]
+fn a_simulated_session_on_a_sprint_weekend_is_the_race_after_the_sprint() {
+    let mut c = udp::Collector::new();
+    let uid = 0x5151;
+    let mut body = session_body(7, 15);
+    body[703] = 6;
+    body[704..710].copy_from_slice(&[1, 10, 11, 12, 15, 16]);
+    c.feed(&packet(1, uid, 1, &body), 1);
+    let cars = [(true, 44, "HAMILTON"), (false, 7, "Player"), (true, 5, "VETTEL")];
+    c.feed(&packet(4, uid, 1, &participants_body(&cars)), 1);
+    let sprint = c
+        .feed(
+            &packet(8, uid, 1, &final_body(&[(2, 3, 91_000), (1, 3, 90_500), (3, 3, 92_000)])),
+            2,
+        )
+        .expect("the sprint");
+    assert_eq!((sprint.session_type, sprint.weekend.len(), sprint.total_laps), (15, 6, 10));
+    // The game simulates the Grand Prix: its classification comes without a session.
+    let race = c
+        .feed(
+            &packet(8, 0, 1, &final_body(&[(3, 3, 91_100), (1, 3, 90_400), (2, 3, 92_100)])),
+            3,
+        )
+        .expect("the race");
+    assert_eq!(race.session_type, 16);
+    assert_ne!(race.session, 0);
+}
+
+#[test]
+fn only_the_next_round_can_be_counted() {
+    let mut l = ferrari_2016(Setup::default());
+    let three = Some(3);
+    let bahrain = report_of(l.season(), 3, 2, "u-anna");
+    let refused = [
+        apply(&mut l, &anna(), Action::Simulate { round: three }),
+        apply(&mut l, &anna(), Action::Skip { round: three }),
+        apply(&mut l, &anna(), Action::Practice { round: three }),
+        apply(
+            &mut l,
+            &anna(),
+            Action::Report {
+                round: three,
+                kind: Some(SessionKind::Race),
+                force: true,
+                report: bahrain,
+            },
+        ),
+    ];
+    for r in refused {
+        assert_eq!(r.unwrap_err().reason, "not_next");
+    }
+    agreed(&mut l, &anna(), Action::Simulate { round: Some(1) });
+    assert_eq!(
+        apply(&mut l, &anna(), Action::Skip { round: Some(1) })
+            .unwrap_err()
+            .reason,
+        "round_done"
+    );
+}
+
+#[test]
+fn skip_after_qualifying_gives_back_its_resource_points() {
+    let mut l = ferrari_2016(Setup::default());
+    let earned = player(&l, "u-anna").earnings_k;
+    apply(&mut l, &anna(), Action::Practice { round: None }).unwrap();
+    let mut q = report_of(l.season(), 0x55, 0, "u-anna");
+    q.session_type = 7;
+    report(&mut l, &anna(), q).unwrap();
+    assert!(player(&l, "u-anna").rp > 0);
+    agreed(&mut l, &anna(), Action::Skip { round: None });
+    let r = &l.season().rounds[0];
+    assert_eq!(r.state, RoundState::Skipped);
+    assert!(r.practice.is_empty() && r.quali_result.is_empty() && r.counted.is_empty());
+    assert_eq!((player(&l, "u-anna").rp, player(&l, "u-ben").rp), (0, 0));
+    // The salary is paid for the round all the same.
+    assert!(player(&l, "u-anna").earnings_k > earned);
+}
+
+#[test]
+fn undo_preview_names_what_goes() {
+    let mut l = ferrari_2016(Setup::default());
+    assert_eq!(undo_preview(&l), None);
+    apply(&mut l, &anna(), Action::Practice { round: None }).unwrap();
+    apply(&mut l, &ben(), Action::Practice { round: None }).unwrap();
+    let mut q = report_of(l.season(), 0x56, 0, "u-anna");
+    q.session_type = 7;
+    report(&mut l, &anna(), q).unwrap();
+    let p = undo_preview(&l).unwrap();
+    assert_eq!((p.round, p.race_counted, p.quali, p.sprint), (1, false, true, false));
+    assert_eq!(p.practice_of, ["Anna", "Ben"]);
+    assert!(p.by_others.contains(&"Anna".to_owned()) && p.by_others.contains(&"Ben".to_owned()));
+    assert!(!p.season_end);
+    let setup = Setup {
+        first_year: 2025,
+        last_year: 2026,
+        ..Setup::default()
+    };
+    let mut l = ferrari_2016(setup);
+    while l.phase == Phase::Racing {
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
+    }
+    let p = undo_preview(&l).unwrap();
+    assert!(p.season_end && p.race_counted);
+    assert_eq!(p.round, 24);
+}
+
+#[test]
+fn undo_in_finished_reopens_the_last_round() {
+    let setup = Setup {
+        first_year: 2026,
+        last_year: 2026,
+        ..Setup::default()
+    };
+    let mut l = ferrari_2016(setup);
+    while l.phase == Phase::Racing {
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
+    }
+    assert_eq!(l.phase, Phase::Finished);
+    let last = l.season().rounds.last().unwrap().round;
+    agreed(&mut l, &anna(), Action::Undo);
+    assert_eq!(l.phase, Phase::Racing);
+    assert_eq!(l.season().next_round().unwrap().round, last);
+}
+
+#[test]
+fn undo_at_season_end_clears_the_signed_terms() {
+    let setup = Setup {
+        first_year: 2025,
+        last_year: 2026,
+        ..Setup::default()
+    };
+    let mut l = ferrari_2016(setup);
+    while l.phase == Phase::Racing {
+        agreed(&mut l, &anna(), Action::Simulate { round: None });
+    }
+    let slot = l.offers("u-anna")[0].slot;
+    apply(
+        &mut l,
+        &anna(),
+        Action::Sign {
+            slot,
+            replaces: None,
+            focus: Some(Focus::Development),
+        },
+    )
+    .unwrap();
+    assert!(player(&l, "u-anna").signed_salary_k > 0);
+    agreed(&mut l, &anna(), Action::Undo);
+    let a = player(&l, "u-anna");
+    assert_eq!(
+        (a.signed.clone(), a.signed_salary_k, a.signed_bonus_k, a.signed_focus),
+        (None, 0, 0, None)
+    );
+}
+
+/// Anna's race report with Ben absent: the game's AI drove Ben's seat as Sebastian Vettel (#5).
+fn race_without_ben(l: &League) -> RaceReport {
+    let mut r = report_of(l.season(), 0xab, 0, "u-anna");
+    let car = r.cars.iter_mut().find(|c| c.name == "BEN").unwrap();
+    car.name = "VETTEL".into();
+    car.number = 5;
+    car.ai = true;
+    r
+}
+
+#[test]
+fn an_absent_players_seat_driven_by_the_ai_counts_for_them() {
+    let mut l = ferrari_2016(Setup::default());
+    let pace = player(&l, "u-ben").attributes.unwrap().pace;
+    let race = race_without_ben(&l);
+    let warnings = report(&mut l, &anna(), race).unwrap();
+    assert!(
+        warnings.iter().any(|w| w == "Ben's seat was driven by the game's AI"),
+        "{warnings:?}"
+    );
+    let c = l.season().rounds[0]
+        .race_result
+        .iter()
+        .find(|c| c.entry == "p:u-ben")
+        .unwrap()
+        .clone();
+    assert!(c.ai_driven && c.position == 2 && c.points == 18.0);
+    assert_eq!(driver_standings(l.season())[1].name, "Ben");
+    // The AI's drive teaches Ben nothing about pace.
+    assert_eq!(player(&l, "u-ben").attributes.unwrap().pace, pace);
+}
+
+#[test]
+fn a_guest_is_not_matched_to_an_absent_player_whose_seat_the_ai_drove() {
+    let mut l = ferrari_2016(Setup::default());
+    let mut r = race_without_ben(&l);
+    let mut guest = r.cars[0].clone();
+    guest.name = "CLEO".into();
+    guest.number = 33;
+    guest.mine = false;
+    guest.ai = false;
+    guest.position = 23;
+    r.cars.push(guest);
+    let warnings = report(&mut l, &anna(), r).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("CLEO")), "{warnings:?}");
+    assert!(!warnings.iter().any(|w| w.contains("by elimination")), "{warnings:?}");
+    let result = &l.season().rounds[0].race_result;
+    assert!(result.iter().any(|c| c.entry == "p:u-ben" && c.ai_driven));
+    assert_eq!(result.len(), 22);
+}
+
+fn classified(entry: &str, position: u8, status: Finish, points: f32) -> Classified {
+    Classified {
+        entry: entry.into(),
+        position,
+        grid: position,
+        laps: 0,
+        status,
+        best_lap_ms: 0,
+        time_ms: 0,
+        penalty_s: 0,
+        points,
+        fastest: false,
+        ai_driven: false,
+    }
+}
+
+#[test]
+fn ties_use_full_countback() {
+    use Finish::*;
+    // Drivers: Button and Hamilton both have a second place; Button's other race ended in a
+    // retirement classified 15th, ahead of Hamilton's 16th.
+    let mut l = ferrari_2016(Setup::default());
+    let season = l.seasons.last_mut().unwrap();
+    season.rounds[0].race_result = vec![
+        classified("jenson_button", 2, Finished, 18.0),
+        classified("lewis_hamilton", 16, Finished, 0.0),
+    ];
+    season.rounds[1].race_result = vec![
+        classified("lewis_hamilton", 2, Finished, 18.0),
+        classified("jenson_button", 15, Dnf, 0.0),
+    ];
+    let table = driver_standings(l.season());
+    assert_eq!(
+        (table[0].entry.as_str(), table[1].entry.as_str()),
+        ("jenson_button", "lewis_hamilton")
+    );
+    // Constructors: McLaren (2nd and 8th) and Mercedes (4th and 5th) both have 22 points; the
+    // second place puts McLaren ahead of the faster car.
+    let mut l = ferrari_2016(Setup::default());
+    l.seasons.last_mut().unwrap().rounds[0].race_result = vec![
+        classified("daniel_ricciardo", 1, Finished, 25.0),
+        classified("fernando_alonso", 2, Finished, 18.0),
+        classified("max_verstappen", 3, Finished, 15.0),
+        classified("lewis_hamilton", 4, Finished, 12.0),
+        classified("nico_rosberg", 5, Finished, 10.0),
+        classified("jenson_button", 8, Finished, 4.0),
+    ];
+    let teams: Vec<String> = team_standings(l.season())
+        .into_iter()
+        .take(3)
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(teams, ["Red Bull Racing", "McLaren", "Mercedes"]);
+}
+
+#[test]
+fn a_damaged_solo_save_loads_from_history() {
+    let root = std::env::temp_dir().join(format!("f1mp-solo-damaged-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let c = solo::create(&root, "Alone", "Robin", Setup::default(), Some(5)).unwrap();
+    solo::act(
+        &root,
+        &c.id,
+        Action::Seat {
+            slot: 7,
+            replaces: None,
+        },
+    )
+    .unwrap();
+    let (good, _) = solo::act(&root, &c.id, Action::Begin).unwrap();
+    let (_, _) = solo::act(&root, &c.id, Action::Simulate { round: None }).unwrap();
+    // A crash left the newest save half written.
+    let file = solo::dir(&root).join(format!("{}.json", c.id));
+    std::fs::write(&file, b"{\"id\":").unwrap();
+    let loaded = solo::load(&root, &c.id).unwrap();
+    assert_eq!((loaded.version, loaded.league.clone()), (good.version, good.league));
+    // The next change is saved over it.
+    let (after, _) = solo::act(&root, &c.id, Action::Simulate { round: None }).unwrap();
+    assert_eq!(after.version, good.version + 1);
+    assert_eq!(solo::load(&root, &c.id).unwrap().version, after.version);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_full_2016_to_2026_career_rolls_over() {
+    let mut l = ferrari_2016(Setup::default());
+    let mut actions = 0;
+    while l.phase != Phase::Finished {
+        let action = match l.phase {
+            Phase::Racing => Action::Simulate { round: None },
+            _ => Action::NextSeason,
+        };
+        agreed(&mut l, &anna(), action);
+        actions += 1;
+        assert!(actions < 400, "the career doesn't end");
+    }
+    assert_eq!(l.seasons.len(), 11);
+    assert_eq!(l.year(), LAST_YEAR);
+    // Contracts may run past the career's last season; it ends all the same.
+    for p in &l.players {
+        assert!(p.contract_until.is_some_and(|y| y >= LAST_YEAR), "{p:?}");
+        assert!(p.seat.is_some() && p.signed.is_none());
+    }
+    assert!(undo_preview(&l).unwrap().season_end);
 }

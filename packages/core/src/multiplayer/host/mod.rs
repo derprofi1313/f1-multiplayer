@@ -24,6 +24,7 @@ use super::pinned::Endpoint;
 use super::servercode;
 
 pub use super::pinned::DEFAULT_PORT;
+pub use lobby::release_name;
 
 /// Where a host server keeps its certificate, sessions and careers, under the launcher's data
 /// folder.

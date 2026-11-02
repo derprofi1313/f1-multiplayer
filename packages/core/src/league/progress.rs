@@ -7,10 +7,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    Classified, Finish, League, LeagueError, Phase, RaceReport, Season, SessionKind, classify, refuse,
-    team_goal_at, team_mate_at,
-};
+use super::texts::{Text, t};
+use super::{Finish, League, Season, SessionKind, team_goal_at, team_mate_at};
+
+/// What the next level of a part costs (moved to [`super::rnd`]).
+pub use super::rnd::upgrade_cost;
 
 pub const ATTRIBUTE_MIN: f32 = 40.0;
 pub const ATTRIBUTE_MAX: f32 = 99.0;
@@ -36,6 +37,10 @@ pub struct Attributes {
     pub racecraft: f32,
     pub awareness: f32,
     pub pace: f32,
+    /// Focus (W2-5). Not part of [`Attributes::overall`], so the ratings of older careers don't
+    /// move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<f32>,
 }
 
 impl Attributes {
@@ -53,6 +58,7 @@ impl Attributes {
             racecraft: at(rating),
             awareness: at(rating + 2.0),
             pace: at(rating + 2.0),
+            focus: None,
         }
     }
 
@@ -63,10 +69,11 @@ impl Attributes {
             racecraft: a[1],
             awareness: a[2],
             pace: a[3],
+            focus: None,
         }
     }
 
-    fn clamp(&mut self) {
+    pub(super) fn clamp(&mut self) {
         for x in [
             &mut self.experience,
             &mut self.racecraft,
@@ -74,6 +81,9 @@ impl Attributes {
             &mut self.pace,
         ] {
             *x = x.clamp(ATTRIBUTE_MIN, ATTRIBUTE_MAX);
+        }
+        if let Some(f) = self.focus.as_mut() {
+            *f = f.clamp(ATTRIBUTE_MIN, ATTRIBUTE_MAX);
         }
     }
 
@@ -131,11 +141,6 @@ impl Part {
     }
 }
 
-/// What the next level of a part costs, with `level` levels ordered this season.
-pub fn upgrade_cost(level: u8) -> u32 {
-    800 + 250 * u32::from(level)
-}
-
 /// A part a player ordered for their team.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Upgrade {
@@ -152,6 +157,12 @@ pub struct Upgrade {
     pub started: bool,
     /// The first round it is on the car.
     pub ready: u8,
+    /// The node of the part's development tree; `None` for a level of the linear development.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<u8>,
+    /// The part failed (it gains nothing).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub failed: bool,
 }
 
 /// What a player asks for in a new contract.
@@ -174,6 +185,12 @@ pub enum Programme {
     QualifyingPace,
     /// A long run: how close the laps stay to the best one.
     TyreManagement,
+    /// Deploying the full 4 MJ a lap without running the battery flat (from the telemetry).
+    ErsManagement,
+    /// Laps at pace within a fuel target (from the telemetry).
+    FuelManagement,
+    /// A long run's tyre wear per lap against a target (from the telemetry).
+    RaceStrategy,
 }
 
 impl Programme {
@@ -182,6 +199,9 @@ impl Programme {
             Programme::TrackAcclimatisation => "Track acclimatisation",
             Programme::QualifyingPace => "Qualifying pace",
             Programme::TyreManagement => "Tyre management",
+            Programme::ErsManagement => "ERS management",
+            Programme::FuelManagement => "Fuel management",
+            Programme::RaceStrategy => "Race strategy",
         }
     }
 }
@@ -254,7 +274,7 @@ pub fn money(k: u64) -> String {
 }
 
 /// splitmix64 over a few values, for the luck of a simulated practice.
-fn mix(values: &[u64]) -> u64 {
+pub(super) fn mix(values: &[u64]) -> u64 {
     let mut z: u64 = 0x9e37_79b9_7f4a_7c15;
     for v in values {
         z ^= v.wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -265,86 +285,12 @@ fn mix(values: &[u64]) -> u64 {
     z
 }
 
-fn grade(x: f32) -> u8 {
-    x.clamp(0.0, 100.0).round() as u8
-}
-
-/// The practice programmes `report` (a practice session the game reported) shows for the car of
-/// `entry`: laps for the track, the best lap against the team-mate's, and the long run.
-fn programmes_of(
-    season: &Season,
-    round: u8,
-    entry: &str,
-    result: &[Classified],
-    report: &RaceReport,
-) -> Option<(Vec<ProgrammeResult>, u8, u32)> {
-    let mine = result.iter().find(|c| c.entry == entry)?;
-    let laps = mine.laps.max(report.laps.len() as u8);
-    if laps == 0 && mine.best_lap_ms == 0 {
-        return None;
-    }
-    let mut out = Vec::new();
-    // Track acclimatisation: clean laps (all laps when the game sent no lap list).
-    let clean = if report.laps.is_empty() {
-        u32::from(laps)
-    } else {
-        report.laps.iter().filter(|l| l.valid && l.ms > 0).count() as u32
-    };
-    out.push(ProgrammeResult {
-        programme: Programme::TrackAcclimatisation,
-        grade: grade(clean as f32 * 12.5),
-    });
-    // Qualifying pace: against the team-mate, else against the fastest car.
-    if mine.best_lap_ms > 0 {
-        let mate = team_mate_at(season, entry, round)
-            .and_then(|m| result.iter().find(|c| c.entry == m.id))
-            .map(|c| c.best_lap_ms)
-            .filter(|&ms| ms > 0);
-        let best = result
-            .iter()
-            .map(|c| c.best_lap_ms)
-            .filter(|&ms| ms > 0)
-            .min()
-            .unwrap_or(mine.best_lap_ms);
-        let g = match mate {
-            Some(m) => 75.0 - (mine.best_lap_ms as f32 / m as f32 - 1.0) * 100.0 * 50.0,
-            None => 100.0 - (mine.best_lap_ms as f32 / best as f32 - 1.0) * 100.0 * 25.0,
-        };
-        out.push(ProgrammeResult {
-            programme: Programme::QualifyingPace,
-            grade: grade(g),
-        });
-    }
-    // Tyre management: four or more clean laps within 107% of the best.
-    let best_lap = report
-        .laps
-        .iter()
-        .filter(|l| l.valid && l.ms > 0)
-        .map(|l| l.ms)
-        .min();
-    if let Some(best_lap) = best_lap {
-        let run: Vec<u32> = report
-            .laps
-            .iter()
-            .filter(|l| l.valid && l.ms > 0 && (l.ms as f32) <= best_lap as f32 * 1.07)
-            .map(|l| l.ms)
-            .collect();
-        if run.len() >= 4 {
-            let mean = run.iter().map(|&ms| ms as f32).sum::<f32>() / run.len() as f32;
-            out.push(ProgrammeResult {
-                programme: Programme::TyreManagement,
-                grade: grade(100.0 - (mean / best_lap as f32 - 1.0) * 100.0 * 30.0),
-            });
-        }
-    }
-    Some((out, laps, mine.best_lap_ms))
-}
-
 /// Where the car of `entry` should finish in `round`, from its car's pace then and its driver's
 /// rating.
 pub fn expected_place(season: &Season, entry: &str, round: u8) -> u8 {
     let lineup = season.lineup(round);
-    let strength = |e: &super::Entry, slot: u8| super::sim::base(season.pace_at(slot, round), e.rating);
+    let strength =
+        |e: &super::Entry, slot: u8| super::sim::base(season.pace_at(slot, round), super::driver::rating_of(season, e, round));
     let Some(mine) = lineup
         .iter()
         .find(|(e, _)| e.id == entry)
@@ -356,17 +302,6 @@ pub fn expected_place(season: &Season, entry: &str, round: u8) -> u8 {
         .iter()
         .filter(|(e, s)| e.id != entry && strength(e, *s) < mine)
         .count() as u8
-}
-
-fn average(programmes: &[ProgrammeResult]) -> u8 {
-    if programmes.is_empty() {
-        return 0;
-    }
-    (programmes.iter().map(|p| u32::from(p.grade)).sum::<u32>() / programmes.len() as u32) as u8
-}
-
-fn practice_rp(programmes: &[ProgrammeResult]) -> f32 {
-    50.0 + programmes.iter().map(|p| f32::from(p.grade)).sum::<f32>() * 1.2
 }
 
 impl League {
@@ -433,7 +368,7 @@ impl League {
     }
 
     /// Resource points earned, with the number-one driver's and the contract's bonus.
-    fn earn(&mut self, player: &str, rp: f32) -> u32 {
+    pub(super) fn earn(&mut self, player: &str, rp: f32) -> u32 {
         let Some(p) = self.player_mut(player) else {
             return 0;
         };
@@ -450,7 +385,7 @@ impl League {
     }
 
     /// Change a player's recognition.
-    fn recognise(&mut self, player: &str, by: f32) {
+    pub(super) fn recognise(&mut self, player: &str, by: f32) {
         if let Some(p) = self.player_mut(player) {
             p.recognition = (p.recognition + by).clamp(0.0, 100.0);
         }
@@ -458,7 +393,7 @@ impl League {
 
     /// Each player's number-one status now, with news for those who became (or stopped being)
     /// their team's number one driver.
-    pub(super) fn update_status(&mut self) -> Vec<String> {
+    pub(super) fn update_status(&mut self) -> Vec<Text> {
         let now: Vec<bool> = self.players.iter().map(|p| number_one(self, &p.id)).collect();
         let season = self.season().clone();
         let mut lines = Vec::new();
@@ -470,20 +405,24 @@ impl League {
             let Some(team) = season.player_entry(&p.id).and_then(|e| season.team(e.slot)) else {
                 continue;
             };
+            let (name, team) = (&p.name, &team.name);
             lines.push(if now {
-                format!("{} is now {}'s number one driver.", p.name, team.name)
+                t!("{name} is now {team}'s number one driver.", name, team)
             } else {
-                format!("{} is no longer {}'s number one driver.", p.name, team.name)
+                t!("{name} is no longer {team}'s number one driver.", name, team)
             });
         }
         lines
     }
 
-    fn train(&mut self, player: &str, f: impl FnOnce(&mut Attributes)) {
+    pub(super) fn train(&mut self, player: &str, f: impl FnOnce(&mut Attributes)) {
         if let Some(p) = self.player_mut(player) {
+            let rating = p.rating;
             let a = p
                 .attributes
-                .get_or_insert_with(|| Attributes::from_rating(p.rating));
+                .get_or_insert_with(|| Attributes::from_rating(rating));
+            // A player of an older career gets a focus from their rating when it first moves.
+            a.focus.get_or_insert(rating);
             f(a);
             a.clamp();
         }
@@ -491,7 +430,7 @@ impl League {
 
     /// What players earn and learn from the `kind` session of round `n`, just counted (`driven`
     /// in the game, else simulated). Returns news lines.
-    pub(super) fn grow(&mut self, n: u8, kind: SessionKind, driven: bool) -> Vec<String> {
+    pub(super) fn grow(&mut self, n: u8, kind: SessionKind, driven: bool) -> Vec<Text> {
         let season = self.season().clone();
         let Some(round) = season.round(n) else {
             return Vec::new();
@@ -512,6 +451,8 @@ impl League {
                 continue;
             };
             let finished = c.status == Finish::Finished;
+            // A seat the game's AI drove for an absent player counts like a simulated one.
+            let driven = driven && !c.ai_driven;
             let mate =
                 team_mate_at(&season, &entry.id, n).and_then(|m| list.iter().find(|x| x.entry == m.id));
             // Ahead of the team-mate: a finished car beats one that didn't, else the position.
@@ -632,6 +573,7 @@ impl League {
             self.pay(n, true);
         }
         lines.extend(self.update_status());
+        super::objectives::grade(self, n, kind, driven, &mut lines);
         lines
     }
 
@@ -660,220 +602,6 @@ impl League {
             }
             p.earnings_k += k;
         }
-    }
-
-    /// Count `player`'s practice of round `n`: from the game's report of a practice session, or
-    /// simulated. Returns news lines.
-    pub(super) fn count_practice(
-        &mut self,
-        player: &str,
-        n: u8,
-        report: Option<&RaceReport>,
-    ) -> Result<Vec<String>, LeagueError> {
-        let season = self.season().clone();
-        let Some(entry) = season.player_entry(player).cloned() else {
-            return refuse("no_seat", "you have no seat this season");
-        };
-        let round = season.round(n).expect("pending");
-        if round.practice.iter().any(|l| l.player == player) {
-            return refuse(
-                "round_done",
-                format!("your practice of round {n} is counted already"),
-            );
-        }
-        let name = self.player(player).map_or_else(String::new, |p| p.name.clone());
-        let line = match report {
-            Some(report) => {
-                let (result, _) = classify(
-                    &season,
-                    Some(player),
-                    report,
-                    SessionKind::Practice,
-                    season.year,
-                    self.setup.points,
-                    n,
-                );
-                let Some((programmes, laps, best)) = programmes_of(&season, n, &entry.id, &result, report)
-                else {
-                    return refuse("no_laps", "you drove no lap in this practice session");
-                };
-                let rp = practice_rp(&programmes);
-                super::progress::PracticeLine {
-                    player: player.to_owned(),
-                    driven: true,
-                    grade: average(&programmes),
-                    rp: rp.round() as u32,
-                    programmes,
-                    laps,
-                    best_lap_ms: best,
-                    session: report.session,
-                }
-            }
-            None => {
-                let rating = self.player(player).map_or(super::START_RATING, |p| p.rating);
-                let seed = mix(&[
-                    self.seed,
-                    u64::from(season.year),
-                    u64::from(n),
-                    player.len() as u64,
-                ]) ^ player.bytes().fold(0u64, |h, b| h.rotate_left(5) ^ u64::from(b));
-                let programmes: Vec<ProgrammeResult> = [
-                    Programme::TrackAcclimatisation,
-                    Programme::QualifyingPace,
-                    Programme::TyreManagement,
-                ]
-                .into_iter()
-                .enumerate()
-                .map(|(i, programme)| {
-                    let luck = (mix(&[seed, i as u64]) >> 40) as f32 / (1u64 << 24) as f32;
-                    ProgrammeResult {
-                        programme,
-                        grade: grade(45.0 + (rating - 70.0) * 1.2 + (luck - 0.5) * 30.0),
-                    }
-                })
-                .collect();
-                // Like the game, a simulated programme earns less than a driven one.
-                let rp = practice_rp(&programmes) * 0.6;
-                super::progress::PracticeLine {
-                    player: player.to_owned(),
-                    driven: false,
-                    grade: average(&programmes),
-                    rp: rp.round() as u32,
-                    programmes,
-                    laps: 0,
-                    best_lap_ms: 0,
-                    session: 0,
-                }
-            }
-        };
-        self.keep_progress(n);
-        let mut lines = Vec::new();
-        let rp = self.earn(player, line.rp as f32);
-        let driven = if line.driven { 1.0 } else { 0.5 };
-        // Only a practice driven shows the driver's pace and long runs.
-        let skill = if line.driven { 1.0 } else { 0.0 };
-        let of = |p: Programme| {
-            line.programmes
-                .iter()
-                .find(|x| x.programme == p)
-                .map(|x| f32::from(x.grade))
-        };
-        let (quali, tyres, done) = (
-            of(Programme::QualifyingPace),
-            of(Programme::TyreManagement),
-            line.programmes.len() as f32,
-        );
-        self.train(player, |a| {
-            a.experience += 0.1 * done * driven;
-            if let Some(g) = quali {
-                a.pace += (g - 60.0) / 250.0 * skill;
-            }
-            if let Some(g) = tyres {
-                a.racecraft += (g - 60.0) / 300.0 * skill;
-            }
-        });
-        if line.grade >= 75 {
-            self.recognise(player, 1.0);
-        } else if line.grade < 35 {
-            self.recognise(player, -1.0);
-        }
-        self.sync_ratings();
-        lines.extend(self.update_status());
-        let what = if line.driven { "" } else { " (simulated)" };
-        let mut text = format!(
-            "Round {n}, {} practice{what}: {name} grade {}, {rp} resource points",
-            round.race, line.grade
-        );
-        if line.best_lap_ms > 0 {
-            text.push_str(&format!(", best lap {}", lap_text(line.best_lap_ms)));
-        }
-        text.push('.');
-        lines.insert(0, text);
-        let line = super::progress::PracticeLine { rp, ..line };
-        let season = self.season_mut();
-        let round = season.rounds.iter_mut().find(|r| r.round == n).expect("pending");
-        round.practice.push(line);
-        Ok(lines)
-    }
-
-    /// Order the next level of `part` for `player`'s team with their resource points.
-    pub(super) fn develop(&mut self, player: &str, part: Part) -> Result<String, LeagueError> {
-        if self.phase != Phase::Racing {
-            return refuse("phase", "parts are developed while a season runs");
-        }
-        let season = self.season();
-        let Some(entry) = season.player_entry(player) else {
-            return refuse("no_seat", "you have no seat this season");
-        };
-        let slot = entry.slot;
-        let Some(next) = season.next_round() else {
-            return refuse("phase", "the season is over");
-        };
-        let (n, started) = (next.round, next.started());
-        let ready = n + UPGRADE_ROUNDS;
-        let last = season.rounds.last().map_or(0, |r| r.round);
-        if ready > last {
-            return refuse(
-                "too_late",
-                "a new part takes two rounds to build; it wouldn't be ready this season",
-            );
-        }
-        let level = season.part_level(slot, part);
-        if level >= UPGRADE_LEVELS {
-            return refuse(
-                "max_level",
-                format!("{} is developed as far as it goes this season", part.name()),
-            );
-        }
-        let cost = upgrade_cost(level);
-        let have = self.player(player).map_or(0, |p| p.rp);
-        if have < cost {
-            return refuse(
-                "no_points",
-                format!(
-                    "the next {} level costs {cost} resource points; you have {have}",
-                    part.name()
-                ),
-            );
-        }
-        let team = season.team(slot).map_or_else(String::new, |t| t.name.clone());
-        let race = season.round(ready).map_or_else(String::new, |r| r.race.clone());
-        let name = self.player(player).map_or_else(String::new, |p| p.name.clone());
-        self.player_mut(player).expect("seated").rp -= cost;
-        self.season_mut().upgrades.push(Upgrade {
-            slot,
-            part,
-            level: level + 1,
-            by: player.to_owned(),
-            cost,
-            round: n,
-            started,
-            ready,
-        });
-        let text = format!(
-            "{name} has {team} develop {} level {}; it's on the car from round {ready}, the {race}.",
-            part.name(),
-            level + 1
-        );
-        self.say(0, text.clone());
-        Ok(text)
-    }
-
-    /// The pace each team carries into next season from what it developed this one: half of it,
-    /// a sixth after the rules changed (2017, 2022, 2026).
-    pub(super) fn carry_over(&self, next: u16) -> Vec<(u8, f32)> {
-        let season = self.season();
-        let keep = if matches!(next, 2017 | 2022 | 2026) {
-            1.0 / 6.0
-        } else {
-            0.5
-        };
-        season
-            .teams
-            .iter()
-            .map(|t| (t.slot, (t.carry - season.upgrade_gain(t.slot, u8::MAX)) * keep))
-            .filter(|(_, c)| c.abs() > 1e-4)
-            .collect()
     }
 
     /// A seated player's first salary, at the team they start with.
@@ -909,6 +637,10 @@ pub fn number_one(league: &League, player: &str) -> bool {
     let Some(entry) = season.player_entry(player) else {
         return false;
     };
+    // A number-one clause in the contract.
+    if p.number_one_until.is_some_and(|y| y >= season.year) {
+        return true;
+    }
     if p.recognition < NUMBER_ONE {
         return false;
     }

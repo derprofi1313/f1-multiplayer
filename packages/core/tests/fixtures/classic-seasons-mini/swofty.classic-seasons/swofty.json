@@ -1,0 +1,21 @@
+{
+ "schema_version": 1,
+ "id": "swofty.classic-seasons",
+ "name": "Classic Seasons",
+ "version": "0.6.4",
+ "author": "Swofty",
+ "description": "Test fixture: the Classic Seasons core cut down to the files the league career overlay reads.",
+ "category": "seasons",
+ "kind": [
+  "files"
+ ],
+ "compat": {
+  "game": "f1_25"
+ },
+ "requires": [
+  {
+   "id": "swofty.core",
+   "version": ">=0.2.13"
+  }
+ ]
+}

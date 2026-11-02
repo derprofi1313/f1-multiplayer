@@ -154,6 +154,8 @@ pub fn recover(lock: &SessionLock, data: &Path, game: &Game, scope: Scope) -> Re
     let inst = Installer::new(data, game);
     r.journals = inst.roll_back(scope == Scope::Sessions)?;
     r.swept = inst.sweep()?;
+    // Start anyway: another mod's files that waited outside the game folder during the session.
+    r.swept.extend(crate::foreign::put_back(data, &game.dir)?);
     r.logs = inst.tidy(&data.join("sessions/orphaned-logs"))?;
     r.interrupted = crate::busy::Busy::read(data);
     crate::busy::Busy::clear(data);
@@ -302,6 +304,8 @@ pub fn restore_locked(_lock: &SessionLock, data: &Path, game: &Game) -> Result<R
         Blocked::clear(data)?;
     }
     out.left = Installer::new(data, game).restore()?;
+    // Start anyway: another mod's files go back to how the folder was before our session.
+    out.notes.extend(crate::foreign::put_back(data, &game.dir)?);
     Ok(out)
 }
 

@@ -38,6 +38,22 @@ impl Edited {
         matches!(self, Self::Leftovers(_))
     }
 
+    /// What Start anyway accepts: the edited game files, and the files in the build's way with their bytes.
+    pub(crate) fn to_accept(&self) -> (Vec<String>, Vec<(String, Option<String>)>) {
+        match self {
+            Self::NotStock(r) => (r.files.clone(), Vec::new()),
+            Self::Leftovers(b) => (
+                Vec::new(),
+                b.files.iter().map(|f| (f.path.clone(), f.sha256.clone())).collect(),
+            ),
+        }
+    }
+
+    /// Start anyway fits other mods' files, not game files that are missing.
+    fn can_start_anyway(&self) -> bool {
+        self.missing().is_none()
+    }
+
     fn missing(&self) -> Option<stock::Fix> {
         match self {
             Self::NotStock(r) if r.missing => Some(r.fix()),
@@ -382,6 +398,7 @@ pub(crate) fn discord_link(id: &'static str, p: Palette) -> Stateful<Div> {
 
 fn footer(
     shell: WeakEntity<Shell>,
+    edited: Edited,
     leftovers: bool,
     importer_shown: bool,
     open: Option<Open>,
@@ -389,6 +406,8 @@ fn footer(
 ) -> DialogFooter {
     let importer = shell.clone();
     let restore = shell.clone();
+    let anyway = shell.clone();
+    let start_anyway = edited.can_start_anyway().then_some(edited);
     DialogFooter::new()
         .w_full()
         .justify_between()
@@ -409,10 +428,25 @@ fn footer(
                             }),
                     )
                 })
+                .when_some(start_anyway, |d, edited| {
+                    d.child(
+                        Button::new("game-edited-start-anyway")
+                            .primary()
+                            .h(px(36.))
+                            .px(px(14.))
+                            .icon(IconName::Play)
+                            .label(crate::i18n::tr("Start anyway"))
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let edited = edited.clone();
+                                anyway.update(cx, |s, cx| s.start_anyway(edited, window, cx)).ok();
+                            }),
+                    )
+                })
                 .when(leftovers, |d| {
                     d.child(
                         Button::new("game-edited-restore")
-                            .primary()
+                            .outline()
                             .h(px(36.))
                             .px(px(14.))
                             .icon(IconName::RotateCcw)
@@ -490,6 +524,7 @@ impl Shell {
                 )
                 .footer(footer(
                     shell,
+                    edited.clone(),
                     edited.leftovers(),
                     edited.missing().is_none(),
                     edited.open(&repair),

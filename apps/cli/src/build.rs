@@ -388,7 +388,13 @@ fn install_checked(
         r => return Ok(not_stock(store, g, r)?),
     };
     if found.iter().any(|c| !c.owned) {
-        return Err(crate::recover::blocked(store, g, &found));
+        // Start anyway: files the player chose to keep wait outside the game folder for the session.
+        if !swofty_core::foreign::Accepted::for_game(&store.root, &g.dir).covers_extra(&found) {
+            return Err(crate::recover::blocked(store, g, &found));
+        }
+        for note in swofty_core::foreign::set_aside_for_session(&store.root, &g.dir, &found)? {
+            out(&note);
+        }
     }
     let cleared = inst.clear(&found)?;
     crate::recover::announce(store, g, &cleared, out);
@@ -472,6 +478,15 @@ fn check_stock(store: &Store, g: &Game, out: &dyn Fn(&str)) -> Result<Option<Dep
                 f.steam,
                 f.modified.map_or("unknown".to_owned(), |t| format!("{t:.0}"))
             ));
+        }
+        // Start anyway: game files the player chose to keep (another mod's) are taken as they are. The
+        // install then backs up what is there now as the original, so they come back after the session.
+        if swofty_core::foreign::Accepted::for_game(&store.root, &g.dir).covers_edited(&checked.foreign) {
+            out(&format!(
+                "[stock] start anyway: {} file(s) that aren't Steam's copy are kept as you chose; they are not checked against Steam this session",
+                checked.foreign.len()
+            ));
+            return Ok(None);
         }
         stock::Report::new(checked.foreign.clone(), &g.dir)
             .with_detail(checked.detail.clone())
@@ -923,6 +938,55 @@ mod tests {
         let log = RefCell::new(Vec::new());
         h.install(&log).unwrap();
         assert_eq!(h.mip(), "mip-ferrari");
+    }
+
+    #[test]
+    fn start_anyway_keeps_another_mods_file_for_the_session_and_puts_it_back() {
+        let _pin = swofty_core::builtin::LoaderPin::none();
+        let h = Harness::new("start-anyway");
+        let built = build_profile(&h.store, "default", &h.game).unwrap();
+        assert!(built.plan.added.contains_key(MIP));
+        // Another mod's file turns up where the build puts one, after the build (as the version.dll of a
+        // second launch did): the launch stops on it, untouched.
+        std::fs::create_dir_all(h.game.dir.join(MIP).parent().unwrap()).unwrap();
+        std::fs::write(h.game.dir.join(MIP), "another platform's mod").unwrap();
+        let inst = Installer::new(&h.store.root, &h.game);
+        let found = match inst.apply(&built.plan) {
+            Err(swofty_core::Error::Leftovers(found)) => found,
+            r => panic!("expected leftovers, got {r:?}"),
+        };
+        let accepted = swofty_core::foreign::Accepted::for_game(&h.store.root, &h.game.dir);
+        assert!(!accepted.covers_extra(&found));
+        crate::recover::blocked(&h.store, &h.game, &found);
+        let blocked = swofty_core::recovery::Blocked::read(&h.store.root).unwrap();
+        assert_eq!(h.mip(), "another platform's mod");
+
+        // Start anyway accepts exactly that file; install_checked then moves it aside for the session.
+        let extra: Vec<(String, Option<String>)> =
+            blocked.files.iter().map(|f| (f.path.clone(), f.sha256.clone())).collect();
+        let accepted = swofty_core::foreign::accept(&h.store.root, &h.game.dir, &[], &extra).unwrap();
+        assert!(swofty_core::recovery::Blocked::read(&h.store.root).is_none());
+        assert!(accepted.covers_extra(&found));
+        let notes = swofty_core::foreign::set_aside_for_session(&h.store.root, &h.game.dir, &found).unwrap();
+        assert!(notes[0].starts_with(&format!("start anyway: {MIP}")), "{notes:?}");
+        inst.clear(&found).unwrap();
+        inst.apply(&built.plan).unwrap();
+        assert_eq!(h.mip(), "mip-ferrari");
+
+        // The session ends: its files roll back and the other mod's file is back in place.
+        inst.roll_back(true).unwrap();
+        swofty_core::foreign::put_back(&h.store.root, &h.game.dir).unwrap();
+        assert_eq!(h.mip(), "another platform's mod");
+
+        // Changed since it was accepted: it isn't covered any more.
+        let changed: Vec<swofty_core::install::Conflict> = found
+            .iter()
+            .map(|c| swofty_core::install::Conflict {
+                sha256: Some("0".repeat(64)),
+                ..c.clone()
+            })
+            .collect();
+        assert!(!swofty_core::foreign::Accepted::for_game(&h.store.root, &h.game.dir).covers_extra(&changed));
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub mod erpbuild;
 pub mod exe_version;
 pub mod fast_fail;
 pub mod folders;
+pub mod foreign;
 pub mod heads;
 pub mod helper;
 pub mod import;

@@ -65,6 +65,8 @@ pub(super) const DE: &[(&str, &str)] = &[
     ("Move up", "Nach oben"),
     ("Move down", "Nach unten"),
     ("Close", "Schließen"),
+    ("Start anyway", "Trotzdem starten"),
+    ("The other mods' files stay. F1 Multiplayer is starting the game.", "Die Dateien der anderen Mods bleiben. F1 Multiplayer startet das Spiel."),
     ("Status", "Status"),
     ("Load order", "Ladereihenfolge"),
     ("Folder", "Ordner"),

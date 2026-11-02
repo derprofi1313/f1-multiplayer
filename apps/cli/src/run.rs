@@ -602,6 +602,11 @@ impl Drop for Session<'_> {
                 for d in done.iter().flat_map(|r| &r.drift) {
                     info(&format!("rollback: {d}"));
                 }
+                // Start anyway: another mod's files that waited outside the game folder go back.
+                match swofty_core::foreign::put_back(&self.store.root, &self.game.dir) {
+                    Ok(notes) => notes.iter().for_each(|n| info(n)),
+                    Err(e) => info(&format!("start anyway: putting the other mods' files back failed, the next start retries: {e:#}")),
+                }
                 let kept = done.iter().map(|r| r.kept.len()).sum::<usize>();
                 if kept > 0 {
                     info(&format!(

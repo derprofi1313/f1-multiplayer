@@ -1338,8 +1338,9 @@ impl Shell {
             this.update_in(cx, |s, window, cx| {
                 s.restoring = false;
                 match result {
-                    Ok(text) => window
-                        .push_notification(Notification::success(text).title("Game folder restored"), cx),
+                    Ok(text) => {
+                        window.push_notification(Notification::success(text).title("Game folder restored"), cx)
+                    }
                     Err(e) => {
                         crate::app_log::action("restore the game folder").failed(&e);
                         window.push_notification(Notification::error(e).title("Restore failed"), cx)
@@ -1350,6 +1351,37 @@ impl Shell {
             .ok();
         })
         .detach();
+        cx.notify();
+    }
+
+    /// "Start anyway" on a launch stopped by other mods' files in the game folder: those exact files are
+    /// accepted for this game folder (see `swofty_core::foreign`) and Play starts again. Edited game files
+    /// are used as they are; files in the build's way wait outside the folder during the session and go
+    /// back afterwards. Nothing is deleted, and the warning doesn't come back for the same files.
+    pub(crate) fn start_anyway(&mut self, edited: crate::game_edited::Edited, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(install) = self.install.clone() else {
+            return;
+        };
+        let (changed, extra) = edited.to_accept();
+        match swofty_core::foreign::accept(&self.store.root, &install.dir, &changed, &extra) {
+            Ok(_) => {
+                self.game_edited = None;
+                self.blocked = None;
+                self.notice = None;
+                window.push_notification(
+                    Notification::info(crate::i18n::tr(
+                        "The other mods' files stay. F1 Multiplayer is starting the game.",
+                    ))
+                    .title(crate::i18n::tr("Start anyway")),
+                    cx,
+                );
+                self.play(window, cx);
+            }
+            Err(e) => {
+                crate::app_log::action("start anyway").failed(&e);
+                window.push_notification(Notification::error(e.to_string()).title(crate::i18n::tr("Start anyway")), cx);
+            }
+        }
         cx.notify();
     }
 

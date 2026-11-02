@@ -23,9 +23,13 @@ use crate::{Error, Result, io_err};
 
 pub const URL_ENV: &str = "SWOFTY_REGISTRY_URL";
 pub const DEFAULT_URL: &str = "https://api.f1.swofty.net";
-/// The addon catalog F1 Multiplayer reads: `catalog/v1/addons` in the repository's main branch.
-/// A new mod is published by adding it there (see `catalog/publish.py`), so the launcher needs no update.
+/// F1 Multiplayer's own addons: `catalog/v1/addons` in the repository's main branch, published with
+/// `catalog/publish.py`. They are added to the registry's catalog ([`DEFAULT_URL`] stays the Addon Browser's
+/// server, for the community's addons, publishers and stars); an id both list keeps the registry's entry.
+/// Raw GitHub serves files only, so only the catalog list is read from here.
 pub const CATALOG_URL: &str = "https://raw.githubusercontent.com/derprofi1313/f1-multiplayer/main/catalog";
+/// Overrides [`CATALOG_URL`]; empty turns our own catalog off.
+pub const OWN_URL_ENV: &str = "F1MP_CATALOG_URL";
 pub const CACHE_DIR: &str = "cache/registry";
 pub const CATALOG_FILE: &str = "catalog.json";
 pub const LOG_FILE: &str = "state/registry.log";
@@ -300,7 +304,50 @@ pub fn base_url() -> String {
         .ok()
         .map(|u| u.trim().trim_end_matches('/').to_owned())
         .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| CATALOG_URL.to_owned())
+        .unwrap_or_else(|| DEFAULT_URL.to_owned())
+}
+
+/// Our own catalog's base, or `None` when [`OWN_URL_ENV`] is set empty.
+pub fn own_url() -> Option<String> {
+    match std::env::var(OWN_URL_ENV) {
+        Ok(u) => Some(u.trim().trim_end_matches('/').to_owned()).filter(|u| !u.is_empty()),
+        Err(_) => Some(CATALOG_URL.to_owned()),
+    }
+}
+
+/// Adds our own addons to the registry's list: ids the registry already lists keep its entry.
+pub fn merge_own(mut addons: Vec<Addon>, own: Vec<Addon>) -> Vec<Addon> {
+    for a in own {
+        if !addons.iter().any(|b| b.id == a.id) {
+            addons.push(a);
+        }
+    }
+    addons
+}
+
+/// Our own catalog, or nothing when it is off, unreachable or not a catalog (logged, never an error:
+/// the registry's addons still show).
+fn fetch_own(root: &Path) -> Vec<Addon> {
+    let Some(base) = own_url() else {
+        return Vec::new();
+    };
+    let url = format!("{base}/v1/addons");
+    let waits = Waits {
+        connect: Duration::from_secs(10),
+        response: Duration::from_secs(15),
+        body: CATALOG_FLOOR,
+    };
+    match read_catalog(&url, waits).map(|t| parse(&t)) {
+        Ok(Some(addons)) => addons,
+        Ok(None) => {
+            log(root, &format!("failed to read F1 Multiplayer's own catalog: {url}: not an addon catalog"));
+            Vec::new()
+        }
+        Err(e) => {
+            log(root, &format!("failed to fetch F1 Multiplayer's own catalog: {e}"));
+            Vec::new()
+        }
+    }
 }
 
 pub fn catalog_url() -> String {
@@ -434,7 +481,8 @@ fn read_catalog(url: &str, waits: Waits) -> std::result::Result<String, Trouble>
 /// The catalog from the registry, saved for the next start. A fetch that
 /// can't reach the registry is tried once more.
 pub fn fetch(root: &Path) -> std::result::Result<Vec<Addon>, Trouble> {
-    fetch_from(root, &catalog_url(), Waits::catalog(root))
+    let addons = fetch_from(root, &catalog_url(), Waits::catalog(root))?;
+    Ok(merge_own(addons, fetch_own(root)))
 }
 
 fn fetch_from(root: &Path, url: &str, waits: Waits) -> std::result::Result<Vec<Addon>, Trouble> {
@@ -463,6 +511,22 @@ pub enum Stage {
 
 /// One addon with every version and its 30-day trend.
 pub fn fetch_one(id: &str) -> std::result::Result<Addon, Trouble> {
+    match fetch_registry_one(id) {
+        // Not in the registry: one of our own addons, whose entry is in our catalog list.
+        Err(Trouble::Failed(why)) => own_url()
+            .and_then(|base| read_catalog(&format!("{base}/v1/addons"), Waits {
+                connect: Duration::from_secs(10),
+                response: Duration::from_secs(15),
+                body: CATALOG_FLOOR,
+            }).ok())
+            .and_then(|text| parse(&text))
+            .and_then(|own| own.into_iter().find(|a| a.id == id))
+            .ok_or(Trouble::Failed(why)),
+        other => other,
+    }
+}
+
+fn fetch_registry_one(id: &str) -> std::result::Result<Addon, Trouble> {
     let url = format!("{}/v1/addons/{id}", base_url());
     let text = get(&url, TIMEOUT)?
         .with_config()
@@ -1293,5 +1357,27 @@ mod tests {
         );
         assert!(epoch("soon").is_none());
         assert_eq!(iso_now().len(), "2026-10-24T01:02:03.456Z".len());
+    }
+
+    #[test]
+    fn the_browser_reads_the_registry_and_adds_our_own_addons() {
+        // The registry serves the catalog, publishers and stars; raw GitHub can't, so it must not be the base.
+        if std::env::var_os(URL_ENV).is_none() {
+            assert_eq!(base_url(), DEFAULT_URL);
+        }
+        assert_eq!(catalog_url(), format!("{}/v1/addons", base_url()));
+        let registry = vec![
+            addon("swofty.progressive", vec![version("1.2.9", None)]),
+            addon("f1mp.shared", vec![version("2.0.0", None)]),
+        ];
+        let own = vec![
+            addon("f1mp.realistic-barriers", vec![version("0.3.0", None)]),
+            addon("f1mp.shared", vec![version("1.0.0", None)]),
+        ];
+        let merged = merge_own(registry, own);
+        let ids: Vec<&str> = merged.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["swofty.progressive", "f1mp.shared", "f1mp.realistic-barriers"]);
+        // An id both list keeps the registry's entry.
+        assert_eq!(merged[1].versions[0].version.to_string(), "2.0.0");
     }
 }

@@ -213,6 +213,11 @@ impl Prepared {
         let store = Store::open_default().with_builtins(swofty_builtins::all());
         let migrated = store.migrate();
         crate::app_log::step("store migrated");
+        // The addons that ship with F1 Multiplayer (Realistic Barrier Crashes): installed, switched off.
+        match store.seed_bundled() {
+            Ok(notes) => notes.iter().for_each(|n| crate::app_log::note(n)),
+            Err(e) => crate::app_log::action("install the bundled addons").failed(&e),
+        }
         swofty_core::multiplayer::diag::open(&store.root);
         swofty_core::usage::launcher_heartbeats(store.root.clone());
         let recovered_seen = Notice::read(&store.root).map_or(0.0, |n| n.at);

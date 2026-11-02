@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "id": "f1mp.realistic-barriers",
+  "name": "Realistic Barrier Crashes",
+  "version": "0.3.0+build.1",
+  "author": "Jannik (F1 Multiplayer 2016-2026)",
+  "description": "Reifenstapel und TecPro geben beim Einschlag nach wie echte Barrieren und halten das Auto fest; Reifen, TecPro-Module und Banden brechen los. F1 25, Saisons 2025 und 2026.",
+  "license": "AGPL-3.0-or-later",
+  "icon": "icons/realistic-barriers.png",
+  "kind": [
+    "native"
+  ],
+  "category": "tracks",
+  "compat": {
+    "game": "f1_25",
+    "game_builds": [
+      ">=25251167"
+    ],
+    "seasons": [
+      "f1_2025",
+      "f1_2026"
+    ]
+  },
+  "multiplayer": "gameplay",
+  "requires": [
+    {
+      "id": "swofty.core",
+      "version": ">=0.2.0"
+    }
+  ],
+  "options": [
+    {
+      "id": "tune_materials",
+      "type": "toggle",
+      "label": "Aufprall-Physik der Barrieren",
+      "description": "Reifenstapel und TecPro werden zu weichen Feder-Dämpfer-Kontakten, ausgelegt für ein 800-kg-Auto, und halten das Auto fest. Beton, Leitplanken und Fahrbahn bleiben wie im Spiel. Wirkt sofort, auch während der Fahrt.",
+      "default": true,
+      "binds": "native"
+    },
+    {
+      "id": "absorption",
+      "type": "slider",
+      "label": "Energieaufnahme",
+      "description": "Dämpfung der weichen Barrieren: 0 = federnd (das Auto prallt deutlich zurück), 60 = etwa 7 % Rückprall, 100 = praktisch kein Rückprall. Wirkt sofort.",
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "default": 60,
+      "binds": "native"
+    },
+    {
+      "id": "crush_depth",
+      "type": "slider",
+      "label": "Eindringtiefe (cm)",
+      "description": "Wie tief ein Auto bei 108 km/h senkrecht in einen Reifenstapel eindringt (halbe Geschwindigkeit: halb so tief, TecPro 15 % weniger). Mehr = weichere Barriere, das Auto taucht sichtbar ein. Wirkt sofort.",
+      "min": 10,
+      "max": 100,
+      "step": 5,
+      "default": 55,
+      "binds": "native"
+    },
+    {
+      "id": "tyre_grip",
+      "type": "slider",
+      "label": "Reifenstapel halten fest (%)",
+      "description": "Wie stark Reifenstapel das Auto festhalten, statt es an der Barriere entlanggleiten zu lassen. 100 = wie im Spiel. Wirkt sofort.",
+      "min": 100,
+      "max": 150,
+      "step": 5,
+      "default": 115,
+      "binds": "native"
+    },
+    {
+      "id": "tune_breakables",
+      "type": "toggle",
+      "label": "Barrieren gehen kaputt",
+      "description": "Reifen, TecPro-Module und Banden lösen sich beim Einschlag realistischer: mehr Teile im Umkreis des Einschlags, die eher kippen und rollen statt wegzufliegen. Gilt ab dem nächsten Laden einer Strecke.",
+      "default": true,
+      "binds": "native"
+    },
+    {
+      "id": "break_threshold",
+      "type": "slider",
+      "label": "Bruchschwelle (%)",
+      "description": "Wie hart der Einschlag sein muss, bevor sich ein Teil löst. 100 = wie im Spiel, kleiner = Teile lösen sich schon bei leichten Treffern, größer = nur bei schweren Unfällen. TecPro braucht etwas mehr, Banden etwas weniger.",
+      "min": 25,
+      "max": 400,
+      "step": 25,
+      "default": 100,
+      "binds": "native"
+    },
+    {
+      "id": "debris_scatter",
+      "type": "slider",
+      "label": "Wegschleudern der Teile (%)",
+      "description": "Wie heftig losgelöste Teile weggeschleudert werden. 100 = wie im Spiel. Echte Reifen kippen und rollen eher, als dass sie fliegen.",
+      "min": 20,
+      "max": 150,
+      "step": 10,
+      "default": 60,
+      "binds": "native"
+    },
+    {
+      "id": "break_spread",
+      "type": "slider",
+      "label": "Bruchradius (%)",
+      "description": "Wie weit um die Einschlagstelle herum sich Teile mit lösen. 100 = wie im Spiel, mehr = ganze Abschnitte der Reifenwand gehen mit.",
+      "min": 50,
+      "max": 300,
+      "step": 10,
+      "default": 140,
+      "binds": "native"
+    },
+    {
+      "id": "log_details",
+      "type": "toggle",
+      "label": "Ausführliches Protokoll",
+      "description": "Schreibt alle Physik-Materialien und alle zerbrechlichen Objekte der Strecke mit ihren Werten nach swofty/loader.log. Zum Einstellen und zur Fehlersuche.",
+      "default": false,
+      "binds": "native",
+      "multiplayer": "cosmetic"
+    }
+  ],
+  "operations": {
+    "native": [
+      {
+        "dll": "native/realistic_barriers.dll",
+        "early": true
+      }
+    ]
+  }
+}

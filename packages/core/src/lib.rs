@@ -6,6 +6,7 @@ pub mod app_control;
 pub mod baseline;
 pub mod build;
 pub mod builtin;
+pub mod bundled;
 pub mod busy;
 pub mod cache;
 pub mod careersync;

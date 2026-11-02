@@ -96,7 +96,7 @@ md5sum "$DIST"/swofty/addons/core/bindings*.json "$DIST/swofty/addons/core/symbo
 if [[ -z $VARIANT ]]; then
     rm -rf bundled
     mkdir -p bundled
-    for addon in ../addons/re-optimization; do
+    for addon in ../addons/re-optimization ../addons/realistic-barriers; do
         if [[ ! -f $addon/native/build.sh || ! -f $addon/swofty.json ]]; then
             echo "build.sh: $addon has no native/build.sh or swofty.json; not bundled" >&2
             continue

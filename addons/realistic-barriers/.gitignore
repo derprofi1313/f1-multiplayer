@@ -1,0 +1,5 @@
+native/build/
+native/*.dll
+native/*.lib
+native/*.pdb
+dist/

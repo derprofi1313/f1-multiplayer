@@ -107,10 +107,14 @@ jobs:
       - name: Build
         run: bash native/build.sh
 
+      # dist/ is the loader; bundled/ the addons that ship with the app (Realistic Barrier Crashes), which the
+      # launcher installs switched off at start.
       - uses: actions/upload-artifact@v7
         with:
           name: native
-          path: native/dist/
+          path: |
+            native/dist/
+            native/bundled/
           if-no-files-found: error
 
   windows:
@@ -162,7 +166,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: native
-          path: native/dist
+          path: native
 
       # The shader compiler for postfx addons, from Swofty's dxc pre-release, checked against tools/dxc/SHA256SUMS.
       - name: Fetch dxc
@@ -176,9 +180,13 @@ jobs:
         shell: pwsh
         run: |
           $out = $env:ASSET
-          New-Item -ItemType Directory -Force "$out/bin", "$out/loader" | Out-Null
+          New-Item -ItemType Directory -Force "$out/bin", "$out/loader", "$out/addons" | Out-Null
           Copy-Item target/release/f1mp.exe, target/release/f1-multiplayer.exe "$out/bin/"
           Copy-Item -Recurse native/dist/* "$out/loader/"
+          # Only our own bundled addons; Swofty's come from the addon browser.
+          $bundled = @(Get-ChildItem native/bundled/f1mp.*.swoftyaddon)
+          if ($bundled.Count -eq 0) { throw "native/build.sh packaged none of our bundled addons" }
+          Copy-Item $bundled.FullName "$out/addons/"
           if (Test-Path dxc) { Copy-Item -Recurse dxc "$out/dxc" }
           Copy-Item LICENSE "$out/"
           foreach ($f in 'README.md', 'THIRD_PARTY.md') { if (Test-Path $f) { Copy-Item $f "$out/" } }
